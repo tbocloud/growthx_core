@@ -200,15 +200,20 @@ def forgot_password():
 			{"reset_password_key": sha256_hash(key), "last_reset_password_key_generated_on": now_datetime()},
 		)
 		link = web_url(f"/reset-password?key={key}")
-		frappe.sendmail(
-			recipients=[email],
-			subject="Reset your GrowthX password",
-			message=(
-				"<p>We received a request to reset your GrowthX password.</p>"
-				f'<p><a href="{link}">Choose a new password</a>. The link works once and expires in 24 hours.</p>'
-				"<p>If you didn't ask for this, you can ignore this email.</p>"
-			),
-		)
+		try:
+			frappe.sendmail(
+				recipients=[email],
+				subject="Reset your GrowthX password",
+				message=(
+					"<p>We received a request to reset your GrowthX password.</p>"
+					f'<p><a href="{link}">Choose a new password</a>. The link works once and expires in 24 hours.</p>'
+					"<p>If you didn't ask for this, you can ignore this email.</p>"
+				),
+			)
+		except Exception:
+			# e.g. no outgoing email account. The client still gets 202: failing here would reveal
+			# that the account exists. Admins see the failure in the Error Log.
+			frappe.log_error(title="GrowthX: could not send password-reset email")
 	# Same response whether or not the account exists.
 	return ok(202)
 
