@@ -14,7 +14,7 @@ bench --site <site> install-app growthx_core  # requires erpnext
 
 ### Structure
 
-- `growthx_core/api/v1/` contains the GrowthX API (whitelisted methods). The contract is in [`openapi.yaml`](openapi.yaml).
+- `growthx_core/api/v1/` contains the GrowthX API (whitelisted methods). The contract is in [`openapi.yaml`](openapi.yaml); decisions and open items are in [`docs/api-decisions.md`](docs/api-decisions.md).
 - Modules: `GrowthX Core`, `Partners`, `Billing`, `Provisioning`.
 
 Web and mobile clients call only this API. Business rules (pricing, commissions, status) live here, not in the clients.

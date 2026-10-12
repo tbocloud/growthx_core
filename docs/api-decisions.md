@@ -1,0 +1,70 @@
+# GrowthX API v1: decisions and open items
+
+**Owner:** Niranjana C (Frappe) · **Reviewers:** Mubashir T (Web), Najath Thekkeyil (Flutter), Sammish (Lead), Arun P S (DevOps, for provisioning)
+**Status:** Draft 1, 12 Oct 2026. Responds to the web team's `02-api-contract.md` v0.5.
+**Contract:** [`openapi.yaml`](../openapi.yaml). Once agreed, it replaces `02-api-contract.md`.
+
+Each decision below was checked against the Frappe/ERPNext **v16** source (Frappe 16.35).
+
+## 1. Decisions (please review)
+
+| # | Topic (02 §2.0) | Decision | Why |
+|---|---|---|---|
+| 1 | **Auth** (OI-4) | **Option C: tokens issued by `growthx_core`.** `auth.login` / `auth.signup` return `accessToken` (1 h) and `refreshToken` (30 d, rotated on each use). Tokens are stored as Frappe `OAuth Bearer Token` records, so Frappe's own bearer check enforces expiry, revocation and disabled users. `auth.logout` revokes them; a password reset revokes all of them. | Frappe v16's OAuth provider **does not support the password grant** (`frappe/oauth.py`: only `authorization_code` and `refresh_token`), so option B can't back the existing login forms. Option A (`sid` cookie) means handling CSRF on the server and has no refresh token, which is poor for Flutter. Option D is long-lived, as Web already noted. |
+| 2 | **Routing** (OI-5) | Frappe whitelisted methods. Base URL: `https://<core-host>/api/method/growthx_core.api.v1`, then `/<module>.<function>`, e.g. `/catalogue.products`. GET methods take query parameters; POST methods take a JSON body. | `/api/v1/*` and `/api/v2/*` are **Frappe's own namespaces** (`frappe/api/__init__.py`), so REST paths there would collide. The core prompt also requires `growthx_core.api.v1.*`. The web app only needs base URL + path, as §2.0.2 says. |
+| 3 | **Response envelope** (OI-5) | **No `{message}` wrapper.** The body is the resource. | Frappe passes a returned `werkzeug.Response` through unchanged (`frappe/api/__init__.py`), so `growthx_core` controls the body and status code. |
+| 4 | Errors | `{"error": {"code", "message", "fields"?, "reference"?}}` with real HTTP status codes. The stable codes are listed in `openapi.yaml` → `Error`. Tracebacks are never returned. | Matches what Web assumes today and what the core prompt requires. |
+| 5 | Money | Integer paise + `currency: "INR"`. Prices also carry `gstIncluded`. Invoices have `subtotal`, `tax` and `total`. | Matches the web app. The core prompt requires stating whether GST is included. `growthx_core` converts from ERPNext decimals. |
+| 6 | Dates | ISO 8601 UTC with `Z`, shown in IST. Months are `YYYY-MM`. | Core prompt. `growthx_core` converts from the site timezone. |
+| 7 | Pagination | `page`, `pageSize` (max 100) → `{items, page, pageSize, total}`. Filtering and sorting are server-side (`sort=-createdAt`). | Matches the web app. `growthx_core` returns `total`. |
+| 8 | IDs | Opaque strings (Frappe document names). Products also have a `slug` and `availability: available | coming_soon`. | At launch only `solar` is `available`. |
+| 9 | Payments (OI-3) | **Gateway-neutral shape adopted**: checkout returns `{provider, reference, publicKey, …}`; verify takes `{provider, reference, payload}`. Methods `billing.create_checkout` and `billing.verify_checkout`. The webhook is server-only and is the source of truth (Phase 3). | Same as Web's proposal. Web can now update `schemas.ts`, the adapter and the mock. |
+| 10 | Idempotency | `Idempotency-Key` header (UUID, 24 h window) on `auth.signup`, `billing.create_checkout` and `admin.retry_provisioning`. A reused key with a different body returns `409 idempotency_conflict`. | |
+| 11 | Versioning | Additive changes stay in v1. Breaking changes go into a new `growthx_core.api.v2` module, and both run in parallel during migration. | |
+| 12 | CSRF, Next.js → core leg (OI-6, part) | Doesn't apply: requests carry a bearer token, not a cookie. **v1 endpoints reject Frappe cookie sessions** and send no CORS headers for browser origins. The browser → Next.js leg (token vs custom header) is still Web's and the Lead's decision. | Answers the questions in §2.0.4. |
+
+### Changes to the web app's current shapes
+- **Login and sign-up** also return `refreshToken` and `refreshExpiresAt`. The Next.js server refreshes before `expiresAt`. They take an optional `client: web | mobile`.
+- **Paths are renamed**: `/products` → `/catalogue.products`, `/me` → `/auth.me`, `/customer/checkout` → `/billing.create_checkout`, and so on. The full list is in `openapi.yaml`.
+- **Endpoints taking an id** use `?id=` for GET and `{"id"}` in the body for POST, since whitelisted methods have no path parameters.
+- **`Subscription.status`** adds `suspended`. It also gains `trialEndsAt`, `cancelAtPeriodEnd` and `siteId`.
+- **`Invoice.status`** is now `draft | open | overdue | paid | void`, mapped from ERPNext. `uncollectible` is gone and `overdue` is added. `total` is split into `subtotal`, `tax` and `total`.
+- **`Plan`** gains `productSlug`, and `price` gains `gstIncluded`. `PartnerSummary` gains `referralUrl` (for the share link and QR code), and `openLeads` can be null.
+- **New endpoints**: `auth.refresh`, `auth.forgot_password`, `auth.reset_password`.
+
+## 2. Answers to 02 §2.5 (provisioning)
+
+1. **Open-app sign-in:** a one-time link (`customer.open_site`): opaque token, valid 60 s, single use, `no-store`, audited. The tenant needs an endpoint that exchanges the token for a session; the plan is to ship it in `growthx_theme`, which is installed on every tenant. *To be designed with Arun (DevOps).*
+2. **Timing:** unknown until Press runs on staging (Arun). The client polls `customer.site` every 5 s for up to 15 min. The server also emails the customer when the site is ready.
+3. **Failures:** customers see `failed` and a safe `statusMessage`. Admins see the step, the error and the attempt count (`admin.tenant`). The customer never signs up again; an admin retries.
+4. **Several sites:** the contract allows a list. *Recommendation: one site per product subscription at v1 (pending the Lead).*
+5. **Sign-up response:** returns `201` immediately, with `site: {id, status: "requested"}`.
+
+**Site statuses:** `requested → provisioning → ready`, or `→ failed` (retryable). Later states are `suspended` and `archived`.
+**Provisioning steps:** `create_site → wait_for_site → install_apps → configure → health_check`.
+
+## 3. Needs a decision from the Lead
+
+| ID | Question | My recommendation |
+|---|---|---|
+| OI-2 | Does the trial start at sign-up or when the site is `ready`? Is the account kept if provisioning fails? | Start when the site is ready; keep the account. |
+| — | One site per product subscription at v1? | Yes. |
+| — | Partner sign-up: approved automatically, or by an admin? | Admin approval (`partnerStatus: pending_approval`). |
+| — | Business rules in 02 §2.0.3 (prices, GST inclusion, 14-day trial, 90-day referral window, single-level commission) | The contract carries them as data only; these need owners' approval. |
+| OI-6 | Browser → Next.js CSRF: token, or custom header | Web's call. |
+
+## 4. 02 §2.4 gaps: target phase (not yet specified)
+
+These are deliberately left out of `openapi.yaml` until their business rules are agreed. Each gets added through a `contract` card in its phase.
+
+| Phase | Endpoints |
+|---|---|
+| 2 (Self sign-up) | `customer.products`; `partner.referrals`, `partner.customers`; `admin.partners` (list, approve, suspend) |
+| 3 (Money) | `customer.payments`, `customer.invoice_pdf`, `customer.change_plan`, `customer.cancel_subscription`, `customer.billing_profile` (GSTIN, state); `partner.commissions`, `partner.payouts`, `partner.profile` (PAN, bank/UPI); `admin.subscriptions`, `admin.billing`, `admin.commissions`, `admin.run_payouts` |
+| 4 (Launch) | `admin.products`, `admin.plans` (the ERPNext desk is used until then); `admin.analytics` |
+| Needs a decision | `customer.access` (tenant users and seats), `customer.support_tickets`, `partner.leads`; `partner.team` (only if multi-level commission is approved) |
+
+## 5. Known gaps in this draft
+- `health.ping` still returns Frappe's `{message}` wrapper. It will be changed to plain JSON together with the shared response and error helper in Phase 1.
+- Real staging and production hosts are pending DevOps.
+- Rate-limit thresholds aren't set yet; they will be configured per endpoint in Phase 1.
