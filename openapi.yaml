@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: GrowthX API
-  version: 1.0.0-draft.1
+  version: 1.0.0-draft.2
   description: |
     GrowthX Core API (Frappe app `growthx_core`). **Status: DRAFT for review by Web, Flutter and the Lead.**
     This file is the single API contract. Once agreed, it replaces the web team's
@@ -216,9 +216,18 @@ paths:
                 company: { type: string, maxLength: 140, description: Required when accountType is customer }
                 email: { type: string, format: email }
                 phone: { type: string, example: "+919876543210" }
-                password: { type: string, format: password, minLength: 8 }
+                password:
+                  type: string
+                  format: password
+                  minLength: 8
+                  description: The site's password-strength policy also applies; a weak password returns 422 with `fields.password`.
                 productSlug: { type: string, example: solar }
-                planId: { type: string }
+                planId:
+                  type: string
+                  example: solar-growth-month
+                  description: |
+                    A plan id from `catalogue.plans`. Each plan has one interval (e.g. `solar-growth-month`,
+                    `solar-growth-year`). If omitted, the product's highlighted plan for `billingInterval` is used.
                 billingInterval: { $ref: "#/components/schemas/BillingInterval" }
                 referralCode: { type: string, example: OKAFOR-7Q2 }
                 client: { $ref: "#/components/schemas/ClientKind" }
@@ -532,6 +541,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "503": { $ref: "#/components/responses/PaymentUnavailable" }
         "422":
           description: "`invalid_plan`, or `validation_failed`"
           content:
@@ -588,6 +598,7 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/PaymentUnavailable" }
 
   # ---------------------------------------------------------------- partner
   /partner.summary:
@@ -853,6 +864,11 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    PaymentUnavailable:
+      description: "`payment_unavailable`: the payment gateway is not configured or not reachable. Show a friendly message and let the user try later."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     ServerError:
       description: "`internal_error`: show a friendly message together with `reference`"
       content:
@@ -873,8 +889,8 @@ components:
               description: |
                 Stable code. Current list: unauthenticated, invalid_credentials, invalid_token, forbidden,
                 not_found, validation_failed, email_taken, invalid_plan, invalid_reset_key,
-                payment_verification_failed, site_not_ready, not_retryable, idempotency_conflict,
-                rate_limited, internal_error.
+                payment_verification_failed, payment_unavailable, site_not_ready, not_retryable,
+                idempotency_conflict, rate_limited, bad_request, method_not_allowed, internal_error.
               example: email_taken
             message: { type: string, example: An account with this email already exists. }
             fields:

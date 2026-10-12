@@ -1,0 +1,100 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-10-12 10:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "user",
+  "client",
+  "status",
+  "access_hash",
+  "access_expires_at",
+  "refresh_hash",
+  "refresh_expires_at",
+  "revoked_at"
+ ],
+ "fields": [
+  {
+   "fieldname": "user",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "User",
+   "options": "User",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "default": "web",
+   "fieldname": "client",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Client",
+   "options": "web\nmobile"
+  },
+  {
+   "default": "Active",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Active\nRevoked"
+  },
+  {
+   "description": "SHA-256 of the access token. The token itself is never stored.",
+   "fieldname": "access_hash",
+   "fieldtype": "Data",
+   "label": "Access Hash",
+   "unique": 1
+  },
+  {
+   "fieldname": "access_expires_at",
+   "fieldtype": "Datetime",
+   "label": "Access Expires At"
+  },
+  {
+   "description": "SHA-256 of the refresh token",
+   "fieldname": "refresh_hash",
+   "fieldtype": "Data",
+   "label": "Refresh Hash",
+   "unique": 1
+  },
+  {
+   "fieldname": "refresh_expires_at",
+   "fieldtype": "Datetime",
+   "label": "Refresh Expires At"
+  },
+  {
+   "fieldname": "revoked_at",
+   "fieldtype": "Datetime",
+   "label": "Revoked At"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-10-12 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "GrowthX Core",
+ "name": "GX Auth Token",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "delete": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager"
+  },
+  {
+   "read": 1,
+   "report": 1,
+   "role": "GrowthX Admin"
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}

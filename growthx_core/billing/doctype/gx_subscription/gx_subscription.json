@@ -1,0 +1,178 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:GXS-{#####}",
+ "creation": "2026-10-12 10:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "account",
+  "plan",
+  "product",
+  "status",
+  "tenant",
+  "column_break_1",
+  "billing_interval",
+  "price",
+  "gst_included",
+  "gst_rate",
+  "trial_ends_at",
+  "current_period_end",
+  "cancel_at_period_end",
+  "gateway_section",
+  "gateway",
+  "gateway_subscription_id",
+  "last_payment_id"
+ ],
+ "fields": [
+  {
+   "fieldname": "account",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Account",
+   "options": "GX Account",
+   "reqd": 1
+  },
+  {
+   "fieldname": "plan",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Plan",
+   "options": "GX Plan",
+   "reqd": 1
+  },
+  {
+   "fetch_from": "plan.product",
+   "fieldname": "product",
+   "fieldtype": "Link",
+   "label": "Product",
+   "options": "GX Product",
+   "read_only": 1
+  },
+  {
+   "default": "trialing",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "trialing\nactive\npast_due\nsuspended\ncanceled"
+  },
+  {
+   "fieldname": "tenant",
+   "fieldtype": "Link",
+   "label": "Tenant",
+   "options": "GX Tenant"
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break",
+   "label": "Column Break 1"
+  },
+  {
+   "fetch_from": "plan.billing_interval",
+   "fieldname": "billing_interval",
+   "fieldtype": "Select",
+   "label": "Billing Interval",
+   "options": "month\nyear",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "plan.price",
+   "fetch_if_empty": 1,
+   "fieldname": "price",
+   "fieldtype": "Currency",
+   "label": "Price",
+   "options": "INR"
+  },
+  {
+   "fetch_from": "plan.gst_included",
+   "fetch_if_empty": 1,
+   "fieldname": "gst_included",
+   "fieldtype": "Check",
+   "label": "GST Included"
+  },
+  {
+   "fetch_from": "plan.gst_rate",
+   "fetch_if_empty": 1,
+   "fieldname": "gst_rate",
+   "fieldtype": "Percent",
+   "label": "GST Rate"
+  },
+  {
+   "fieldname": "trial_ends_at",
+   "fieldtype": "Datetime",
+   "label": "Trial Ends At"
+  },
+  {
+   "fieldname": "current_period_end",
+   "fieldtype": "Datetime",
+   "label": "Current Period End"
+  },
+  {
+   "fieldname": "cancel_at_period_end",
+   "fieldtype": "Check",
+   "label": "Cancel At Period End"
+  },
+  {
+   "fieldname": "gateway_section",
+   "fieldtype": "Section Break",
+   "label": "Gateway"
+  },
+  {
+   "fieldname": "gateway",
+   "fieldtype": "Data",
+   "label": "Gateway"
+  },
+  {
+   "fieldname": "gateway_subscription_id",
+   "fieldtype": "Data",
+   "label": "Gateway Subscription ID",
+   "search_index": 1
+  },
+  {
+   "fieldname": "last_payment_id",
+   "fieldtype": "Data",
+   "label": "Last Payment ID"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-10-12 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Billing",
+ "name": "GX Subscription",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 0,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "GrowthX Admin",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

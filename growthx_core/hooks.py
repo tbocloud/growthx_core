@@ -253,3 +253,25 @@ required_apps = ["erpnext"]
 # List of apps whose translatable strings should be excluded from this app's translations.
 # ignore_translatable_strings_from = []
 
+
+# GrowthX
+# -------
+
+fixtures = [
+	{"dt": "Role", "filters": [["name", "in", ["GrowthX Customer", "GrowthX Partner", "GrowthX Admin"]]]},
+]
+
+# Bearer tokens issued by `auth.login` / `auth.signup` (see growthx_core/tokens.py)
+auth_hooks = ["growthx_core.tokens.authenticate_request"]
+
+# Every /api/method/growthx_core.api.v1.* response uses the contract's JSON and error shape,
+# including errors that Frappe raises before our code runs (e.g. an expired token).
+after_request = ["growthx_core.api.v1._core.after_request"]
+
+scheduler_events = {
+	"cron": {
+		# Resume provisioning jobs that are waiting on Press, or whose worker died
+		"* * * * *": ["growthx_core.provisioning.runner.resume_pending"],
+	},
+	"daily": ["growthx_core.tokens.delete_expired_tokens"],
+}

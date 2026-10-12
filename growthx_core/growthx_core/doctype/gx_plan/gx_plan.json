@@ -1,0 +1,181 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "field:plan_id",
+ "creation": "2026-10-12 10:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "plan_id",
+  "product",
+  "plan_name",
+  "billing_interval",
+  "is_active",
+  "highlighted",
+  "sort_order",
+  "column_break_1",
+  "price",
+  "gst_included",
+  "gst_rate",
+  "trial_days",
+  "item",
+  "gateway_plan_id",
+  "section_break_1",
+  "description",
+  "features"
+ ],
+ "fields": [
+  {
+   "description": "Stable id, e.g. solar-growth-month",
+   "fieldname": "plan_id",
+   "fieldtype": "Data",
+   "label": "Plan ID",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "product",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Product",
+   "options": "GX Product",
+   "reqd": 1
+  },
+  {
+   "fieldname": "plan_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Plan Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "billing_interval",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Billing Interval",
+   "options": "month\nyear",
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "in_standard_filter": 1,
+   "label": "Active"
+  },
+  {
+   "fieldname": "highlighted",
+   "fieldtype": "Check",
+   "label": "Highlighted"
+  },
+  {
+   "fieldname": "sort_order",
+   "fieldtype": "Int",
+   "label": "Sort Order"
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break",
+   "label": "Column Break 1"
+  },
+  {
+   "description": "Price per billing interval, in rupees",
+   "fieldname": "price",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Price",
+   "options": "INR",
+   "reqd": 1
+  },
+  {
+   "description": "Whether the price already includes GST",
+   "fieldname": "gst_included",
+   "fieldtype": "Check",
+   "label": "GST Included"
+  },
+  {
+   "default": "18",
+   "description": "Used to compute amounts excluding GST (MRR, commission base)",
+   "fieldname": "gst_rate",
+   "fieldtype": "Percent",
+   "label": "GST Rate"
+  },
+  {
+   "default": "14",
+   "fieldname": "trial_days",
+   "fieldtype": "Int",
+   "label": "Trial Days"
+  },
+  {
+   "description": "ERPNext Item used on Sales Invoices",
+   "fieldname": "item",
+   "fieldtype": "Link",
+   "label": "Item",
+   "options": "Item"
+  },
+  {
+   "description": "Plan id at the payment gateway (e.g. Razorpay plan_...)",
+   "fieldname": "gateway_plan_id",
+   "fieldtype": "Data",
+   "label": "Gateway Plan ID"
+  },
+  {
+   "fieldname": "section_break_1",
+   "fieldtype": "Section Break",
+   "label": "Section Break 1"
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "label": "Description"
+  },
+  {
+   "description": "One feature per line",
+   "fieldname": "features",
+   "fieldtype": "Small Text",
+   "label": "Features"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-10-12 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "GrowthX Core",
+ "name": "GX Plan",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 0,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "GrowthX Admin",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "show_title_field_in_link": 1,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "plan_name",
+ "track_changes": 1
+}

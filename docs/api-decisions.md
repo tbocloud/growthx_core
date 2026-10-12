@@ -1,7 +1,7 @@
 # GrowthX API v1: decisions and open items
 
 **Owner:** Niranjana C (Frappe) · **Reviewers:** Mubashir T (Web), Najath Thekkeyil (Flutter), Sammish (Lead), Arun P S (DevOps, for provisioning)
-**Status:** Draft 1, 12 Oct 2026. Responds to the web team's `02-api-contract.md` v0.5.
+**Status:** Draft 2, 12 Oct 2026 (all v1 endpoints implemented; see §6). Responds to the web team's `02-api-contract.md` v0.5.
 **Contract:** [`openapi.yaml`](../openapi.yaml). Once agreed, it replaces `02-api-contract.md`.
 
 Each decision below was checked against the Frappe/ERPNext **v16** source (Frappe 16.35).
@@ -10,7 +10,7 @@ Each decision below was checked against the Frappe/ERPNext **v16** source (Frapp
 
 | # | Topic (02 §2.0) | Decision | Why |
 |---|---|---|---|
-| 1 | **Auth** (OI-4) | **Option C: tokens issued by `growthx_core`.** `auth.login` / `auth.signup` return `accessToken` (1 h) and `refreshToken` (30 d, rotated on each use). Tokens are stored as Frappe `OAuth Bearer Token` records, so Frappe's own bearer check enforces expiry, revocation and disabled users. `auth.logout` revokes them; a password reset revokes all of them. | Frappe v16's OAuth provider **does not support the password grant** (`frappe/oauth.py`: only `authorization_code` and `refresh_token`), so option B can't back the existing login forms. Option A (`sid` cookie) means handling CSRF on the server and has no refresh token, which is poor for Flutter. Option D is long-lived, as Web already noted. |
+| 1 | **Auth** (OI-4) | **Option C: tokens issued by `growthx_core`.** `auth.login` / `auth.signup` return `accessToken` (1 h) and `refreshToken` (30 d, rotated on each use). Tokens are opaque random strings (`gxa_…`, `gxr_…`). Only their SHA-256 hashes are stored (`GX Auth Token`), and an `auth_hooks` entry checks them on every request, so expiry, revocation and disabled users are enforced. (Draft 1 said Frappe `OAuth Bearer Token`; that stores tokens in plain text, so it was dropped. Clients see no difference.) `auth.logout` revokes them; a password reset revokes all of them. | Frappe v16's OAuth provider **does not support the password grant** (`frappe/oauth.py`: only `authorization_code` and `refresh_token`), so option B can't back the existing login forms. Option A (`sid` cookie) means handling CSRF on the server and has no refresh token, which is poor for Flutter. Option D is long-lived, as Web already noted. |
 | 2 | **Routing** (OI-5) | Frappe whitelisted methods. Base URL: `https://<core-host>/api/method/growthx_core.api.v1`, then `/<module>.<function>`, e.g. `/catalogue.products`. GET methods take query parameters; POST methods take a JSON body. | `/api/v1/*` and `/api/v2/*` are **Frappe's own namespaces** (`frappe/api/__init__.py`), so REST paths there would collide. The core prompt also requires `growthx_core.api.v1.*`. The web app only needs base URL + path, as §2.0.2 says. |
 | 3 | **Response envelope** (OI-5) | **No `{message}` wrapper.** The body is the resource. | Frappe passes a returned `werkzeug.Response` through unchanged (`frappe/api/__init__.py`), so `growthx_core` controls the body and status code. |
 | 4 | Errors | `{"error": {"code", "message", "fields"?, "reference"?}}` with real HTTP status codes. The stable codes are listed in `openapi.yaml` → `Error`. Tracebacks are never returned. | Matches what Web assumes today and what the core prompt requires. |
@@ -65,6 +65,24 @@ These are deliberately left out of `openapi.yaml` until their business rules are
 | Needs a decision | `customer.access` (tenant users and seats), `customer.support_tickets`, `partner.leads`; `partner.team` (only if multi-level commission is approved) |
 
 ## 5. Known gaps in this draft
-- `health.ping` still returns Frappe's `{message}` wrapper. It will be changed to plain JSON together with the shared response and error helper in Phase 1.
 - Real staging and production hosts are pending DevOps.
-- Rate-limit thresholds aren't set yet; they will be configured per endpoint in Phase 1.
+- Rate limits are set per endpoint (e.g. login: 5 per email and 20 per IP per 15 min; sign-up: 10 per IP per hour) and return 429 `rate_limited` with `Retry-After`. They will be tuned on staging.
+
+## 6. Implementation status (12 Oct 2026, local bench)
+
+All 23 operations in `openapi.yaml` are implemented in `growthx_core/api/v1/` and pass an end-to-end HTTP smoke test (50 checks) plus 21 unit tests. They run on a **local bench only**; nothing is on staging yet, so nothing is "done" under the Definition of Done.
+
+| Area | State | What's still missing |
+|---|---|---|
+| health, catalogue, contact | Working | — |
+| auth (login, signup, refresh, logout, me, forgot/reset password) | Working | Email delivery needs an outgoing email account on the site. The reset link points to `growthx_web_url` + `/reset-password?key=…` (the web app needs that page). |
+| customer.sites / site / subscriptions / invoices | Working | Invoices stay empty until Phase 3 creates Sales Invoices. |
+| customer.open_site | Issues a 60 s single-use link | The tenant-side exchange endpoint (in `growthx_theme`) isn't built, so the link doesn't log in yet. |
+| Provisioning (sign-up → ready) | Working with a **fake Press client** | The real Press client is waiting on DevOps (endpoints, token). The `configure` step is waiting on the Solar set-up method (Nahala). |
+| billing.create_checkout / verify_checkout | Implemented against Razorpay | Returns 503 `payment_unavailable` until Razorpay keys (D5) and each plan's `gateway_plan_id` are set. The webhook (source of truth) is Phase 3. |
+| partner.summary / commission_history | Working | Commission figures use placeholder rules until D8. |
+| admin.summary / customers / tenants / tenant / retry_provisioning | Working | — |
+
+**Placeholder business data** (seed script): prices ₹699 / ₹1,499 / ₹3,999 per month, yearly = 10 × monthly, GST 18 % excluded, 14-day trial starting at sign-up (OI-2), demo partner commission 10 %. These are for testing only (D6, D7, D8).
+
+**Site config keys:** `growthx_web_url` (website base URL for reset and referral links), `growthx_press` (`{"mode": "fake"}` by default), `growthx_tenant_domain`, `growthx_tenant_login_path`, `razorpay_key_id`, `razorpay_key_secret`, `growthx_default_commission_rate`.
