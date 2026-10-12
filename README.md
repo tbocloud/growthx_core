@@ -8,8 +8,21 @@ You can install this app using the [bench](https://github.com/frappe/bench) CLI:
 
 ```bash
 cd $PATH_TO_YOUR_BENCH
-bench get-app $URL_OF_THIS_REPO --branch develop
-bench install-app growthx_core
+bench get-app $URL_OF_THIS_REPO --branch main
+bench --site <site> install-app growthx_core  # requires erpnext
+```
+
+### Structure
+
+- `growthx_core/api/v1/` contains the GrowthX API (whitelisted methods). The contract is in [`openapi.yaml`](openapi.yaml).
+- Modules: `GrowthX Core`, `Partners`, `Billing`, `Provisioning`.
+
+Web and mobile clients call only this API. Business rules (pricing, commissions, status) live here, not in the clients.
+
+### Tests
+
+```bash
+bench --site growthX run-tests --app growthx_core
 ```
 
 ### Contributing

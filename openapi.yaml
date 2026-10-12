@@ -1,0 +1,56 @@
+openapi: 3.0.3
+info:
+  title: GrowthX API
+  version: 0.0.1
+  description: |
+    GrowthX Core API (Frappe app `growthx_core`). Draft. Contract v1 is agreed in Phase 0.
+
+    Conventions (from the Core Engineering Prompt):
+    - Endpoints are Frappe whitelisted methods under `growthx_core.api.v1.*`,
+      served at `/api/method/growthx_core.api.v1.<module>.<function>`.
+    - Errors return a stable `error.code` and a human-readable `error.message`. No tracebacks.
+    - Lists are paginated, with filtering and sorting on the server.
+    - Money is INR. The format (decimal string or integer paise) and whether GST is included are still TBD.
+    - Dates are ISO 8601, stored in UTC and shown in IST.
+servers:
+  - url: http://growthX:8000
+    description: Local development
+paths:
+  /api/method/growthx_core.api.v1.health.ping:
+    get:
+      summary: Liveness check
+      operationId: healthPing
+      security: []
+      responses:
+        "200":
+          description: Service is up
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: object
+                    properties:
+                      status:
+                        type: string
+                        example: ok
+                      version:
+                        type: string
+                        example: 0.0.1
+components:
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              example: NOT_FOUND
+            message:
+              type: string
+              example: The requested resource was not found.

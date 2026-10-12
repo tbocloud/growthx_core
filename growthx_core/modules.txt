@@ -1,1 +1,4 @@
 GrowthX Core
+Partners
+Billing
+Provisioning
