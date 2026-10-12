@@ -19,7 +19,7 @@ import frappe
 from frappe.utils import cint, now_datetime
 
 from growthx_core.api.v1._serializers import STEP_LABELS
-from growthx_core.provisioning.press import PressClient, PressError, get_client, tenant_domain
+from growthx_core.provisioning.press import PressClient, PressError, get_client
 
 STEPS = ["create_site", "wait_for_site", "install_apps", "configure", "health_check"]
 WAIT_TIMEOUT = timedelta(minutes=30)
@@ -161,7 +161,7 @@ def _create_site(tenant, step, client: PressClient):
 		tenant.subdomain, product.press_release_group, apps
 	)
 	tenant.press_site_id = site.id
-	tenant.site_url = f"https://{tenant.subdomain}.{tenant_domain()}"
+	tenant.site_url = client.site_url(tenant.subdomain)
 	# Save right away: this is what makes the job idempotent.
 	tenant.save(ignore_permissions=True)
 	frappe.db.commit()

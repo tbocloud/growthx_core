@@ -38,6 +38,26 @@ curl http://localhost:8002/api/method/growthx_core.api.v1.health.ping
 
 Base URL for clients: `http://<host>:8002/api/method/growthx_core.api.v1`, then `/<module>.<function>`, e.g. `/catalogue.products`.
 
+#### Real tenant sites on your machine (`mode: local`)
+
+By default provisioning uses a fake Press client: tenants reach `ready` instantly but no site exists. To get real tenant sites before the Press API is available, switch to the local client. Each tenant becomes an ERPNext site on this bench, named `<subdomain>.localhost`.
+
+```bash
+bench --site growthX set-config --parse growthx_press '{"mode": "local", "db_root_username": "root", "db_root_password": "", "admin_password": "admin", "user_password": "admin", "port": 8003, "allow_missing_apps": 1}'
+bench start   # the worker and scheduler run the job
+
+# Tenant web server: picks the site from the Host header.
+cd sites && ../env/bin/python -c "from frappe.app import serve; serve(port=8003, sites_path='.', no_reload=True)"
+```
+
+- Why a separate server: `bench serve` (and so `bench start`) pins itself to `default_site` when it is set in `common_site_config.json`, and then serves that site for every hostname. The command above passes no site, so `noor-solar.localhost:8003` reaches `noor-solar.localhost`.
+- Sign-up queues the job as usual. `bench new-site` runs in the background (a few minutes); progress is in `logs/growthx-local-press/<site>.log`.
+- The configure step runs ERPNext's setup wizard with the customer's company and creates a user for their email, with `user_password`, as System Manager.
+- Open the tenant at `http://<subdomain>.localhost:8003` (browsers resolve `*.localhost` to this machine).
+- `allow_missing_apps: 1` reports `growthx_theme` and the vertical app as installed when this bench doesn't have them, so the job can finish. Leave it out to make the job fail when they are missing.
+- "Open my app" still needs the tenant-side token exchange in `growthx_theme` (`site_login.py`). Until it exists, send the link to the tenant's login page instead: `bench --site growthX set-config growthx_tenant_login_path "/login#login"` (the token lands after `#`, so it never reaches the tenant's server or logs). The customer then logs in with their email and `user_password`.
+- Development only. Never set `mode: local` on a server.
+
 ### Tests
 
 ```bash
