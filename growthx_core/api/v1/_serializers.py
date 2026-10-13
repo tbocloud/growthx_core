@@ -164,3 +164,35 @@ def invoice(i) -> dict:
 		"issuedAt": iso(i.posting_date),
 		"dueAt": iso(i.due_date),
 	}
+
+
+APPOINTMENT_STATUS = {"Confirmed": "confirmed", "Completed": "completed", "Cancelled": "cancelled", "No Show": "no_show"}
+
+
+def admin_appointment(row) -> dict:
+	return {
+		"id": row.name,
+		"status": APPOINTMENT_STATUS.get(row.status, "confirmed"),
+		"start": iso(row.start),
+		"end": iso(row.end),
+		"name": row.full_name,
+		"email": row.email,
+		"phone": row.phone,
+		"company": row.company or None,
+		"app": row.app or None,
+		"notes": row.notes or None,
+		"expert": row.expert or None,
+		"meetingUrl": row.meeting_url or None,
+		"leadId": row.lead or None,
+		"createdAt": iso(row.creation),
+	}
+
+
+def admin_appointment_detail(doc, history: list) -> dict:
+	return {
+		**admin_appointment(doc),
+		"adminNotes": doc.admin_notes or None,
+		"cancelledBy": (doc.cancelled_by or "").lower() or None,
+		"cancelReason": doc.cancel_reason or None,
+		"history": history,
+	}

@@ -2,7 +2,18 @@ import frappe
 from frappe.query_builder.functions import Sum
 from frappe.utils import add_months, flt, getdate, nowdate
 
-from growthx_core.api.v1._core import ApiError, current_user, endpoint, money, monthly, net_of_gst
+from growthx_core.api.v1._core import (
+	ApiError,
+	RateLimit,
+	current_user,
+	endpoint,
+	get_str,
+	money,
+	monthly,
+	net_of_gst,
+	not_found,
+	query,
+)
 from growthx_core.partners.referrals import referral_url
 
 
@@ -89,3 +100,20 @@ def commission_history():
 				totals[row.month] = flt(row.amount)
 
 	return {"items": [{"month": m, "amount": money(totals[m])} for m in months]}
+
+
+@endpoint(methods=("GET",), auth=False, rate_limit=RateLimit(60, 60))
+def referrer():
+	"""Public: who a referral code belongs to, for the website's welcome page ("Chidi invited
+	you"). Only active partners; anything else is 404 so codes can't be probed for status.
+	Returns only what the partner shares by handing out their link."""
+	code = (get_str(query(), "code", required=True, max_length=40, label="Code") or "").upper()
+	partner = frappe.db.get_value(
+		"GX Partner Profile",
+		{"referral_code": code, "status": "active"},
+		["referral_code", "partner_name", "company"],
+		as_dict=True,
+	)
+	if not partner:
+		raise not_found()
+	return {"code": partner.referral_code, "name": partner.partner_name, "company": partner.company or None}

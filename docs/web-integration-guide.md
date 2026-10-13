@@ -84,6 +84,14 @@ A slash (`{GROWTHX_API_URL}/catalogue.products`) is not a Frappe method and retu
 | POST | `contact.submit` | none | 2 | `POST /contact` |
 | GET | `appointments.slots?days=28` | none | 2 | `GET /appointments/slots` |
 | POST | `appointments.book` | none | 2 | `POST /appointments` |
+| GET | `appointments.manage?token=` | none (token) | 2 | *new* |
+| POST | `appointments.cancel` | none (token) | 2 | *new* |
+| POST | `appointments.reschedule` | none (token) | 2 | *new* |
+| GET | `partner.referrer?code=` | none | 2 | *new* (welcome page) |
+| GET | `admin.appointments?status&expert&from&to&q&sort` | admin | 2 | *new* |
+| GET | `admin.appointment?id=` | admin | 2 | *new* |
+| POST | `admin.update_appointment` | admin | 2 | *new* |
+| GET | `admin.appointment_experts` | admin | 2 | *new* |
 | POST | `auth.login` | none | 1 | `POST /auth/login` |
 | POST | `auth.signup` | none | 2 | `POST /auth/signup` |
 | POST | `auth.refresh` | none | 1 | *new* |
@@ -380,7 +388,7 @@ POST {GROWTHX_API_URL}.billing.verify_checkout
 ```json
 {
   "referralCode": "OKAFOR-7GB",
-  "referralUrl": "{growthx_web_url}/signup?ref=OKAFOR-7GB",
+  "referralUrl": "{growthx_web_url}/r/OKAFOR-7GB",
   "activeCustomers": 0,
   "referredSignups": 1,
   "openLeads": null,
@@ -447,6 +455,20 @@ Idempotency-Key: …
 - Accepts `Idempotency-Key`. Rate limit: 5 bookings per IP per hour.
 - The API assigns an expert, adds the video link, records a Lead and an Event in ERPNext and emails the confirmation with a calendar invite. Opening hours, holidays, experts and the link template are in **GX Appointment Settings** on the core site.
 
+**Workflow after booking** (instant confirmation; the team can change it afterwards):
+
+| Status | Meaning |
+|---|---|
+| `confirmed` | Booked. The only status that can be rescheduled, reassigned or cancelled |
+| `completed` | The call happened (set by the team once it has started) |
+| `no_show` | The visitor didn't join (set by the team once it has started) |
+| `cancelled` | By the visitor (manage link) or the team. Frees the slot |
+
+- **Visitor:** the confirmation email links to `{growthx_web_url}/appointments/manage?token=…`. `appointments.manage` returns the booking and `canChange`; `appointments.cancel {token, reason?}` and `appointments.reschedule {token, start}` change it. The token is stored only as a hash and is only in the first email.
+- **Team:** `admin.appointments` lists and filters; `admin.appointment?id=` adds `adminNotes`, `cancelledBy`, `cancelReason` and `history` (from GX Audit Log); `admin.update_appointment {id, action, …}` with `action` = `reschedule` {start} · `reassign` {expert} · `cancel` {reason?} · `complete` · `no_show` · `note` {note}. Conflicts: `409 slot_taken`, `expert_busy`, `not_changeable`, `not_started`.
+- **Emails:** every change emails the visitor (copy to the expert) with an updated calendar invite (`.ics` with the same UID, so calendars move or cancel the event). Reminders go out 24 h and 1 h before the call (scheduler, every 5 minutes; a call booked less than 24 h ahead gets only the 1-hour one).
+- **ERPNext:** the Event moves or is cancelled with the booking.
+
 ## 6. Error codes
 
 | HTTP | `code` | When |
@@ -484,7 +506,7 @@ Idempotency-Key: …
 6. **Checkout:** use the neutral shape (OI-3), and handle `503 payment_unavailable`.
 7. **New pages:**
    - `/reset-password?key=…` (from the reset email),
-   - `/signup?ref=CODE` (from referral links),
+   - `/r/CODE` (referral welcome page: "<partner> invited you"; also accepts `/signup?ref=CODE`),
    - `/dashboard` (linked from the "site is ready" email).
 
    Tell me if your paths differ; they're one setting (`growthx_web_url`) plus these paths.

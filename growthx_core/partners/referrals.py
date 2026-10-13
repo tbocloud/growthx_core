@@ -45,4 +45,5 @@ def resolve(code: str | None, signup_email: str) -> dict | None:
 def referral_url(code: str) -> str:
 	from growthx_core.api.v1._core import web_url
 
-	return web_url(f"/signup?ref={code}")
+	# The website's welcome page ("<partner> invited you"); it records the code and leads to sign-up.
+	return web_url(f"/r/{code}")
