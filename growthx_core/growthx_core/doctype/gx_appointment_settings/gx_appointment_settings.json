@@ -1,0 +1,112 @@
+{
+ "actions": [],
+ "creation": "2026-10-13 10:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "duration_minutes",
+  "day_start",
+  "day_end",
+  "working_days",
+  "column_break_hours",
+  "min_notice_hours",
+  "holiday_list",
+  "section_experts",
+  "experts",
+  "meeting_url_template"
+ ],
+ "fields": [
+  {
+   "default": "30",
+   "fieldname": "duration_minutes",
+   "fieldtype": "Int",
+   "label": "Call Length (minutes)",
+   "reqd": 1
+  },
+  {
+   "default": "10:00:00",
+   "description": "In the site's timezone.",
+   "fieldname": "day_start",
+   "fieldtype": "Time",
+   "label": "Opening Time",
+   "reqd": 1
+  },
+  {
+   "default": "18:00:00",
+   "description": "The last call ends by this time.",
+   "fieldname": "day_end",
+   "fieldtype": "Time",
+   "label": "Closing Time",
+   "reqd": 1
+  },
+  {
+   "default": "Mon,Tue,Wed,Thu,Fri,Sat",
+   "description": "Comma-separated: Mon,Tue,Wed,Thu,Fri,Sat,Sun",
+   "fieldname": "working_days",
+   "fieldtype": "Data",
+   "label": "Working Days",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_hours",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "2",
+   "description": "Slots closer than this are not offered.",
+   "fieldname": "min_notice_hours",
+   "fieldtype": "Int",
+   "label": "Minimum Notice (hours)"
+  },
+  {
+   "description": "Dates in this list are closed.",
+   "fieldname": "holiday_list",
+   "fieldtype": "Link",
+   "label": "Holiday List",
+   "options": "Holiday List"
+  },
+  {
+   "fieldname": "section_experts",
+   "fieldtype": "Section Break",
+   "label": "Experts"
+  },
+  {
+   "description": "One email per line. Each slot can be booked once per expert; each booking goes to the least busy free expert. Leave empty for one call per slot.",
+   "fieldname": "experts",
+   "fieldtype": "Small Text",
+   "label": "Expert Emails"
+  },
+  {
+   "description": "Video link for each call, e.g. https://meet.example.com/growthx-{id}. {id} is the appointment id. Leave empty to send the link separately.",
+   "fieldname": "meeting_url_template",
+   "fieldtype": "Data",
+   "label": "Meeting Link Template"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-10-13 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "GrowthX Core",
+ "name": "GX Appointment Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "read": 1,
+   "role": "System Manager",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "read": 1,
+   "role": "GrowthX Admin",
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

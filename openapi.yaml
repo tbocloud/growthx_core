@@ -9,8 +9,10 @@ info:
 
     ## Conventions
     - **Routing:** every endpoint is a Frappe whitelisted method in `growthx_core.api.v1.<module>`.
-      Paths below are relative to the server URL, e.g.
+      The URL is the server URL plus the path below, e.g.
       `GET https://<core-host>/api/method/growthx_core.api.v1.catalogue.products`.
+      The method name is joined with **dots**: `…/growthx_core.api.v1/catalogue.products` (a slash)
+      is not a Frappe method and returns an error.
       GET methods take query parameters. POST methods take a JSON body (`Content-Type: application/json`).
     - **Response body:** the body **is** the resource. There is no Frappe `{"message": ...}` wrapper.
     - **Errors:** any non-2xx response has the body `{"error": {"code", "message", "fields"?, "reference"?}}`.
@@ -33,12 +35,12 @@ info:
     - **Phase:** `x-phase` on each operation is the delivery phase (1 Foundation, 2 Self sign-up,
       3 Money, 4 Launch). An endpoint is usable only once it is deployed to staging.
 servers:
-  - url: https://{host}/api/method/growthx_core.api.v1
+  - url: https://{host}/api/method
     variables:
       host:
         default: staging-core.growthx.example
         description: GrowthX Core site host. The real staging and production hosts are pending DevOps.
-  - url: http://localhost:8002/api/method/growthx_core.api.v1
+  - url: http://localhost:8002/api/method
     description: Local development (frappe-bench-v16, site growthX)
 
 security:
@@ -47,6 +49,7 @@ security:
 tags:
   - name: health
   - name: catalogue
+  - name: appointments
   - name: auth
   - name: customer
   - name: billing
@@ -55,7 +58,7 @@ tags:
 
 paths:
   # ---------------------------------------------------------------- health
-  /health.ping:
+  /growthx_core.api.v1.health.ping:
     get:
       tags: [health]
       summary: Liveness check
@@ -75,7 +78,7 @@ paths:
                   version: { type: string, example: 0.0.1 }
 
   # ---------------------------------------------------------------- catalogue (public)
-  /catalogue.products:
+  /growthx_core.api.v1.catalogue.products:
     get:
       tags: [catalogue]
       summary: Product catalogue
@@ -96,7 +99,7 @@ paths:
                     items: { $ref: "#/components/schemas/Product" }
         "5XX": { $ref: "#/components/responses/ServerError" }
 
-  /catalogue.plans:
+  /growthx_core.api.v1.catalogue.plans:
     get:
       tags: [catalogue]
       summary: Subscription plans
@@ -123,7 +126,7 @@ paths:
         "422": { $ref: "#/components/responses/ValidationFailed" }
         "5XX": { $ref: "#/components/responses/ServerError" }
 
-  /contact.submit:
+  /growthx_core.api.v1.contact.submit:
     post:
       tags: [catalogue]
       summary: Website contact form
@@ -147,8 +150,95 @@ paths:
         "422": { $ref: "#/components/responses/ValidationFailed" }
         "429": { $ref: "#/components/responses/RateLimited" }
 
+  # ---------------------------------------------------------------- appointments
+  /growthx_core.api.v1.appointments.slots:
+    get:
+      tags: [appointments]
+      summary: Free "Talk to an expert" start times
+      description: |
+        Start times still free, at least the minimum notice away (2 h by default), in UTC.
+        Show them in `timezone`. Opening hours, call length, working days, holidays and experts are set
+        in GX Appointment Settings. **Never cache:** a slot can be booked at any moment.
+      operationId: appointmentSlots
+      x-phase: 2
+      security: []
+      parameters:
+        - name: days
+          in: query
+          description: How many days ahead, including today.
+          schema: { type: integer, minimum: 1, maximum: 60, default: 28 }
+      responses:
+        "200":
+          description: Free slots
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [timezone, durationMinutes, slots]
+                properties:
+                  timezone: { type: string, example: Asia/Kolkata }
+                  durationMinutes: { type: integer, example: 30 }
+                  slots:
+                    type: array
+                    items: { type: string, format: date-time, example: "2026-10-14T04:30:00Z" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /growthx_core.api.v1.appointments.book:
+    post:
+      tags: [appointments]
+      summary: Book a "Talk to an expert" call
+      description: |
+        Books a start time from `appointments.slots`. The API assigns the least busy free expert, adds
+        the video link (when a link template is set), records a Lead and an Event in ERPNext, and emails
+        the visitor a confirmation with a calendar invite (copy to the expert). An email failure never
+        fails the booking. `409 slot_taken` when the time is no longer free: reload the slots.
+      operationId: bookAppointment
+      x-phase: 2
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [start, name, email, phone]
+              properties:
+                start: { type: string, format: date-time, example: "2026-10-14T04:30:00Z" }
+                name: { type: string, maxLength: 140 }
+                email: { type: string, format: email }
+                phone:
+                  type: string
+                  example: "+919876543210"
+                  description: Indian mobile number, 10 digits, optionally starting with +91. Spaces and hyphens are ignored.
+                company: { type: string, maxLength: 140 }
+                app: { type: string, description: Product slug from `catalogue.products`, example: laundry }
+                notes: { type: string, maxLength: 2000 }
+      responses:
+        "201":
+          description: Booked
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status, start, end]
+                properties:
+                  id: { type: string, example: GXA-00001 }
+                  status: { type: string, enum: [confirmed] }
+                  start: { type: string, format: date-time }
+                  end: { type: string, format: date-time }
+        "409":
+          description: The time is no longer free (`slot_taken`), or the Idempotency-Key was reused with a different body.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
   # ---------------------------------------------------------------- auth
-  /auth.login:
+  /growthx_core.api.v1.auth.login:
     post:
       tags: [auth]
       summary: Log in with email and password
@@ -183,7 +273,7 @@ paths:
         "422": { $ref: "#/components/responses/ValidationFailed" }
         "429": { $ref: "#/components/responses/RateLimited" }
 
-  /auth.signup:
+  /growthx_core.api.v1.auth.signup:
     post:
       tags: [auth]
       summary: Create a customer or partner account
@@ -251,7 +341,7 @@ paths:
         "422": { $ref: "#/components/responses/ValidationFailed" }
         "429": { $ref: "#/components/responses/RateLimited" }
 
-  /auth.refresh:
+  /growthx_core.api.v1.auth.refresh:
     post:
       tags: [auth]
       summary: Exchange a refresh token for a new token pair
@@ -280,7 +370,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
-  /auth.logout:
+  /growthx_core.api.v1.auth.logout:
     post:
       tags: [auth]
       summary: Revoke the current access token and its refresh token
@@ -290,7 +380,7 @@ paths:
         "200": { $ref: "#/components/responses/Ok" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
 
-  /auth.me:
+  /growthx_core.api.v1.auth.me:
     get:
       tags: [auth]
       summary: The current user
@@ -304,11 +394,14 @@ paths:
               schema: { $ref: "#/components/schemas/User" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
 
-  /auth.forgot_password:
+  /growthx_core.api.v1.auth.forgot_password:
     post:
       tags: [auth]
       summary: Email a password-reset link
-      description: Always returns 202, whether or not the email exists, so the endpoint can't be used to find out which emails have accounts.
+      description: |
+        Always returns 202, whether or not the email exists, so the endpoint can't be used to find out which
+        emails have accounts. Also 202 when the email can't be sent (e.g. no outgoing email account); the
+        failure goes to the Error Log for admins.
       operationId: forgotPassword
       x-phase: 1
       security: []
@@ -325,7 +418,7 @@ paths:
         "202": { $ref: "#/components/responses/Ok" }
         "429": { $ref: "#/components/responses/RateLimited" }
 
-  /auth.reset_password:
+  /growthx_core.api.v1.auth.reset_password:
     post:
       tags: [auth]
       summary: Set a new password with the emailed reset key
@@ -353,7 +446,7 @@ paths:
         "422": { $ref: "#/components/responses/ValidationFailed" }
 
   # ---------------------------------------------------------------- customer
-  /customer.sites:
+  /growthx_core.api.v1.customer.sites:
     get:
       tags: [customer]
       summary: The customer's ERP sites (tenants)
@@ -380,7 +473,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
-  /customer.site:
+  /growthx_core.api.v1.customer.site:
     get:
       tags: [customer]
       summary: One site, including provisioning progress (poll this after sign-up)
@@ -401,7 +494,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "404": { $ref: "#/components/responses/NotFound" }
 
-  /customer.open_site:
+  /growthx_core.api.v1.customer.open_site:
     post:
       tags: [customer]
       summary: Get a short-lived, single-use sign-in URL for the customer's site
@@ -445,7 +538,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
-  /customer.subscriptions:
+  /growthx_core.api.v1.customer.subscriptions:
     get:
       tags: [customer]
       summary: The customer's subscriptions
@@ -472,7 +565,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
-  /customer.invoices:
+  /growthx_core.api.v1.customer.invoices:
     get:
       tags: [customer]
       summary: The customer's invoices (ERPNext Sales Invoices), newest first
@@ -503,7 +596,7 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
 
   # ---------------------------------------------------------------- billing
-  /billing.create_checkout:
+  /growthx_core.api.v1.billing.create_checkout:
     post:
       tags: [billing]
       summary: Start a payment for a plan (trial to paid, or a new subscription)
@@ -548,7 +641,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
-  /billing.verify_checkout:
+  /growthx_core.api.v1.billing.verify_checkout:
     post:
       tags: [billing]
       summary: Confirm a completed payment for instant feedback
@@ -601,7 +694,7 @@ paths:
         "503": { $ref: "#/components/responses/PaymentUnavailable" }
 
   # ---------------------------------------------------------------- partner
-  /partner.summary:
+  /growthx_core.api.v1.partner.summary:
     get:
       tags: [partner]
       summary: Partner dashboard numbers
@@ -617,7 +710,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
-  /partner.commission_history:
+  /growthx_core.api.v1.partner.commission_history:
     get:
       tags: [partner]
       summary: Commission earned per month for the last 12 months (oldest first)
@@ -646,7 +739,7 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
 
   # ---------------------------------------------------------------- admin
-  /admin.summary:
+  /growthx_core.api.v1.admin.summary:
     get:
       tags: [admin]
       summary: Admin dashboard numbers
@@ -662,7 +755,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
-  /admin.customers:
+  /growthx_core.api.v1.admin.customers:
     get:
       tags: [admin]
       summary: Customers
@@ -702,7 +795,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
-  /admin.tenants:
+  /growthx_core.api.v1.admin.tenants:
     get:
       tags: [admin]
       summary: All tenant sites with their provisioning status
@@ -742,7 +835,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
-  /admin.tenant:
+  /growthx_core.api.v1.admin.tenant:
     get:
       tags: [admin]
       summary: One tenant, including its provisioning log
@@ -761,7 +854,7 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
-  /admin.retry_provisioning:
+  /growthx_core.api.v1.admin.retry_provisioning:
     post:
       tags: [admin]
       summary: Retry a failed provisioning job from the step that failed

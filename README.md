@@ -36,7 +36,7 @@ bench worker                                                 # runs provisioning
 curl http://localhost:8002/api/method/growthx_core.api.v1.health.ping
 ```
 
-Base URL for clients: `http://<host>:8002/api/method/growthx_core.api.v1`, then `/<module>.<function>`, e.g. `/catalogue.products`.
+Base URL for clients: `http://<host>:8002/api/method/growthx_core.api.v1`, then `.<module>.<function>` (a dot, not a slash), e.g. `.catalogue.products`.
 
 #### Real tenant sites on your machine (`mode: local`)
 

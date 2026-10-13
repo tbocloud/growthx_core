@@ -18,18 +18,20 @@ This guide answers your Phase 0 request: base URL and route format, authenticati
 | Staging | Pending DevOps. It will be `https://<core-staging-host>/api/method/growthx_core.api.v1` |
 | Production | Pending DevOps |
 
-Each endpoint is **base URL + `/` + `<module>.<function>`**:
+Each endpoint is **base URL + `.` + `<module>.<function>`**. The joiner is a **dot**, not a slash, because the whole thing is one Frappe method name:
 
 ```
-GET  {GROWTHX_API_URL}/catalogue.products
-POST {GROWTHX_API_URL}/auth.login
-GET  {GROWTHX_API_URL}/customer.site?id=GXT-00004
+GET  {GROWTHX_API_URL}.catalogue.products
+POST {GROWTHX_API_URL}.auth.login
+GET  {GROWTHX_API_URL}.customer.site?id=GXT-00004
 ```
+
+A slash (`{GROWTHX_API_URL}/catalogue.products`) is not a Frappe method and returns an error. In `openapi.yaml` the server URL ends at `/api/method` and each path is the full method name (`/growthx_core.api.v1.catalogue.products`), so generated clients build the right URL.
 
 - These are Frappe whitelisted methods, so the paths aren't REST-style. REST paths like `/api/v1/...` would clash with Frappe's own `/api/v1` namespace.
 - **GET** takes query parameters. **POST** takes a JSON body (`Content-Type: application/json`).
 - **Ids are never in the path.** Use `?id=` on GET and `{"id": "..."}` in the body on POST.
-- Quick check: `GET {GROWTHX_API_URL}/health.ping` → `{"status":"ok","version":"0.0.1"}`.
+- Quick check: `GET {GROWTHX_API_URL}.health.ping` → `{"status":"ok","version":"0.0.1"}`.
 
 ## 2. Conventions
 
@@ -80,6 +82,8 @@ GET  {GROWTHX_API_URL}/customer.site?id=GXT-00004
 | GET | `catalogue.products` | none | 1 | `GET /products` |
 | GET | `catalogue.plans?product=solar` | none | 1 | `GET /plans` |
 | POST | `contact.submit` | none | 2 | `POST /contact` |
+| GET | `appointments.slots?days=28` | none | 2 | `GET /appointments/slots` |
+| POST | `appointments.book` | none | 2 | `POST /appointments` |
 | POST | `auth.login` | none | 1 | `POST /auth/login` |
 | POST | `auth.signup` | none | 2 | `POST /auth/signup` |
 | POST | `auth.refresh` | none | 1 | *new* |
@@ -118,7 +122,7 @@ The other §2.4 gaps (payments list, invoice PDF, change plan, cancel, billing p
 ### 5.1 Log in, refresh, me, log out
 
 ```http
-POST /auth.login
+POST {GROWTHX_API_URL}.auth.login
 {"email": "customer@growthx.test", "password": "…", "client": "web"}
 ```
 ```json
@@ -141,32 +145,32 @@ POST /auth.login
 Wrong email or password, or a disabled account → `401 {"error": {"code": "invalid_credentials", "message": "The email or password is incorrect."}}`.
 
 ```http
-POST /auth.refresh
+POST {GROWTHX_API_URL}.auth.refresh
 {"refreshToken": "gxr_…"}
 ```
 → `200`, same shape as login (a new pair). A spent or expired refresh token → `401 invalid_token`.
 
-`GET /auth.me` → the `user` object above. With no token or a bad token → `401 {"error": {"code": "unauthenticated", …}}`.
+`GET {GROWTHX_API_URL}.auth.me` → the `user` object above. With no token or a bad token → `401 {"error": {"code": "unauthenticated", …}}`.
 
-`POST /auth.logout` with body `{}` → `200 {"ok": true}`.
+`POST {GROWTHX_API_URL}.auth.logout` with body `{}` → `200 {"ok": true}`.
 
 **Partner** users have `"role": "partner"` and `"partnerStatus": "pending_approval" | "active" | "suspended"`. **Admins** have `"role": "admin"` and `"company": null`.
 
 ### 5.2 Forgot and reset password
 
 ```http
-POST /auth.forgot_password      {"email": "customer@growthx.test"}
+POST {GROWTHX_API_URL}.auth.forgot_password      {"email": "customer@growthx.test"}
 ```
 → always `202 {"ok": true}`, whether or not the email exists. The email links to **`{growthx_web_url}/reset-password?key=…`**, so the web app needs that page.
 
 ```http
-POST /auth.reset_password       {"key": "<key from the link>", "newPassword": "…"}
+POST {GROWTHX_API_URL}.auth.reset_password       {"key": "<key from the link>", "newPassword": "…"}
 ```
 → `200 {"ok": true}`. An unknown, used or expired key (24 h) → `400 invalid_reset_key`. A weak password → `422` with `fields.newPassword`.
 
 ### 5.3 Catalogue
 
-`GET /catalogue.products`
+`GET {GROWTHX_API_URL}.catalogue.products`
 ```json
 {
   "items": [
@@ -179,7 +183,7 @@ POST /auth.reset_password       {"key": "<key from the link>", "newPassword": "�
 ```
 `laundry` and `tailoring` follow, also `coming_soon`.
 
-`GET /catalogue.plans?product=solar` (an unknown product → `422`)
+`GET {GROWTHX_API_URL}.catalogue.plans?product=solar` (an unknown product → `422`)
 ```json
 {
   "items": [
@@ -204,7 +208,7 @@ Six plans in total: `solar-{starter,growth,scale}-{month,year}`.
 ### 5.4 Sign-up, then poll provisioning
 
 ```http
-POST /auth.signup
+POST {GROWTHX_API_URL}.auth.signup
 Idempotency-Key: 6f1c2a8e-…
 {
   "accountType": "customer",
@@ -248,7 +252,7 @@ Idempotency-Key: 6f1c2a8e-…
 - `422 validation_failed` with `fields`. For example, a weak password gives `{"fields": {"password": "This is a very common password."}}`.
 - `422` if the product is `coming_soon`.
 
-**Then poll** `GET /customer.site?id=GXT-00024` every 5 s while the status is `requested` or `provisioning`. Stop at `ready` or `failed`, or after 15 min.
+**Then poll** `GET {GROWTHX_API_URL}.customer.site?id=GXT-00024` every 5 s while the status is `requested` or `provisioning`. Stop at `ready` or `failed`, or after 15 min.
 
 ```json
 {
@@ -280,14 +284,14 @@ Idempotency-Key: 6f1c2a8e-…
 
 `statusMessage` is always safe to show the customer. Internal error detail only appears in the admin endpoints. A site that isn't the caller's returns `404`.
 
-`GET /customer.sites?page=1&pageSize=20` returns the same fields as above without `steps`, as `{items, page, pageSize, total}`. Use it when the customer comes back to the dashboard.
+`GET {GROWTHX_API_URL}.customer.sites?page=1&pageSize=20` returns the same fields as above without `steps`, as `{items, page, pageSize, total}`. Use it when the customer comes back to the dashboard.
 
 > Locally, provisioning uses a **fake Press** and finishes in about a second. On real Press it will take minutes; DevOps will measure it on staging.
 
 ### 5.5 Open-app link
 
 ```http
-POST /customer.open_site        {"id": "GXT-00004"}
+POST {GROWTHX_API_URL}.customer.open_site        {"id": "GXT-00004"}
 ```
 ```json
 200   (Cache-Control: no-store)
@@ -303,7 +307,7 @@ POST /customer.open_site        {"id": "GXT-00004"}
 
 ### 5.6 Subscriptions and invoices
 
-`GET /customer.subscriptions`
+`GET {GROWTHX_API_URL}.customer.subscriptions`
 ```json
 {
   "items": [
@@ -325,7 +329,7 @@ POST /customer.open_site        {"id": "GXT-00004"}
 ```
 `status` is one of `trialing`, `active`, `past_due`, `suspended` or `canceled`.
 
-`GET /customer.invoices?page=1&pageSize=10&status=paid` returns `{items, page, pageSize, total}`. **It's empty until Phase 3** creates ERPNext Sales Invoices. Each item looks like this:
+`GET {GROWTHX_API_URL}.customer.invoices?page=1&pageSize=10&status=paid` returns `{items, page, pageSize, total}`. **It's empty until Phase 3** creates ERPNext Sales Invoices. Each item looks like this:
 ```json
 {"id": "ACC-SINV-2026-00001", "number": "ACC-SINV-2026-00001", "status": "paid",
  "subtotal": {"amount": 149900, "currency": "INR"}, "tax": {"amount": 26982, "currency": "INR"},
@@ -336,7 +340,7 @@ Invoice `status` is one of `draft`, `open`, `overdue`, `paid` or `void`. There i
 ### 5.7 Checkout (OI-3: your gateway-neutral shape, adopted)
 
 ```http
-POST /billing.create_checkout
+POST {GROWTHX_API_URL}.billing.create_checkout
 Idempotency-Key: …
 {"planId": "solar-growth-year", "billingInterval": "year", "subscriptionId": "GXS-00003"}
 ```
@@ -355,7 +359,7 @@ Idempotency-Key: …
 `subscriptionId` is the trial subscription being converted. Leave it out for a new subscription.
 
 ```http
-POST /billing.verify_checkout
+POST {GROWTHX_API_URL}.billing.verify_checkout
 {"provider": "razorpay", "reference": "sub_NgQ8kTgV5bE2xY", "payload": { /* exactly what Razorpay Checkout returned */ }}
 ```
 → `200 {"subscription": Subscription, "invoice": null}`. The invoice arrives later through the gateway webhook. Repeating the call is safe.
@@ -368,7 +372,7 @@ POST /billing.verify_checkout
 
 ### 5.8 Partner
 
-`GET /partner.summary`
+`GET {GROWTHX_API_URL}.partner.summary`
 ```json
 {
   "referralCode": "OKAFOR-7GB",
@@ -383,13 +387,13 @@ POST /billing.verify_checkout
 - Use `referralUrl` for the share link and the QR code. **Your sign-up page should read `?ref=` and send it as `referralCode`.**
 - `openLeads` is `null` until leads are agreed.
 
-`GET /partner.commission_history` → `{"items": [{"month": "2025-11", "amount": {"amount": 0, "currency": "INR"}}, …]}`: always 12 months, oldest first. The commission figures use placeholder rules until D8.
+`GET {GROWTHX_API_URL}.partner.commission_history` → `{"items": [{"month": "2025-11", "amount": {"amount": 0, "currency": "INR"}}, …]}`: always 12 months, oldest first. The commission figures use placeholder rules until D8.
 
 ### 5.9 Admin
 
-`GET /admin.summary` → `{"mrr": {"amount": 0, "currency": "INR"}, "activeCustomers": 0, "trialCustomers": 3, "suspendedCustomers": 0, "activePartners": 1}`. MRR excludes GST.
+`GET {GROWTHX_API_URL}.admin.summary` → `{"mrr": {"amount": 0, "currency": "INR"}, "activeCustomers": 0, "trialCustomers": 3, "suspendedCustomers": 0, "activePartners": 1}`. MRR excludes GST.
 
-`GET /admin.customers?q=noor&status=trial&page=1&pageSize=20&sort=-createdAt`
+`GET {GROWTHX_API_URL}.admin.customers?q=noor&status=trial&page=1&pageSize=20&sort=-createdAt`
 - `sort` is `createdAt` or `company`, with `-` for descending.
 - `q` searches the company and the contact email.
 ```json
@@ -400,7 +404,7 @@ POST /billing.verify_checkout
 ```
 Customer `status` is one of `trial`, `active`, `suspended` or `churned`.
 
-`GET /admin.tenants?status=failed&q=&sort=-updatedAt`
+`GET {GROWTHX_API_URL}.admin.tenants?status=failed&q=&sort=-updatedAt`
 - `sort` is `createdAt` or `updatedAt`.
 - `q` searches the customer, site URL and app.
 ```json
@@ -410,14 +414,14 @@ Customer `status` is one of `trial`, `active`, `suspended` or `churned`.
  "page": 1, "pageSize": 20, "total": 1}
 ```
 
-`GET /admin.tenant?id=GXT-00004` returns the same fields plus the provisioning log in `steps`. Each step adds `attempt` and `error`:
+`GET {GROWTHX_API_URL}.admin.tenant?id=GXT-00004` returns the same fields plus the provisioning log in `steps`. Each step adds `attempt` and `error`:
 ```json
 "steps": [{"key": "create_site", "label": "Creating your site", "state": "done", "startedAt": "…", "finishedAt": "…", "attempt": 1, "error": null}, …]
 ```
 For a failed tenant, `lastError` is something like `"configure: <detail>"`, and the failed step has `state: "failed"` and an `error`. This detail is for admins only.
 
 ```http
-POST /admin.retry_provisioning
+POST {GROWTHX_API_URL}.admin.retry_provisioning
 Idempotency-Key: …
 {"id": "GXT-00004"}
 ```
@@ -427,7 +431,17 @@ Idempotency-Key: …
 
 ### 5.10 Contact form
 
-`POST /contact.submit` with body `{"name", "email", "company"?, "message"}` → `202 {"ok": true}`. A bad email gives `422` with `fields.email`.
+`POST {GROWTHX_API_URL}.contact.submit` with body `{"name", "email", "company"?, "message"}` → `202 {"ok": true}`. A bad email gives `422` with `fields.email`.
+
+### 5.11 Talk to an expert (appointments)
+
+`GET {GROWTHX_API_URL}.appointments.slots?days=28` (1 to 60, default 28) → `{"timezone": "Asia/Kolkata", "durationMinutes": 30, "slots": ["2026-10-14T04:30:00Z", …]}`. Only free start times at least 2 hours away. Show them in `timezone`. Don't cache.
+
+`POST {GROWTHX_API_URL}.appointments.book` with `{"start", "name", "email", "phone", "company"?, "app"?, "notes"?}` → `201 {"id", "status": "confirmed", "start", "end"}`.
+- `start` must be one of the slots, in UTC. `phone` is a 10-digit Indian mobile, optionally with `+91`; spaces and hyphens are ignored.
+- `409 slot_taken` if someone booked it first: reload the slots and ask the visitor to choose again.
+- Accepts `Idempotency-Key`. Rate limit: 5 bookings per IP per hour.
+- The API assigns an expert, adds the video link, records a Lead and an Event in ERPNext and emails the confirmation with a calendar invite. Opening hours, holidays, experts and the link template are in **GX Appointment Settings** on the core site.
 
 ## 6. Error codes
 
@@ -442,7 +456,7 @@ Idempotency-Key: …
 | 403 | `forbidden` | Wrong role for this endpoint |
 | 404 | `not_found` | Doesn't exist, or isn't yours |
 | 405 | `method_not_allowed` | e.g. POST to a GET endpoint |
-| 409 | `email_taken`, `site_not_ready`, `not_retryable`, `idempotency_conflict` | See the endpoints above |
+| 409 | `email_taken`, `site_not_ready`, `not_retryable`, `idempotency_conflict`, `slot_taken` | See the endpoints above |
 | 422 | `validation_failed`, `invalid_plan` | See `fields` |
 | 429 | `rate_limited` | Wait `Retry-After` seconds |
 | 500 | `internal_error` | Show a friendly message with `reference` |
@@ -492,5 +506,7 @@ Idempotency-Key: …
 | OI-5 | Base URL, route format, envelope | As above. Please confirm. |
 | OI-6 | Browser → Next.js CSRF | Yours and the Lead's |
 | — | Open-app token exchange on the tenant | Mine (in `growthx_theme`), with DevOps |
+| — | Appointments: video provider and the expert list | Endpoints are live. Which video service to use (the link template) and who the experts are: the Lead. Until set, the confirmation says the link follows separately. |
+| — | Caching `catalogue.products` / `catalogue.plans` for 5 minutes on the website | Web's proposal. **To confirm:** can a price change take up to 5 minutes to show? `appointments.slots` must never be cached. |
 | — | Real Press provisioning | DevOps (Press API), then me |
 | — | Business rules (prices, GST, trial, commission) | D6, D7 and D8 with the Lead. The data shown is placeholder. |
