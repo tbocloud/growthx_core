@@ -21,7 +21,15 @@
   "notes",
   "lead",
   "event",
-  "ip_address"
+  "ip_address",
+  "section_follow_up",
+  "admin_notes",
+  "cancelled_by",
+  "cancel_reason",
+  "column_break_follow_up",
+  "reminder_24h_sent",
+  "reminder_1h_sent",
+  "manage_token_hash"
  ],
  "fields": [
   {
@@ -125,11 +133,62 @@
    "fieldtype": "Data",
    "label": "IP Address",
    "read_only": 1
+  },
+  {
+   "fieldname": "section_follow_up",
+   "fieldtype": "Section Break",
+   "label": "Follow-up"
+  },
+  {
+   "fieldname": "admin_notes",
+   "fieldtype": "Small Text",
+   "label": "Internal notes",
+   "description": "Seen only by the GrowthX team."
+  },
+  {
+   "fieldname": "cancelled_by",
+   "fieldtype": "Select",
+   "label": "Cancelled by",
+   "options": "\nVisitor\nTeam",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cancel_reason",
+   "fieldtype": "Small Text",
+   "label": "Cancel reason",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_follow_up",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "reminder_24h_sent",
+   "fieldtype": "Check",
+   "label": "24-hour reminder sent",
+   "read_only": 1,
+   "default": "0"
+  },
+  {
+   "fieldname": "reminder_1h_sent",
+   "fieldtype": "Check",
+   "label": "1-hour reminder sent",
+   "read_only": 1,
+   "default": "0"
+  },
+  {
+   "fieldname": "manage_token_hash",
+   "fieldtype": "Data",
+   "label": "Manage token hash",
+   "hidden": 1,
+   "read_only": 1,
+   "search_index": 1,
+   "description": "SHA-256 of the visitor's manage link token."
   }
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-10-13 10:00:00.000000",
+ "modified": "2026-10-13 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "GrowthX Core",
  "name": "GX Appointment",

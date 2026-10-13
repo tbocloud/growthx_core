@@ -239,6 +239,95 @@ paths:
         "422": { $ref: "#/components/responses/ValidationFailed" }
         "429": { $ref: "#/components/responses/RateLimited" }
 
+  /growthx_core.api.v1.appointments.manage:
+    get:
+      tags: [appointments]
+      summary: The visitor's own booking, from the private link in the confirmation email
+      description: |
+        The confirmation email links to `{growthx_web_url}/appointments/manage?token=…`. The token is random,
+        stored only as a SHA-256 hash, and sent only in that first email. `canChange` is false once the call
+        has started or the booking is no longer confirmed.
+      operationId: manageAppointment
+      x-phase: 2
+      security: []
+      parameters:
+        - { name: token, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The booking
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VisitorAppointment" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /growthx_core.api.v1.appointments.cancel:
+    post:
+      tags: [appointments]
+      summary: The visitor cancels their booking
+      description: Frees the slot, cancels the ERPNext Event and emails a cancellation (with a calendar CANCEL).
+      operationId: cancelAppointment
+      x-phase: 2
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+                reason: { type: string, maxLength: 500 }
+      responses:
+        "200":
+          description: Cancelled
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VisitorAppointment" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`not_changeable`: already cancelled, completed or started"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /growthx_core.api.v1.appointments.reschedule:
+    post:
+      tags: [appointments]
+      summary: The visitor moves their booking to another free time
+      description: |
+        `start` must be a free time from `appointments.slots`. The same expert is kept when they're free;
+        otherwise the least busy free expert. Updates the ERPNext Event and emails the new time.
+      operationId: rescheduleAppointment
+      x-phase: 2
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, start]
+              properties:
+                token: { type: string }
+                start: { type: string, format: date-time }
+      responses:
+        "200":
+          description: Rescheduled
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VisitorAppointment" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`slot_taken`, or `not_changeable` (already cancelled, completed or started)"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
   # ---------------------------------------------------------------- auth
   /growthx_core.api.v1.auth.login:
     post:
@@ -714,6 +803,34 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /growthx_core.api.v1.partner.referrer:
+    get:
+      tags: [partner]
+      summary: Public - who a referral code belongs to (website welcome page)
+      description: |
+        For the website's welcome page at `{growthx_web_url}/r/{code}` ("Chidi Okafor invited you to GrowthX").
+        Only active partners; an unknown, pending or suspended code is 404. Returns only the partner's
+        name and company. `partner.summary` `referralUrl` now points to this welcome page.
+      operationId: partnerReferrer
+      x-phase: 2
+      security: []
+      parameters:
+        - { name: code, in: query, required: true, schema: { type: string, example: OKAFOR-7GB } }
+      responses:
+        "200":
+          description: The partner
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [code, name]
+                properties:
+                  code: { type: string }
+                  name: { type: string, example: Chidi Okafor }
+                  company: { type: string, nullable: true }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
   /growthx_core.api.v1.partner.commission_history:
     get:
       tags: [partner]
@@ -892,6 +1009,140 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /growthx_core.api.v1.admin.appointments:
+    get:
+      tags: [admin]
+      summary: '"Talk to an expert" bookings'
+      description: |
+        Dates are days in the site timezone, inclusive. `q` searches name, email, company and phone.
+        Default order is by call time, earliest first (`sort=-start` for latest first).
+      operationId: adminListAppointments
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/AppointmentStatus" } }
+        - { name: expert, in: query, description: Expert email, schema: { type: string } }
+        - { name: from, in: query, schema: { type: string, format: date, example: "2026-10-14" } }
+        - { name: to, in: query, schema: { type: string, format: date, example: "2026-10-20" } }
+        - { name: q, in: query, schema: { type: string } }
+        - { name: sort, in: query, schema: { type: string, enum: [start, -start, createdAt, -createdAt], default: start } }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Bookings
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/AdminAppointment" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.appointment:
+    get:
+      tags: [admin]
+      summary: One booking, with internal notes and its history
+      operationId: adminGetAppointment
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Booking
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminAppointmentDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /growthx_core.api.v1.admin.update_appointment:
+    post:
+      tags: [admin]
+      summary: One workflow action on a booking
+      description: |
+        | `action` | Needs | Effect |
+        |---|---|---|
+        | `reschedule` | `start` (a free time) | Moves the call, keeps the expert when free, updates the Event, emails the visitor and expert |
+        | `reassign` | `expert` (from settings) | Changes the expert (`409 expert_busy` if they have a call then), emails |
+        | `cancel` | `reason`? | Cancels, frees the slot, cancels the Event, emails an apology with a link to rebook |
+        | `complete` | — | Marks the call held. Only once it has started (`409 not_started`) |
+        | `no_show` | — | Marks the visitor absent. Only once it has started |
+        | `note` | `note` | Appends a dated internal note (never shown to the visitor). Allowed in any status |
+
+        Every action except `note` needs a `confirmed` booking (`409 not_changeable`). All actions are audit-logged.
+      operationId: adminUpdateAppointment
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, action]
+              properties:
+                id: { type: string }
+                action: { type: string, enum: [reschedule, reassign, cancel, complete, no_show, note] }
+                start: { type: string, format: date-time }
+                expert: { type: string, format: email }
+                reason: { type: string, maxLength: 500 }
+                note: { type: string, maxLength: 2000 }
+      responses:
+        "200":
+          description: The updated booking
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminAppointmentDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`slot_taken`, `expert_busy`, `not_changeable` or `not_started`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.appointment_experts:
+    get:
+      tags: [admin]
+      summary: Experts who take calls, with their upcoming confirmed calls
+      operationId: adminAppointmentExperts
+      x-phase: 2
+      x-roles: [admin]
+      responses:
+        "200":
+          description: Experts (from GX Appointment Settings)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [email, name, upcoming]
+                      properties:
+                        email: { type: string, format: email }
+                        name: { type: string }
+                        upcoming: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   # ---------------------------------------------------------------- tenant (server to server)
   /growthx_core.api.v1.tenant.redeem_login:
     post:
@@ -1047,6 +1298,7 @@ components:
                 Stable code. Current list: unauthenticated, invalid_credentials, invalid_token, forbidden,
                 not_found, validation_failed, email_taken, invalid_plan, invalid_reset_key,
                 payment_verification_failed, payment_unavailable, site_not_ready, not_retryable,
+                slot_taken, expert_busy, not_changeable, not_started,
                 idempotency_conflict, rate_limited, bad_request, method_not_allowed, invalid_tenant_key,
                 invalid_login_token, internal_error.
               example: email_taken
@@ -1266,7 +1518,7 @@ components:
       required: [referralCode, referralUrl, activeCustomers, referredSignups, monthlyRecurringCommission, pendingPayout]
       properties:
         referralCode: { type: string, example: OKAFOR-7Q2 }
-        referralUrl: { type: string, format: uri, description: Use this for the share link and the QR code }
+        referralUrl: { type: string, format: uri, description: "Use this for the share link and the QR code: the website's welcome page, {growthx_web_url}/r/{code}" }
         activeCustomers: { type: integer }
         referredSignups: { type: integer }
         openLeads: { type: integer, nullable: true, description: Null until lead tracking is agreed (§2.4) }
@@ -1330,3 +1582,58 @@ components:
                     properties:
                       attempt: { type: integer }
                       error: { type: string, nullable: true }
+
+    AppointmentStatus:
+      type: string
+      enum: [confirmed, completed, cancelled, no_show]
+
+    VisitorAppointment:
+      type: object
+      required: [id, status, start, end, name, canChange]
+      properties:
+        id: { type: string, example: GXA-00001 }
+        status: { $ref: "#/components/schemas/AppointmentStatus" }
+        start: { type: string, format: date-time }
+        end: { type: string, format: date-time }
+        name: { type: string }
+        meetingUrl: { type: string, format: uri, nullable: true }
+        canChange: { type: boolean, description: True while the booking is confirmed and the call hasn't started }
+
+    AdminAppointment:
+      type: object
+      required: [id, status, start, end, name, email, phone, createdAt]
+      properties:
+        id: { type: string, example: GXA-00001 }
+        status: { $ref: "#/components/schemas/AppointmentStatus" }
+        start: { type: string, format: date-time }
+        end: { type: string, format: date-time }
+        name: { type: string }
+        email: { type: string, format: email }
+        phone: { type: string }
+        company: { type: string, nullable: true }
+        app: { type: string, nullable: true, description: Product slug }
+        notes: { type: string, nullable: true, description: What the visitor wrote }
+        expert: { type: string, format: email, nullable: true }
+        meetingUrl: { type: string, format: uri, nullable: true }
+        leadId: { type: string, nullable: true, description: ERPNext Lead }
+        createdAt: { type: string, format: date-time }
+
+    AdminAppointmentDetail:
+      allOf:
+        - $ref: "#/components/schemas/AdminAppointment"
+        - type: object
+          required: [history]
+          properties:
+            adminNotes: { type: string, nullable: true, description: Internal; never shown to the visitor }
+            cancelledBy: { type: string, enum: [visitor, team], nullable: true }
+            cancelReason: { type: string, nullable: true }
+            history:
+              type: array
+              items:
+                type: object
+                required: [at, actor, action]
+                properties:
+                  at: { type: string, format: date-time }
+                  actor: { type: string, description: User id, or Guest for the visitor }
+                  action: { type: string, example: reschedule }
+                  details: { type: string, nullable: true }
