@@ -1,25 +1,66 @@
 openapi: 3.0.3
 info:
   title: GrowthX API
-  version: 0.0.1
+  version: 1.0.0-draft.2
   description: |
-    GrowthX Core API (Frappe app `growthx_core`). Draft. Contract v1 is agreed in Phase 0.
+    GrowthX Core API (Frappe app `growthx_core`). **Status: DRAFT for review by Web, Flutter and the Lead.**
+    This file is the single API contract. Once agreed, it replaces the web team's
+    `02-api-contract.md` proposal. Decisions and open items are in `docs/api-decisions.md`.
 
-    Conventions (from the Core Engineering Prompt):
-    - Endpoints are Frappe whitelisted methods under `growthx_core.api.v1.*`,
-      served at `/api/method/growthx_core.api.v1.<module>.<function>`.
-    - Errors return a stable `error.code` and a human-readable `error.message`. No tracebacks.
-    - Lists are paginated, with filtering and sorting on the server.
-    - Money is INR. The format (decimal string or integer paise) and whether GST is included are still TBD.
-    - Dates are ISO 8601, stored in UTC and shown in IST.
+    ## Conventions
+    - **Routing:** every endpoint is a Frappe whitelisted method in `growthx_core.api.v1.<module>`.
+      Paths below are relative to the server URL, e.g.
+      `GET https://<core-host>/api/method/growthx_core.api.v1.catalogue.products`.
+      GET methods take query parameters. POST methods take a JSON body (`Content-Type: application/json`).
+    - **Response body:** the body **is** the resource. There is no Frappe `{"message": ...}` wrapper.
+    - **Errors:** any non-2xx response has the body `{"error": {"code", "message", "fields"?, "reference"?}}`.
+      `code` is stable and clients may branch on it. `message` is for people. `fields` maps
+      form fields to messages. `reference` is a support id on 5xx responses. Tracebacks are never returned.
+    - **Auth:** `Authorization: Bearer <accessToken>` from `auth.login` / `auth.signup` / `auth.refresh`.
+      Only the Next.js server and the Flutter app hold tokens; the browser never does. Frappe cookie
+      sessions (`sid`) are **not** accepted on v1 endpoints, and browser origins get no CORS headers.
+    - **Money:** integer minor units (paise) plus an ISO 4217 code: `{"amount": 149900, "currency": "INR"}`.
+      Never floats. Prices state `gstIncluded`.
+    - **Dates:** ISO 8601 in UTC with a `Z` suffix, e.g. `2026-11-01T00:00:00Z`. Clients display them in IST.
+      Months are `YYYY-MM`.
+    - **Lists:** `page` (from 1) and `pageSize` (default 20, max 100). The response is `{items, page, pageSize, total}`.
+      Filtering and sorting are done on the server.
+    - **IDs:** opaque strings (Frappe document names). Clients must not parse them.
+    - **Idempotency:** `auth.signup`, `billing.create_checkout` and `admin.retry_provisioning` accept an
+      `Idempotency-Key` header (a UUID). A repeat with the same key within 24 h returns the original result.
+    - **Versioning:** additive changes stay in `v1`. Breaking changes go into a new `growthx_core.api.v2` module,
+      and both run in parallel during migration.
+    - **Phase:** `x-phase` on each operation is the delivery phase (1 Foundation, 2 Self sign-up,
+      3 Money, 4 Launch). An endpoint is usable only once it is deployed to staging.
 servers:
-  - url: http://growthX:8000
-    description: Local development
+  - url: https://{host}/api/method/growthx_core.api.v1
+    variables:
+      host:
+        default: staging-core.growthx.example
+        description: GrowthX Core site host. The real staging and production hosts are pending DevOps.
+  - url: http://localhost:8002/api/method/growthx_core.api.v1
+    description: Local development (frappe-bench-v16, site growthX)
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: health
+  - name: catalogue
+  - name: auth
+  - name: customer
+  - name: billing
+  - name: partner
+  - name: admin
+
 paths:
-  /api/method/growthx_core.api.v1.health.ping:
+  # ---------------------------------------------------------------- health
+  /health.ping:
     get:
+      tags: [health]
       summary: Liveness check
       operationId: healthPing
+      x-phase: 0
       security: []
       responses:
         "200":
@@ -28,17 +69,812 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [status, version]
                 properties:
-                  message:
-                    type: object
+                  status: { type: string, enum: [ok] }
+                  version: { type: string, example: 0.0.1 }
+
+  # ---------------------------------------------------------------- catalogue (public)
+  /catalogue.products:
+    get:
+      tags: [catalogue]
+      summary: Product catalogue
+      operationId: listProducts
+      x-phase: 1
+      security: []
+      responses:
+        "200":
+          description: All products, including those marked coming soon
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Product" }
+        "5XX": { $ref: "#/components/responses/ServerError" }
+
+  /catalogue.plans:
+    get:
+      tags: [catalogue]
+      summary: Subscription plans
+      operationId: listPlans
+      x-phase: 1
+      security: []
+      parameters:
+        - name: product
+          in: query
+          description: Product slug. If omitted, returns plans for all products.
+          schema: { type: string, example: solar }
+      responses:
+        "200":
+          description: Active plans
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Plan" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "5XX": { $ref: "#/components/responses/ServerError" }
+
+  /contact.submit:
+    post:
+      tags: [catalogue]
+      summary: Website contact form
+      operationId: submitContact
+      x-phase: 2
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, message]
+              properties:
+                name: { type: string, maxLength: 140 }
+                email: { type: string, format: email }
+                company: { type: string, maxLength: 140 }
+                message: { type: string, maxLength: 5000 }
+      responses:
+        "202": { $ref: "#/components/responses/Ok" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  # ---------------------------------------------------------------- auth
+  /auth.login:
+    post:
+      tags: [auth]
+      summary: Log in with email and password
+      description: |
+        Called server-to-server by the Next.js server, or directly by the Flutter app. Never call it from browser JavaScript.
+        Rate-limited per email and per IP address.
+      operationId: login
+      x-phase: 1
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+                client: { $ref: "#/components/schemas/ClientKind" }
+      responses:
+        "200":
+          description: Logged in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthSession" }
+        "401":
+          description: "`invalid_credentials`: wrong email or password, or the account is disabled (the response does not say which)"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /auth.signup:
+    post:
+      tags: [auth]
+      summary: Create a customer or partner account
+      description: |
+        Returns as soon as the account exists. **It does not wait for the customer's site.**
+        For a customer with `productSlug`, the response includes the new site with status `requested`,
+        and the client polls `customer.site`.
+
+        On the server, for a customer: create the User, then the GX Account and ERPNext Customer, then the
+        trial GX Subscription, then the GX Tenant (status `requested`), then queue the provisioning job, then
+        record the referral. A partner account is created with status `pending_approval`.
+
+        Unknown or self-referral codes are ignored; a sign-up never fails because of the referral code.
+        The trial start rule (at sign-up, or when the site is ready) is pending the Lead (OI-2).
+      operationId: signup
+      x-phase: 2
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [accountType, name, email, password]
+              properties:
+                accountType: { type: string, enum: [customer, partner] }
+                name: { type: string, maxLength: 140 }
+                company: { type: string, maxLength: 140, description: Required when accountType is customer }
+                email: { type: string, format: email }
+                phone: { type: string, example: "+919876543210" }
+                password:
+                  type: string
+                  format: password
+                  minLength: 8
+                  description: The site's password-strength policy also applies; a weak password returns 422 with `fields.password`.
+                productSlug: { type: string, example: solar }
+                planId:
+                  type: string
+                  example: solar-growth-month
+                  description: |
+                    A plan id from `catalogue.plans`. Each plan has one interval (e.g. `solar-growth-month`,
+                    `solar-growth-year`). If omitted, the product's highlighted plan for `billingInterval` is used.
+                billingInterval: { $ref: "#/components/schemas/BillingInterval" }
+                referralCode: { type: string, example: OKAFOR-7Q2 }
+                client: { $ref: "#/components/schemas/ClientKind" }
+      responses:
+        "201":
+          description: Account created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/AuthSession"
+                  - type: object
                     properties:
-                      status:
-                        type: string
-                        example: ok
-                      version:
-                        type: string
-                        example: 0.0.1
+                      site:
+                        $ref: "#/components/schemas/SiteRef"
+        "409":
+          description: "`email_taken` (with `fields.email`), or `idempotency_conflict` (same key, different body)"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /auth.refresh:
+    post:
+      tags: [auth]
+      summary: Exchange a refresh token for a new token pair
+      description: The refresh token is rotated. The old refresh token and its access token are revoked.
+      operationId: refreshToken
+      x-phase: 1
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        "200":
+          description: New tokens
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthSession" }
+        "401":
+          description: "`invalid_token`: the refresh token is unknown, expired or revoked. The client must log in again."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /auth.logout:
+    post:
+      tags: [auth]
+      summary: Revoke the current access token and its refresh token
+      operationId: logout
+      x-phase: 1
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /auth.me:
+    get:
+      tags: [auth]
+      summary: The current user
+      operationId: me
+      x-phase: 1
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /auth.forgot_password:
+    post:
+      tags: [auth]
+      summary: Email a password-reset link
+      description: Always returns 202, whether or not the email exists, so the endpoint can't be used to find out which emails have accounts.
+      operationId: forgotPassword
+      x-phase: 1
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        "202": { $ref: "#/components/responses/Ok" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /auth.reset_password:
+    post:
+      tags: [auth]
+      summary: Set a new password with the emailed reset key
+      description: Revokes all of the user's existing tokens.
+      operationId: resetPassword
+      x-phase: 1
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [key, newPassword]
+              properties:
+                key: { type: string }
+                newPassword: { type: string, format: password, minLength: 8 }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "400":
+          description: "`invalid_reset_key`: the key is unknown, expired or already used"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  # ---------------------------------------------------------------- customer
+  /customer.sites:
+    get:
+      tags: [customer]
+      summary: The customer's ERP sites (tenants)
+      operationId: listCustomerSites
+      x-phase: 2
+      x-roles: [customer]
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Sites
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/Site" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /customer.site:
+    get:
+      tags: [customer]
+      summary: One site, including provisioning progress (poll this after sign-up)
+      description: |
+        Poll every 5 s while the status is `requested` or `provisioning`. Stop polling at `ready`, `failed`, or after 15 minutes.
+        A site that doesn't belong to the caller returns 404, not 403.
+      operationId: getCustomerSite
+      x-phase: 2
+      x-roles: [customer]
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Site
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SiteDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /customer.open_site:
+    post:
+      tags: [customer]
+      summary: Get a short-lived, single-use sign-in URL for the customer's site
+      description: |
+        Request this only when the user clicks "Open app", then navigate to it straight away. Never store, log or prefetch the URL.
+        The URL carries an opaque, random, single-use token. The token expires 60 s after it is issued. The tenant exchanges
+        it for a normal session and redirects to a clean URL. Responses send `Cache-Control: no-store`.
+        Every issued link is audit-logged (who, which site, when), but the token itself is never logged.
+        How the tenant side does the exchange is still to be designed with DevOps (see docs/api-decisions.md).
+      operationId: openCustomerSite
+      x-phase: 2
+      x-roles: [customer]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string }
+      responses:
+        "200":
+          description: Sign-in URL
+          headers:
+            Cache-Control:
+              schema: { type: string, example: no-store }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [url, expiresAt]
+                properties:
+                  url: { type: string, format: uri }
+                  expiresAt: { type: string, format: date-time }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`site_not_ready`: the site's status is not `ready`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /customer.subscriptions:
+    get:
+      tags: [customer]
+      summary: The customer's subscriptions
+      operationId: listCustomerSubscriptions
+      x-phase: 3
+      x-roles: [customer]
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Subscriptions
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/Subscription" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /customer.invoices:
+    get:
+      tags: [customer]
+      summary: The customer's invoices (ERPNext Sales Invoices), newest first
+      operationId: listCustomerInvoices
+      x-phase: 3
+      x-roles: [customer]
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/InvoiceStatus" }
+      responses:
+        "200":
+          description: Invoices
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/Invoice" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  # ---------------------------------------------------------------- billing
+  /billing.create_checkout:
+    post:
+      tags: [billing]
+      summary: Start a payment for a plan (trial to paid, or a new subscription)
+      description: |
+        The amount is calculated on the server; clients never send it. The response is gateway-neutral:
+        `provider` selects the browser or SDK adapter. `publicKey` is a public key only, never a secret.
+      operationId: createCheckout
+      x-phase: 3
+      x-roles: [customer]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [planId, billingInterval]
+              properties:
+                planId: { type: string }
+                billingInterval: { $ref: "#/components/schemas/BillingInterval" }
+                subscriptionId:
+                  type: string
+                  description: The existing trial subscription being converted. If omitted, a new subscription is created.
+      responses:
+        "201":
+          description: Checkout session
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CheckoutSession" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: "`idempotency_conflict`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503": { $ref: "#/components/responses/PaymentUnavailable" }
+        "422":
+          description: "`invalid_plan`, or `validation_failed`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /billing.verify_checkout:
+    post:
+      tags: [billing]
+      summary: Confirm a completed payment for instant feedback
+      description: |
+        The server verifies the gateway signature. The **gateway webhook** (server-to-server, not part of this
+        client contract) is the source of truth for activation, renewals, failures and cancellations.
+        This call is idempotent: verifying the same payment twice returns the same result.
+      operationId: verifyCheckout
+      x-phase: 3
+      x-roles: [customer]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, reference, payload]
+              properties:
+                provider: { $ref: "#/components/schemas/PaymentProvider" }
+                reference: { type: string, description: "`reference` from the checkout session" }
+                payload:
+                  type: object
+                  additionalProperties: true
+                  description: Exactly what the gateway's browser or mobile SDK returned
+                  example:
+                    razorpay_payment_id: pay_29QQoUBi66xm2f
+                    razorpay_subscription_id: sub_NgQ8kTgV5bE2xY
+                    razorpay_signature: 9ef4dffb
+      responses:
+        "200":
+          description: Payment verified
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [subscription]
+                properties:
+                  subscription: { $ref: "#/components/schemas/Subscription" }
+                  invoice:
+                    allOf: [{ $ref: "#/components/schemas/Invoice" }]
+                    nullable: true
+                    description: Null if the invoice hasn't been created yet; it arrives through the webhook
+        "400":
+          description: "`payment_verification_failed`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/PaymentUnavailable" }
+
+  # ---------------------------------------------------------------- partner
+  /partner.summary:
+    get:
+      tags: [partner]
+      summary: Partner dashboard numbers
+      operationId: partnerSummary
+      x-phase: 2
+      x-roles: [partner]
+      responses:
+        "200":
+          description: Summary
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PartnerSummary" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /partner.commission_history:
+    get:
+      tags: [partner]
+      summary: Commission earned per month for the last 12 months (oldest first)
+      operationId: partnerCommissionHistory
+      x-phase: 3
+      x-roles: [partner]
+      responses:
+        "200":
+          description: History
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    maxItems: 12
+                    items:
+                      type: object
+                      required: [month, amount]
+                      properties:
+                        month: { type: string, pattern: "^\\d{4}-\\d{2}$", example: 2026-10 }
+                        amount: { $ref: "#/components/schemas/Money" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  # ---------------------------------------------------------------- admin
+  /admin.summary:
+    get:
+      tags: [admin]
+      summary: Admin dashboard numbers
+      operationId: adminSummary
+      x-phase: 3
+      x-roles: [admin]
+      responses:
+        "200":
+          description: Summary
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminSummary" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin.customers:
+    get:
+      tags: [admin]
+      summary: Customers
+      operationId: adminListCustomers
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - name: q
+          in: query
+          description: Searches company name and contact email
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/CustomerStatus" }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [createdAt, -createdAt, company, -company]
+            default: -createdAt
+      responses:
+        "200":
+          description: Customers
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/AdminCustomer" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin.tenants:
+    get:
+      tags: [admin]
+      summary: All tenant sites with their provisioning status
+      operationId: adminListTenants
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - name: q
+          in: query
+          description: Searches customer, site URL and app
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/SiteStatus" }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [createdAt, -createdAt, updatedAt, -updatedAt]
+            default: -createdAt
+      responses:
+        "200":
+          description: Tenants
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/AdminTenant" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin.tenant:
+    get:
+      tags: [admin]
+      summary: One tenant, including its provisioning log
+      operationId: adminGetTenant
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Tenant
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminTenantDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /admin.retry_provisioning:
+    post:
+      tags: [admin]
+      summary: Retry a failed provisioning job from the step that failed
+      description: Idempotent. If a job is already running for this tenant, returns that job's current state and does not start a new one.
+      operationId: adminRetryProvisioning
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string, description: Tenant id }
+      responses:
+        "202":
+          description: Retry queued, or already running
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminTenantDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`not_retryable`: the tenant is not in `failed` status"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        An opaque access token from `auth.login`, `auth.signup` or `auth.refresh`. It lasts 1 hour.
+        Refresh tokens last 30 days and rotate on every use. Logging out, resetting the password or disabling
+        the user revokes the tokens. An expired or revoked token returns 401 `unauthenticated`.
+
+  parameters:
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    PageSize:
+      name: pageSize
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    Id:
+      name: id
+      in: query
+      required: true
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: A UUID chosen by the client. Reusing the same key within 24 h returns the original response.
+      schema: { type: string, format: uuid }
+
+  responses:
+    Ok:
+      description: OK
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [ok]
+            properties:
+              ok: { type: boolean, enum: [true] }
+    Unauthenticated:
+      description: "`unauthenticated`: no token, or the token is expired or revoked"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: "`forbidden`: the user's role can't call this endpoint"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: "`not_found`: the resource doesn't exist or doesn't belong to the caller"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ValidationFailed:
+      description: "`validation_failed`: the request is invalid; see `fields`"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: "`rate_limited`: too many requests. The `Retry-After` header gives the number of seconds to wait."
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    PaymentUnavailable:
+      description: "`payment_unavailable`: the payment gateway is not configured or not reachable. Show a friendly message and let the user try later."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ServerError:
+      description: "`internal_error`: show a friendly message together with `reference`"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
   schemas:
     Error:
       type: object
@@ -50,7 +886,289 @@ components:
           properties:
             code:
               type: string
-              example: NOT_FOUND
-            message:
-              type: string
-              example: The requested resource was not found.
+              description: |
+                Stable code. Current list: unauthenticated, invalid_credentials, invalid_token, forbidden,
+                not_found, validation_failed, email_taken, invalid_plan, invalid_reset_key,
+                payment_verification_failed, payment_unavailable, site_not_ready, not_retryable,
+                idempotency_conflict, rate_limited, bad_request, method_not_allowed, internal_error.
+              example: email_taken
+            message: { type: string, example: An account with this email already exists. }
+            fields:
+              type: object
+              additionalProperties: { type: string }
+              example: { email: An account with this email already exists. }
+            reference: { type: string, description: Support reference (5xx responses only) }
+
+    PageMeta:
+      type: object
+      required: [page, pageSize, total]
+      properties:
+        page: { type: integer, example: 1 }
+        pageSize: { type: integer, example: 20 }
+        total: { type: integer, example: 42 }
+
+    Money:
+      type: object
+      required: [amount, currency]
+      properties:
+        amount: { type: integer, description: Minor units (paise), example: 149900 }
+        currency: { type: string, enum: [INR] }
+
+    Price:
+      allOf:
+        - $ref: "#/components/schemas/Money"
+        - type: object
+          required: [gstIncluded]
+          properties:
+            gstIncluded: { type: boolean, description: Whether `amount` already includes GST }
+
+    BillingInterval:
+      type: string
+      enum: [month, year]
+
+    ClientKind:
+      type: string
+      enum: [web, mobile]
+      default: web
+      description: Which client is logging in. It is recorded with the token so it can be revoked per client.
+
+    Role:
+      type: string
+      enum: [customer, partner, admin]
+
+    User:
+      type: object
+      required: [id, name, email, role]
+      properties:
+        id: { type: string }
+        name: { type: string, example: Amina Noor }
+        email: { type: string, format: email }
+        role: { $ref: "#/components/schemas/Role" }
+        company: { type: string, nullable: true, example: Noor Solar }
+        partnerStatus:
+          type: string
+          enum: [pending_approval, active, suspended]
+          nullable: true
+          description: Set only for partners
+
+    AuthSession:
+      type: object
+      required: [accessToken, expiresAt, refreshToken, refreshExpiresAt, user]
+      properties:
+        accessToken: { type: string }
+        expiresAt: { type: string, format: date-time }
+        refreshToken: { type: string }
+        refreshExpiresAt: { type: string, format: date-time }
+        user: { $ref: "#/components/schemas/User" }
+
+    Product:
+      type: object
+      required: [id, slug, name, category, summary, availability]
+      properties:
+        id: { type: string }
+        slug: { type: string, example: solar }
+        name: { type: string, example: GrowthX Solar }
+        category: { type: string, example: Solar installers }
+        summary: { type: string }
+        availability: { type: string, enum: [available, coming_soon] }
+
+    Plan:
+      type: object
+      required: [id, productSlug, name, description, price, interval, trialDays, features, highlighted]
+      properties:
+        id: { type: string }
+        productSlug: { type: string, example: solar }
+        name: { type: string, example: Growth }
+        description: { type: string }
+        price: { $ref: "#/components/schemas/Price" }
+        interval: { $ref: "#/components/schemas/BillingInterval" }
+        trialDays: { type: integer, example: 14 }
+        features:
+          type: array
+          items: { type: string }
+        highlighted: { type: boolean }
+
+    SiteStatus:
+      type: string
+      enum: [requested, provisioning, ready, failed, suspended, archived]
+      description: |
+        requested: queued after sign-up. provisioning: Press is creating or configuring the site.
+        ready: the site can be opened. failed: an admin has been alerted and will retry; the customer doesn't sign up again.
+        suspended: payment failed after the grace period. archived: the subscription was cancelled.
+
+    SiteRef:
+      type: object
+      required: [id, status]
+      properties:
+        id: { type: string }
+        status: { $ref: "#/components/schemas/SiteStatus" }
+
+    Site:
+      type: object
+      required: [id, productSlug, displayName, status, createdAt]
+      properties:
+        id: { type: string }
+        productSlug: { type: string }
+        displayName: { type: string, example: Noor Solar }
+        status: { $ref: "#/components/schemas/SiteStatus" }
+        statusMessage: { type: string, nullable: true, description: A customer-safe message. It never contains internal error detail. }
+        subscriptionId: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        readyAt: { type: string, format: date-time, nullable: true }
+
+    ProvisioningStep:
+      type: object
+      required: [key, label, state]
+      properties:
+        key:
+          type: string
+          enum: [create_site, wait_for_site, install_apps, configure, health_check]
+        label: { type: string, example: Installing apps }
+        state: { type: string, enum: [pending, running, done, failed] }
+        startedAt: { type: string, format: date-time, nullable: true }
+        finishedAt: { type: string, format: date-time, nullable: true }
+
+    SiteDetail:
+      allOf:
+        - $ref: "#/components/schemas/Site"
+        - type: object
+          required: [steps]
+          properties:
+            steps:
+              type: array
+              items: { $ref: "#/components/schemas/ProvisioningStep" }
+
+    SubscriptionStatus:
+      type: string
+      enum: [trialing, active, past_due, suspended, canceled]
+
+    Subscription:
+      type: object
+      required: [id, productName, planName, status, price, interval]
+      properties:
+        id: { type: string }
+        productName: { type: string }
+        planName: { type: string }
+        status: { $ref: "#/components/schemas/SubscriptionStatus" }
+        price: { $ref: "#/components/schemas/Price" }
+        interval: { $ref: "#/components/schemas/BillingInterval" }
+        trialEndsAt: { type: string, format: date-time, nullable: true }
+        currentPeriodEnd: { type: string, format: date-time, nullable: true }
+        cancelAtPeriodEnd: { type: boolean, default: false }
+        siteId: { type: string, nullable: true }
+
+    InvoiceStatus:
+      type: string
+      enum: [draft, open, overdue, paid, void]
+      description: "Mapped from ERPNext Sales Invoice: Draft→draft, Unpaid→open, Overdue→overdue, Paid→paid, Cancelled→void"
+
+    Invoice:
+      type: object
+      required: [id, number, status, subtotal, tax, total, issuedAt]
+      properties:
+        id: { type: string }
+        number: { type: string, example: GX-2026-00412 }
+        status: { $ref: "#/components/schemas/InvoiceStatus" }
+        subtotal: { $ref: "#/components/schemas/Money" }
+        tax: { $ref: "#/components/schemas/Money", description: Total GST (CGST+SGST, or IGST) }
+        total: { $ref: "#/components/schemas/Money" }
+        issuedAt: { type: string, format: date-time }
+        dueAt: { type: string, format: date-time, nullable: true }
+
+    PaymentProvider:
+      type: string
+      enum: [razorpay]
+      description: The gateway the server chose. More gateways can be added without a contract change.
+
+    CheckoutSession:
+      type: object
+      required: [provider, reference, publicKey, plan, amount, description, prefill]
+      properties:
+        provider: { $ref: "#/components/schemas/PaymentProvider" }
+        reference: { type: string, description: Gateway subscription or order id, example: sub_NgQ8kTgV5bE2xY }
+        publicKey: { type: string, description: Public key only, example: rzp_live_XXXXXXXXXXXX }
+        plan:
+          type: object
+          required: [id, name, interval]
+          properties:
+            id: { type: string }
+            name: { type: string }
+            interval: { $ref: "#/components/schemas/BillingInterval" }
+        amount: { $ref: "#/components/schemas/Price" }
+        description: { type: string, example: GrowthX Growth — billed yearly }
+        prefill:
+          type: object
+          properties:
+            name: { type: string }
+            email: { type: string, format: email }
+            phone: { type: string }
+
+    PartnerSummary:
+      type: object
+      required: [referralCode, referralUrl, activeCustomers, referredSignups, monthlyRecurringCommission, pendingPayout]
+      properties:
+        referralCode: { type: string, example: OKAFOR-7Q2 }
+        referralUrl: { type: string, format: uri, description: Use this for the share link and the QR code }
+        activeCustomers: { type: integer }
+        referredSignups: { type: integer }
+        openLeads: { type: integer, nullable: true, description: Null until lead tracking is agreed (§2.4) }
+        monthlyRecurringCommission: { $ref: "#/components/schemas/Money" }
+        pendingPayout: { $ref: "#/components/schemas/Money" }
+
+    AdminSummary:
+      type: object
+      required: [mrr, activeCustomers, trialCustomers, suspendedCustomers, activePartners]
+      properties:
+        mrr: { $ref: "#/components/schemas/Money", description: Excludes GST }
+        activeCustomers: { type: integer }
+        trialCustomers: { type: integer }
+        suspendedCustomers: { type: integer }
+        activePartners: { type: integer }
+
+    CustomerStatus:
+      type: string
+      enum: [trial, active, suspended, churned]
+
+    AdminCustomer:
+      type: object
+      required: [id, company, contactEmail, status, createdAt]
+      properties:
+        id: { type: string }
+        company: { type: string }
+        contactEmail: { type: string, format: email }
+        status: { $ref: "#/components/schemas/CustomerStatus" }
+        plan: { type: string, nullable: true }
+        partnerName: { type: string, nullable: true }
+        mrr: { $ref: "#/components/schemas/Money" }
+        createdAt: { type: string, format: date-time }
+
+    AdminTenant:
+      type: object
+      required: [id, customerId, customerName, productSlug, status, attempts, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        customerId: { type: string }
+        customerName: { type: string }
+        productSlug: { type: string }
+        siteUrl: { type: string, format: uri, nullable: true }
+        status: { $ref: "#/components/schemas/SiteStatus" }
+        lastError: { type: string, nullable: true, description: Admin-only detail }
+        attempts: { type: integer }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    AdminTenantDetail:
+      allOf:
+        - $ref: "#/components/schemas/AdminTenant"
+        - type: object
+          required: [steps]
+          properties:
+            steps:
+              type: array
+              items:
+                allOf:
+                  - $ref: "#/components/schemas/ProvisioningStep"
+                  - type: object
+                    properties:
+                      attempt: { type: integer }
+                      error: { type: string, nullable: true }

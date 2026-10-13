@@ -1,0 +1,29 @@
+[
+ {
+  "desk_access": 0,
+  "disabled": 0,
+  "docstatus": 0,
+  "doctype": "Role",
+  "is_custom": 0,
+  "name": "GrowthX Customer",
+  "role_name": "GrowthX Customer"
+ },
+ {
+  "desk_access": 0,
+  "disabled": 0,
+  "docstatus": 0,
+  "doctype": "Role",
+  "is_custom": 0,
+  "name": "GrowthX Partner",
+  "role_name": "GrowthX Partner"
+ },
+ {
+  "desk_access": 1,
+  "disabled": 0,
+  "docstatus": 0,
+  "doctype": "Role",
+  "is_custom": 0,
+  "name": "GrowthX Admin",
+  "role_name": "GrowthX Admin"
+ }
+]
