@@ -43,7 +43,11 @@ Base URL for clients: `http://<host>:8002/api/method/growthx_core.api.v1`, then 
 By default provisioning uses a fake Press client: tenants reach `ready` instantly but no site exists. To get real tenant sites before the Press API is available, switch to the local client. Each tenant becomes an ERPNext site on this bench, named `<subdomain>.localhost`.
 
 ```bash
-bench --site growthX set-config --parse growthx_press '{"mode": "local", "db_root_username": "root", "db_root_password": "", "admin_password": "admin", "user_password": "admin", "port": 8003, "allow_missing_apps": 1}'
+# This bench needs growthx_theme: it is installed on every tenant (single sign-on).
+bench get-app https://github.com/tbocloud/growthx_theme.git
+
+bench --site growthX set-config --parse growthx_press '{"mode": "local", "db_root_username": "root", "db_root_password": "<your MariaDB root password>", "admin_password": "admin", "port": 8003, "allow_missing_apps": 1}'
+bench --site growthX set-config growthx_core_url "http://127.0.0.1:8002"   # where tenants reach Core
 bench start   # the worker and scheduler run the job
 
 # Tenant web server: picks the site from the Host header.
@@ -52,10 +56,11 @@ cd sites && ../env/bin/python -c "from frappe.app import serve; serve(port=8003,
 
 - Why a separate server: `bench serve` (and so `bench start`) pins itself to `default_site` when it is set in `common_site_config.json`, and then serves that site for every hostname. The command above passes no site, so `noor-solar.localhost:8003` reaches `noor-solar.localhost`.
 - Sign-up queues the job as usual. `bench new-site` runs in the background (a few minutes); progress is in `logs/growthx-local-press/<site>.log`.
-- The configure step runs ERPNext's setup wizard with the customer's company and creates a user for their email, with `user_password`, as System Manager.
-- Open the tenant at `http://<subdomain>.localhost:8003` (browsers resolve `*.localhost` to this machine).
-- `allow_missing_apps: 1` reports `growthx_theme` and the vertical app as installed when this bench doesn't have them, so the job can finish. Leave it out to make the job fail when they are missing.
-- "Open my app" still needs the tenant-side token exchange in `growthx_theme` (`site_login.py`). Until it exists, send the link to the tenant's login page instead: `bench --site growthX set-config growthx_tenant_login_path "/login#login"` (the token lands after `#`, so it never reaches the tenant's server or logs). The customer then logs in with their email and `user_password`.
+- The configure step runs ERPNext's setup wizard with the customer's company, creates a System Manager user for the customer's email with a **random password nobody knows**, enables "Login with Email Link", and writes `growthx_core_url` and the tenant's own key (`growthx_tenant_key`) to the tenant's site_config.
+- Open the tenant from the website with **"Open my app"**: `growthx_theme.sso.login` redeems the one-time link with Core (`tenant.redeem_login`) and logs the customer in. There is no shared tenant password. `admin_password` is only for the tenant's Administrator, on your machine.
+- `allow_missing_apps: 1` reports the vertical app (e.g. `solar_operations`) as installed when this bench doesn't have it, so the job can finish. `growthx_theme` is never faked: the job fails if it's missing.
+- **Tenants created before single sign-on** (they used a shared `user_password` and `growthx_tenant_login_path: "/login#login"`): run
+  `bench --site growthX execute growthx_core.provisioning.backfill.enable_sso`. It installs `growthx_theme`, writes a new key, replaces the owner's password with a random one, enables "Login with Email Link", and removes `growthx_tenant_login_path`. Safe to run again. Tenants made by the fake client have no real site and are reported as failed.
 - Development only. Never set `mode: local` on a server.
 
 ### Tests

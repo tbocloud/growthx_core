@@ -34,7 +34,7 @@ Each decision below was checked against the Frappe/ERPNext **v16** source (Frapp
 
 ## 2. Answers to 02 §2.5 (provisioning)
 
-1. **Open-app sign-in:** a one-time link (`customer.open_site`): opaque token, valid 60 s, single use, `no-store`, audited. The tenant needs an endpoint that exchanges the token for a session; the plan is to ship it in `growthx_theme`, which is installed on every tenant. *To be designed with Arun (DevOps).*
+1. **Open-app sign-in:** a one-time link (`customer.open_site`): opaque token, valid 60 s, single use, `no-store`, audited. The tenant exchanges it in `growthx_theme.sso.login`, which calls Core's `tenant.redeem_login` server to server, authenticated by the tenant's own key (`X-GX-Tenant-Key`; Core stores only its hash), then logs the customer in as their own user and redirects to the desk. Customers have no tenant password; "Login with Email Link" is the fallback. A token issued for one tenant is refused (and spent) on any other. *On Press, DevOps must let provisioning write `growthx_core_url` and `growthx_tenant_key` into the tenant's site_config.*
 2. **Timing:** unknown until Press runs on staging (Arun). The client polls `customer.site` every 5 s for up to 15 min. The server also emails the customer when the site is ready.
 3. **Failures:** customers see `failed` and a safe `statusMessage`. Admins see the step, the error and the attempt count (`admin.tenant`). The customer never signs up again; an admin retries.
 4. **Several sites:** the contract allows a list. *Recommendation: one site per product subscription at v1 (pending the Lead).*
@@ -77,7 +77,7 @@ All 23 operations in `openapi.yaml` are implemented in `growthx_core/api/v1/` an
 | health, catalogue, contact | Working | — |
 | auth (login, signup, refresh, logout, me, forgot/reset password) | Working | Email delivery needs an outgoing email account on the site. The reset link points to `growthx_web_url` + `/reset-password?key=…` (the web app needs that page). |
 | customer.sites / site / subscriptions / invoices | Working | Invoices stay empty until Phase 3 creates Sales Invoices. |
-| customer.open_site | Issues a 60 s single-use link | The tenant-side exchange endpoint (in `growthx_theme`) isn't built, so the link doesn't log in yet. |
+| customer.open_site + tenant.redeem_login | Single sign-on works end to end locally (13 Oct 2026): the customer lands in their tenant's desk as their own user | On Press: writing the tenant's site_config (DevOps). Web server access logs contain the one-time token (it is in the URL); it is useless once used or after 60 s. |
 | Provisioning (sign-up → ready) | Working with a **fake Press client** | The real Press client is waiting on DevOps (endpoints, token). The `configure` step is waiting on the Solar set-up method (Nahala). |
 | billing.create_checkout / verify_checkout | Implemented against Razorpay | Returns 503 `payment_unavailable` until Razorpay keys (D5) and each plan's `gateway_plan_id` are set. The webhook (source of truth) is Phase 3. |
 | partner.summary / commission_history | Working | Commission figures use placeholder rules until D8. |

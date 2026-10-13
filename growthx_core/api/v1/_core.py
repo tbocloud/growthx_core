@@ -74,8 +74,10 @@ def not_found() -> ApiError:
 class RateLimit:
 	limit: int
 	seconds: int
-	# Optional request field to key on as well as the IP address, e.g. "email"
+	# Optional request field to key on instead of the IP address, e.g. "email"
 	by_field: str | None = None
+	# Optional request header to key on instead of the IP address, e.g. a tenant key
+	by_header: str | None = None
 
 
 # ---------------------------------------------------------------- responses
@@ -376,6 +378,10 @@ def _check_rate_limit(name: str, limit: RateLimit):
 		value = body().get(limit.by_field)
 		if isinstance(value, str) and value.strip():
 			parts = [name, limit.by_field, value.strip().lower()]
+	elif limit.by_header:
+		value = frappe.get_request_header(limit.by_header)
+		if value and value.strip():
+			parts = [name, limit.by_header, value.strip()]
 	key = frappe.cache.make_key("gx:rl:" + hashlib.sha256("|".join(parts).encode()).hexdigest())
 	count = frappe.cache.incrby(key, 1)
 	if count == 1:
@@ -429,11 +435,11 @@ def _idempotency_store(replay_key, status, data):
 # ---------------------------------------------------------------- misc
 
 
-def audit(action: str, reference_doctype=None, reference_name=None, details=None):
+def audit(action: str, reference_doctype=None, reference_name=None, details=None, actor=None):
 	frappe.get_doc(
 		{
 			"doctype": "GX Audit Log",
-			"actor": frappe.session.user,
+			"actor": actor or frappe.session.user,
 			"action": action,
 			"reference_doctype": reference_doctype,
 			"reference_name": reference_name,

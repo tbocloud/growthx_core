@@ -17,6 +17,7 @@
   "press_site_id",
   "attempts",
   "ready_at",
+  "tenant_key_hash",
   "status_section",
   "status_message",
   "last_error",
@@ -96,6 +97,16 @@
    "read_only": 1
   },
   {
+   "description": "SHA-256 of the secret this tenant uses to call growthx_core (X-GX-Tenant-Key). The secret itself is only in the tenant's site_config.",
+   "fieldname": "tenant_key_hash",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Tenant Key Hash",
+   "no_copy": 1,
+   "read_only": 1,
+   "unique": 1
+  },
+  {
    "fieldname": "status_section",
    "fieldtype": "Section Break",
    "label": "Status"
@@ -122,7 +133,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-10-12 10:00:00.000000",
+ "modified": "2026-10-13 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Provisioning",
  "name": "GX Tenant",

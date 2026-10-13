@@ -19,6 +19,7 @@ import frappe
 from frappe.utils import cint, now_datetime
 
 from growthx_core.api.v1._serializers import STEP_LABELS
+from growthx_core.provisioning import site_login
 from growthx_core.provisioning.press import PressClient, PressError, get_client
 
 STEPS = ["create_site", "wait_for_site", "install_apps", "configure", "health_check"]
@@ -187,19 +188,27 @@ def _install_apps(tenant, step, client: PressClient):
 
 
 def _configure(tenant, step, client: PressClient):
-	account = frappe.db.get_value(
-		"GX Account", tenant.account, ["account_name", "contact_email"], as_dict=True
-	)
-	client.configure_site(
-		tenant.press_site_id,
-		{
-			"company_name": account.account_name,
-			"admin_email": account.contact_email,
-			"country": "India",
-			"currency": "INR",
-			"timezone": "Asia/Kolkata",
-		},
-	)
+	client.configure_site(tenant.press_site_id, tenant_settings(tenant))
+
+
+def tenant_settings(tenant, reset_owner_password: bool = False) -> dict:
+	"""What a tenant site needs: company defaults, its owner, and single sign-on.
+
+	Generates a new tenant key every time (the old one stops working), so the caller must pass
+	these settings to the site straight away."""
+	account = frappe.db.get_value("GX Account", tenant.account, ["account_name", "user"], as_dict=True)
+	owner = frappe.db.get_value("User", account.user, ["email", "full_name"], as_dict=True)
+	return {
+		"company_name": account.account_name,
+		"country": "India",
+		"currency": "INR",
+		"timezone": "Asia/Kolkata",
+		"owner_email": owner.email,
+		"owner_name": owner.full_name or account.account_name,
+		"reset_owner_password": reset_owner_password,
+		"core_url": site_login.core_url(),
+		"tenant_key": site_login.new_tenant_key(tenant),
+	}
 
 
 def _health_check(tenant, step, client: PressClient):

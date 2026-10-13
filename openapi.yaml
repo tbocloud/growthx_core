@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: GrowthX API
-  version: 1.0.0-draft.2
+  version: 1.0.0-draft.3
   description: |
     GrowthX Core API (Frappe app `growthx_core`). **Status: DRAFT for review by Web, Flutter and the Lead.**
     This file is the single API contract. Once agreed, it replaces the web team's
@@ -55,6 +55,8 @@ tags:
   - name: billing
   - name: partner
   - name: admin
+  - name: tenant
+    description: Server-to-server calls from tenant sites (growthx_theme). Not for Web or Flutter.
 
 paths:
   # ---------------------------------------------------------------- health
@@ -503,7 +505,9 @@ paths:
         The URL carries an opaque, random, single-use token. The token expires 60 s after it is issued. The tenant exchanges
         it for a normal session and redirects to a clean URL. Responses send `Cache-Control: no-store`.
         Every issued link is audit-logged (who, which site, when), but the token itself is never logged.
-        How the tenant side does the exchange is still to be designed with DevOps (see docs/api-decisions.md).
+        The URL is `{siteUrl}/api/method/growthx_theme.sso.login?token=…`. The tenant redeems the token with
+        `tenant.redeem_login`, logs the customer in as their own user and redirects to the desk. An expired, reused
+        or wrong-site link ends on the tenant's `/login` page with "This link has expired. Open your app again from GrowthX."
       operationId: openCustomerSite
       x-phase: 2
       x-roles: [customer]
@@ -888,8 +892,68 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  # ---------------------------------------------------------------- tenant (server to server)
+  /growthx_core.api.v1.tenant.redeem_login:
+    post:
+      tags: [tenant]
+      summary: Redeem an "Open my app" token (called by the tenant site, not by Web or Flutter)
+      description: |
+        Called by `growthx_theme.sso.login` on the customer's tenant site. The caller authenticates as the
+        **tenant**, with its own key in `X-GX-Tenant-Key` (written to the tenant's site_config at provisioning;
+        Core stores only its hash). Returns the user the tenant should log in.
+
+        The token is single-use and expires 60 s after `customer.open_site` issued it. Redeeming always consumes
+        it, even when it was issued for a different tenant, so a leaked link can't be retried elsewhere.
+        Each redemption is audit-logged; the token itself is never logged.
+        Rate-limited to 30 per minute per tenant key and 300 per minute per IP address.
+      operationId: tenantRedeemLogin
+      x-phase: 2
+      security:
+        - tenantKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string, description: The `token` query parameter of the sign-in URL }
+      responses:
+        "200":
+          description: Log this user in
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [email, fullName]
+                properties:
+                  email: { type: string, format: email, example: sana@rahimsun.example }
+                  fullName: { type: string, example: Sana Rahim }
+        "401":
+          description: "`invalid_tenant_key`: the key is missing or belongs to no tenant"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: |
+            `invalid_login_token`: the token is unknown, expired or already used, was issued for another tenant,
+            or the user or tenant is no longer active
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
 components:
   securitySchemes:
+    tenantKey:
+      type: apiKey
+      in: header
+      name: X-GX-Tenant-Key
+      description: |
+        A tenant site's own secret (`gxt_…`), written to its site_config as `growthx_tenant_key` during
+        provisioning. Used only by tenant sites calling `tenant.*` endpoints.
     bearerAuth:
       type: http
       scheme: bearer
@@ -983,7 +1047,8 @@ components:
                 Stable code. Current list: unauthenticated, invalid_credentials, invalid_token, forbidden,
                 not_found, validation_failed, email_taken, invalid_plan, invalid_reset_key,
                 payment_verification_failed, payment_unavailable, site_not_ready, not_retryable,
-                idempotency_conflict, rate_limited, bad_request, method_not_allowed, internal_error.
+                idempotency_conflict, rate_limited, bad_request, method_not_allowed, invalid_tenant_key,
+                invalid_login_token, internal_error.
               example: email_taken
             message: { type: string, example: An account with this email already exists. }
             fields:
