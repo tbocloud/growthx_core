@@ -47,9 +47,21 @@ class PressClient:
 	def find_site(self, subdomain: str) -> PressSite | None:
 		raise NotImplementedError
 
+	def install_app(self, site_id: str, app: str) -> None:
+		"""Install `app` on an existing site (used to backfill growthx_theme)."""
+		raise NotImplementedError
+
 	def configure_site(self, site_id: str, settings: dict) -> None:
-		"""Run the vertical's set-up on the new site (company, admin user, defaults).
-		The method to call in solar_operations is being agreed with Nahala."""
+		"""Set up a new site. Safe to run again on a configured site.
+
+		`settings`: company_name, country, currency, timezone, plus for single sign-on:
+		- owner_email, owner_name: the customer's user. Created with a random password nobody
+		  knows (they sign in through GrowthX, or with an email link); `reset_owner_password`
+		  replaces the password of an existing owner the same way.
+		- core_url, tenant_key: written to the site's config as `growthx_core_url` and
+		  `growthx_tenant_key`, for growthx_theme's sso.login.
+		Also enables "Login with Email Link" as the fallback way in.
+		The vertical's own set-up (solar_operations) is being agreed with Nahala."""
 		raise NotImplementedError
 
 	def health_check(self, site_url: str) -> bool:
@@ -78,6 +90,9 @@ class FakePressClient(PressClient):
 	def find_site(self, subdomain):
 		return None
 
+	def install_app(self, site_id, app):
+		pass
+
 	def configure_site(self, site_id, settings):
 		self._maybe_fail("configure")
 
@@ -105,7 +120,12 @@ class RealPressClient(PressClient):
 	def find_site(self, subdomain):
 		self._pending()
 
+	def install_app(self, site_id, app):
+		self._pending()
+
 	def configure_site(self, site_id, settings):
+		# Needs from Press: run set-up on the site, and set site config keys (growthx_core_url,
+		# growthx_tenant_key) without exposing them in logs.
 		self._pending()
 
 	def health_check(self, site_url):
@@ -118,11 +138,10 @@ class LocalPressClient(PressClient):
 
 	    {"mode": "local",
 	     "db_root_username": "root", "db_root_password": "",   # MariaDB admin for new-site
-	     "admin_password": "admin",      # Administrator on each tenant
-	     "user_password": "admin",       # the customer's user on each tenant
+	     "admin_password": "admin",      # Administrator on each tenant (local development only)
 	     "domain": "localhost", "port": 8003,   # tenant URL: http://<subdomain>.localhost:8003
-	     "allow_missing_apps": 1}        # report apps this bench lacks (growthx_theme, the
-	                                     # vertical) as installed, so the job can finish
+	     "allow_missing_apps": 1}        # report the vertical app as installed when this bench
+	                                     # lacks it, so the job can finish (never growthx_theme)
 
 	Sites are named `<subdomain>.<domain>`. They need a web process that picks the site from the
 	Host header; `bench serve` doesn't when `default_site` is set (README). Browsers resolve
@@ -141,7 +160,6 @@ class LocalPressClient(PressClient):
 		self.db_root_username = conf.get("db_root_username") or "root"
 		self.db_root_password = conf.get("db_root_password") or ""
 		self.admin_password = conf.get("admin_password") or "admin"
-		self.user_password = conf.get("user_password") or self.admin_password
 		self.allow_missing_apps = cint(conf.get("allow_missing_apps"))
 
 	# ---- helpers
@@ -166,7 +184,9 @@ class LocalPressClient(PressClient):
 			timeout=timeout,
 		)
 		if result.returncode != 0:
-			raise PressError(f"`frappe {' '.join(args[:3])}` failed: {(result.stderr or result.stdout)[-800:]}")
+			raise PressError(
+				f"`frappe {' '.join(args[:3])}` failed: {(result.stderr or result.stdout)[-800:]}"
+			)
 		return result.stdout
 
 	# ---- PressClient
@@ -212,10 +232,13 @@ class LocalPressClient(PressClient):
 		if code != "0":
 			return PressSite(id=site_id, status="broken")
 
-		installed = list(json.loads(self._frappe("--site", site_id, "list-apps", "-f", "json")).get(site_id, []))
+		installed = list(
+			json.loads(self._frappe("--site", site_id, "list-apps", "-f", "json")).get(site_id, [])
+		)
 		if self.allow_missing_apps:
 			verticals = [app for app in frappe.get_all("GX Product", pluck="vertical_app") if app]
-			missing = [app for app in ["growthx_theme", *verticals] if app not in self._bench_apps()]
+			# Never growthx_theme: without it single sign-on can't work, so the job must fail.
+			missing = [app for app in verticals if app not in self._bench_apps()]
 			installed += missing
 		return PressSite(id=site_id, status="active", apps=installed)
 
@@ -225,8 +248,15 @@ class LocalPressClient(PressClient):
 			return self.get_site(site)
 		return None
 
+	def install_app(self, site_id, app):
+		if app not in self._bench_apps():
+			raise PressError(f"{app} is not on this bench (bench get-app {app})")
+		installed = json.loads(self._frappe("--site", site_id, "list-apps", "-f", "json")).get(site_id, [])
+		if app not in installed:
+			self._frappe("--site", site_id, "install-app", app)
+
 	def configure_site(self, site_id, settings):
-		"""Run ERPNext's setup wizard on the tenant and create the customer's user."""
+		"""Run ERPNext's setup wizard, create the customer's user and set up single sign-on."""
 		today = date.today()
 		fy_start = date(today.year if today.month >= 4 else today.year - 1, 4, 1)
 		args = {
@@ -239,29 +269,49 @@ class LocalPressClient(PressClient):
 			"fy_start_date": fy_start.isoformat(),
 			"fy_end_date": date(fy_start.year + 1, 3, 31).isoformat(),
 		}
+		owner = {
+			"email": settings.get("owner_email"),
+			"name": settings.get("owner_name") or args["company_name"],
+			"reset_password": bool(settings.get("reset_owner_password")),
+			"core_url": settings.get("core_url"),
+		}
 		code = f"""
-import json, frappe
+import json, os, secrets, frappe
+from frappe.installer import update_site_config
+from frappe.utils.password import update_password
 frappe.init(site={site_id!r}, sites_path={self.sites!r}); frappe.connect()
 frappe.set_user("Administrator")
-args, email = json.loads({json.dumps(args)!r}), {settings.get("admin_email")!r}
+args, owner = json.loads({json.dumps(args)!r}), json.loads({json.dumps(owner)!r})
 if not frappe.is_setup_complete():
 	from frappe.desk.page.setup_wizard.setup_wizard import setup_complete
 	result = setup_complete(args)
 	if not frappe.is_setup_complete():
 		raise SystemExit(f"setup wizard failed: {{result}}")
-if email and not frappe.db.exists("User", email):
-	user = frappe.get_doc({{"doctype": "User", "email": email, "first_name": args["company_name"],
-		"send_welcome_email": 0}})
-	user.append("roles", {{"role": "System Manager"}})
-	user.insert(ignore_permissions=True)
-	# Set directly: the password-strength policy would reject a simple local dev password.
-	from frappe.utils.password import update_password
-	update_password(email, {self.user_password!r})
+email = owner["email"]
+if email:
+	created = not frappe.db.exists("User", email)
+	if created:
+		first, _, last = owner["name"].partition(" ")
+		user = frappe.get_doc({{"doctype": "User", "email": email, "first_name": first,
+			"last_name": last or None, "send_welcome_email": 0}})
+		user.append("roles", {{"role": "System Manager"}})
+		user.insert(ignore_permissions=True)
+	if created or owner["reset_password"]:
+		# A random password nobody knows: the customer signs in through GrowthX ("Open my app")
+		# or with an email link, never with a tenant password.
+		update_password(email, secrets.token_urlsafe(32))
+frappe.db.set_single_value("System Settings", "login_with_email_link", 1)
+key = os.environ.get("GX_TENANT_KEY")
+if key:
+	update_site_config("growthx_core_url", owner["core_url"])
+	update_site_config("growthx_tenant_key", key)
 frappe.db.commit()
 frappe.destroy()
 """
+		# The tenant key goes through the environment, not the command line, so it can't be read from `ps`.
+		env = {**os.environ, "GX_TENANT_KEY": settings.get("tenant_key") or ""}
 		result = subprocess.run(
-			[self.python, "-c", code], cwd=self.sites, capture_output=True, text=True, timeout=900
+			[self.python, "-c", code], cwd=self.sites, capture_output=True, text=True, timeout=900, env=env
 		)
 		if result.returncode != 0:
 			raise PressError(f"Configuring {site_id} failed: {(result.stderr or result.stdout)[-800:]}")

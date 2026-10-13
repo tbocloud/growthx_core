@@ -303,7 +303,11 @@ POST {GROWTHX_API_URL}.customer.open_site        {"id": "GXT-00004"}
 - If the site isn't `ready` → `409 site_not_ready`.
 - Someone else's site → `404`.
 
-> **Not working end to end yet:** the tenant side that accepts the token is still to be built (in `growthx_theme`). Until then the URL is issued correctly but doesn't log in. Build the button against this contract.
+**What happens when the browser opens the link** (nothing for the web app to do beyond navigating):
+- The tenant site (`growthx_theme`) redeems the token with Core, server to server, logs the customer in **as their own user** and redirects to the desk (`/desk`; in Frappe v16 `/app` redirects there too). The token doesn't stay in the address bar.
+- The customer never sees the tenant's login page and has no tenant password.
+- An expired (over 60 s), reused or wrong-site link ends on the tenant's `/login` page with "This link has expired. Open your app again from GrowthX." The fix for the user is to click "Open my app" again.
+- If GrowthX is down, the customer can still get in with **"Login with Email Link"** on the tenant's login page (needs outgoing email on the tenant).
 
 ### 5.6 Subscriptions and invoices
 
@@ -505,7 +509,7 @@ Idempotency-Key: …
 | OI-4 | Auth option | Option C, as above. Please confirm. |
 | OI-5 | Base URL, route format, envelope | As above. Please confirm. |
 | OI-6 | Browser → Next.js CSRF | Yours and the Lead's |
-| — | Open-app token exchange on the tenant | Mine (in `growthx_theme`), with DevOps |
+| — | Open-app token exchange on the tenant | **Done** (`growthx_theme.sso.login` + `tenant.redeem_login`). Works locally end to end; staging needs Press to write the tenant's site config (DevOps). |
 | — | Appointments: video provider and the expert list | Endpoints are live. Which video service to use (the link template) and who the experts are: the Lead. Until set, the confirmation says the link follows separately. |
 | — | Caching `catalogue.products` / `catalogue.plans` for 5 minutes on the website | Web's proposal. **To confirm:** can a price change take up to 5 minutes to show? `appointments.slots` must never be cached. |
 | — | Real Press provisioning | DevOps (Press API), then me |
