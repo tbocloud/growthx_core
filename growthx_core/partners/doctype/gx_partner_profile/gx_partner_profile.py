@@ -16,7 +16,9 @@ class GXPartnerProfile(Document):
 		name = self.partner_name
 		if frappe.db.exists("Sales Partner", name):
 			name = f"{self.partner_name} ({self.referral_code})"
-		territory = frappe.db.get_single_value("Selling Settings", "territory") or "All Territories"
+		from growthx_core.setup.defaults import default_link
+
+		territory = default_link("Territory")
 		doc = frappe.get_doc(
 			{
 				"doctype": "Sales Partner",
