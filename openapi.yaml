@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: GrowthX API
-  version: 1.0.0-draft.3
+  version: 1.0.0-draft.4
   description: |
     GrowthX Core API (Frappe app `growthx_core`). **Status: DRAFT for review by Web, Flutter and the Lead.**
     This file is the single API contract. Once agreed, it replaces the web team's
@@ -34,6 +34,9 @@ info:
       and both run in parallel during migration.
     - **Phase:** `x-phase` on each operation is the delivery phase (1 Foundation, 2 Self sign-up,
       3 Money, 4 Launch). An endpoint is usable only once it is deployed to staging.
+    - **Proposed endpoints:** operations marked `x-status: proposed` (summary starts with `[PROPOSED]`) are
+      agreed shapes that are **not built yet**; calling one today returns an error. `x-decision` names a business
+      decision still needed before it can be built. Everything else is implemented.
 servers:
   - url: https://{host}/api/method
     variables:
@@ -859,6 +862,635 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  # ---------------------------------------------------------------- partner app (PROPOSED, not built)
+  # Shapes for review by Flutter (Najath) and Web. Each has `x-status: proposed`: calling it today returns
+  # an error. Built in the phase given by `x-phase`; `x-decision` names a business decision still needed.
+
+  /growthx_core.api.v1.partner.dashboard:
+    get:
+      tags: [partner]
+      summary: "[PROPOSED] Everything the app's home screen needs, in one call"
+      description: |
+        `partner.summary` plus the home-screen extras, so the app doesn't add up totals itself.
+        `recentCustomers` and `recentCommissions` are the latest few (default 4 and 3).
+      operationId: partnerDashboard
+      x-status: proposed
+      x-phase: 2
+      x-roles: [partner]
+      parameters:
+        - { name: recentCustomers, in: query, schema: { type: integer, minimum: 0, maximum: 10, default: 4 } }
+        - { name: recentCommissions, in: query, schema: { type: integer, minimum: 0, maximum: 10, default: 3 } }
+      responses:
+        "200":
+          description: Dashboard
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PartnerDashboard" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /growthx_core.api.v1.partner.customers:
+    get:
+      tags: [partner]
+      summary: "[PROPOSED] Customers this partner brought in"
+      description: Only customers attributed to the calling partner. Newest first by default.
+      operationId: partnerListCustomers
+      x-status: proposed
+      x-phase: 2
+      x-roles: [partner]
+      parameters:
+        - { name: q, in: query, description: "Searches business name, contact name and city", schema: { type: string } }
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/SubscriptionStatus" } }
+        - name: segment
+          in: query
+          schema: { type: string, enum: [trials_ending_soon, joined_this_month] }
+          description: "`trials_ending_soon`: trial ends within 7 days"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - name: sort
+          in: query
+          schema: { type: string, enum: [joinedAt, -joinedAt, businessName, -businessName], default: -joinedAt }
+      responses:
+        "200":
+          description: Customers
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/PartnerCustomer" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.partner.customer:
+    get:
+      tags: [partner]
+      summary: "[PROPOSED] One customer, with subscription timeline and commissions"
+      description: A customer not attributed to the caller returns 404.
+      operationId: partnerGetCustomer
+      x-status: proposed
+      x-phase: 2
+      x-roles: [partner]
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Customer
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PartnerCustomerDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /growthx_core.api.v1.partner.referral_stats:
+    get:
+      tags: [partner]
+      summary: "[PROPOSED] Referral link clicks, sign-ups and conversions for a period"
+      description: |
+        `clicks` is null until the website records link visits (Web). `conversions` are sign-ups that became paying.
+        Defaults to the current month.
+      operationId: partnerReferralStats
+      x-status: proposed
+      x-phase: 2
+      x-roles: [partner]
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date, example: 2026-10-01 } }
+        - { name: to, in: query, schema: { type: string, format: date, example: 2026-10-31 } }
+      responses:
+        "200":
+          description: Stats
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReferralStats" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.partner.campaigns:
+    get:
+      tags: [partner]
+      summary: "[PROPOSED] Campaigns the partner can share"
+      description: |
+        A campaign link is the partner's referral link plus the campaign code, e.g. `{growthx_web_url}/r/{code}?c={campaignCode}`;
+        use `url` from the response rather than building it.
+      operationId: partnerListCampaigns
+      x-status: proposed
+      x-phase: 2
+      x-decision: "Do campaigns exist at launch? Global or per partner? How do they change attribution or price? (Sammish)"
+      x-roles: [partner]
+      parameters:
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/CampaignStatus" } }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Campaigns
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/Campaign" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /growthx_core.api.v1.partner.leads:
+    get:
+      tags: [partner]
+      summary: "[PROPOSED] The partner's leads"
+      operationId: partnerListLeads
+      x-status: proposed
+      x-phase: 2
+      x-decision: "Lead rules: duplicates across partners, who may change status, what 'converted' means (Sammish)"
+      x-roles: [partner]
+      parameters:
+        - { name: q, in: query, description: "Searches contact name, business name and phone", schema: { type: string } }
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/LeadStatus" } }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - name: sort
+          in: query
+          schema: { type: string, enum: [createdAt, -createdAt, updatedAt, -updatedAt], default: -updatedAt }
+      responses:
+        "200":
+          description: Leads
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/PartnerLead" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /growthx_core.api.v1.partner.create_lead:
+    post:
+      tags: [partner]
+      summary: "[PROPOSED] Add a lead"
+      description: Stored as an ERPNext Lead linked to the partner. Phone and email are validated on the server.
+      operationId: partnerCreateLead
+      x-status: proposed
+      x-phase: 2
+      x-decision: "Duplicate rule: same phone already a lead of another partner, or already a customer (Sammish)"
+      x-roles: [partner]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LeadInput" }
+      responses:
+        "201":
+          description: Lead created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PartnerLead" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "409":
+          description: "`duplicate_lead` (see `fields.phone`), or `idempotency_conflict`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.partner.update_lead:
+    post:
+      tags: [partner]
+      summary: "[PROPOSED] Change a lead's details or status"
+      description: |
+        Send `id` plus only the fields to change. A partner can't set `converted`: the server sets it when the lead signs up.
+        Another partner's lead returns 404.
+      operationId: partnerUpdateLead
+      x-status: proposed
+      x-phase: 2
+      x-roles: [partner]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - type: object
+                  required: [id]
+                  properties:
+                    id: { type: string }
+                    status: { type: string, enum: [new, contacted, demo_scheduled, lost] }
+                - $ref: "#/components/schemas/LeadPatch"
+      responses:
+        "200":
+          description: Updated lead
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PartnerLead" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.partner.earnings:
+    get:
+      tags: [partner]
+      summary: "[PROPOSED] Earnings summary"
+      operationId: partnerEarnings
+      x-status: proposed
+      x-phase: 3
+      x-decision: "Commission rules, review period, TDS and payout date (D8, finance)"
+      x-roles: [partner]
+      responses:
+        "200":
+          description: Earnings
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PartnerEarnings" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /growthx_core.api.v1.partner.commissions:
+    get:
+      tags: [partner]
+      summary: "[PROPOSED] Commission ledger"
+      operationId: partnerListCommissions
+      x-status: proposed
+      x-phase: 3
+      x-decision: "Commission rules (D8)"
+      x-roles: [partner]
+      parameters:
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/CommissionStatus" } }
+        - { name: type, in: query, schema: { $ref: "#/components/schemas/CommissionType" } }
+        - { name: customerId, in: query, schema: { type: string } }
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Commissions, newest first
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/Commission" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.partner.payouts:
+    get:
+      tags: [partner]
+      summary: "[PROPOSED] Payout history"
+      operationId: partnerListPayouts
+      x-status: proposed
+      x-phase: 3
+      x-decision: "Payout schedule, minimum payout, TDS (D8, finance)"
+      x-roles: [partner]
+      parameters:
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/PayoutStatus" } }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Payouts, newest first
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/Payout" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /growthx_core.api.v1.partner.payout:
+    get:
+      tags: [partner]
+      summary: "[PROPOSED] One payout with its commission lines"
+      operationId: partnerGetPayout
+      x-status: proposed
+      x-phase: 3
+      x-roles: [partner]
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Payout
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PayoutDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /growthx_core.api.v1.partner.notifications:
+    get:
+      tags: [partner]
+      summary: "[PROPOSED] In-app notifications, newest first"
+      description: The same events are also sent as push notifications (see `partner.register_device`).
+      operationId: partnerListNotifications
+      x-status: proposed
+      x-phase: 2
+      x-roles: [partner]
+      parameters:
+        - { name: unreadOnly, in: query, schema: { type: boolean, default: false } }
+        - { name: category, in: query, schema: { $ref: "#/components/schemas/NotificationCategory" } }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Notifications
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    required: [items, unreadCount]
+                    properties:
+                      unreadCount: { type: integer, description: Unread across all pages and categories }
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/PartnerNotification" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /growthx_core.api.v1.partner.mark_notification_read:
+    post:
+      tags: [partner]
+      summary: "[PROPOSED] Mark one notification as read"
+      operationId: partnerMarkNotificationRead
+      x-status: proposed
+      x-phase: 2
+      x-roles: [partner]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [id], properties: { id: { type: string } } }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /growthx_core.api.v1.partner.mark_all_notifications_read:
+    post:
+      tags: [partner]
+      summary: "[PROPOSED] Mark all of the partner's notifications as read"
+      operationId: partnerMarkAllNotificationsRead
+      x-status: proposed
+      x-phase: 2
+      x-roles: [partner]
+      responses:
+        "200":
+          description: Done
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, updated]
+                properties:
+                  ok: { type: boolean, enum: [true] }
+                  updated: { type: integer, description: How many were marked read }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /growthx_core.api.v1.partner.dismiss_notification:
+    post:
+      tags: [partner]
+      summary: "[PROPOSED] Hide a notification from the list"
+      description: Optional. Build only if the app keeps its "remove" action.
+      operationId: partnerDismissNotification
+      x-status: proposed
+      x-phase: 2
+      x-roles: [partner]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [id], properties: { id: { type: string } } }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /growthx_core.api.v1.partner.register_device:
+    post:
+      tags: [partner]
+      summary: "[PROPOSED] Register this device for push notifications (FCM)"
+      description: |
+        Call after login and whenever FCM gives a new token. Registering the same token again just updates it.
+        Push messages never contain amounts or customer personal data (they may show on the lock screen).
+      operationId: partnerRegisterDevice
+      x-status: proposed
+      x-phase: 2
+      x-roles: [partner]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, platform]
+              properties:
+                token: { type: string, description: FCM registration token }
+                platform: { type: string, enum: [android, ios] }
+                appVersion: { type: string, example: 1.0.0 }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.partner.unregister_device:
+    post:
+      tags: [partner]
+      summary: "[PROPOSED] Stop push notifications to this device"
+      description: Call before `auth.logout`.
+      operationId: partnerUnregisterDevice
+      x-status: proposed
+      x-phase: 2
+      x-roles: [partner]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [token], properties: { token: { type: string } } }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /growthx_core.api.v1.partner.profile:
+    get:
+      tags: [partner]
+      summary: "[PROPOSED] The partner's profile"
+      description: PAN and bank account are always masked.
+      operationId: partnerGetProfile
+      x-status: proposed
+      x-phase: 2
+      x-roles: [partner]
+      responses:
+        "200":
+          description: Profile
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PartnerProfile" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /growthx_core.api.v1.partner.update_profile:
+    post:
+      tags: [partner]
+      summary: "[PROPOSED] Edit the partner's contact details"
+      description: |
+        Send only the fields to change. Tier, referral code, status, commission rate, email, PAN and payout details
+        can't be changed here.
+      operationId: partnerUpdateProfile
+      x-status: proposed
+      x-phase: 2
+      x-roles: [partner]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                name: { type: string, maxLength: 140 }
+                phone: { type: string, example: "+919876543210" }
+                city: { type: string, maxLength: 140 }
+                company: { type: string, maxLength: 140 }
+      responses:
+        "200":
+          description: Updated profile
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PartnerProfile" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.partner.notification_preferences:
+    get:
+      tags: [partner]
+      summary: "[PROPOSED] Which notifications the partner wants"
+      operationId: partnerGetNotificationPreferences
+      x-status: proposed
+      x-phase: 2
+      x-roles: [partner]
+      responses:
+        "200":
+          description: Preferences
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NotificationPreferences" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /growthx_core.api.v1.partner.update_notification_preferences:
+    post:
+      tags: [partner]
+      summary: "[PROPOSED] Save notification preferences"
+      description: Send only the fields to change. Payout and account notifications can't be turned off.
+      operationId: partnerUpdateNotificationPreferences
+      x-status: proposed
+      x-phase: 2
+      x-roles: [partner]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NotificationPreferences" }
+      responses:
+        "200":
+          description: Saved preferences
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NotificationPreferences" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.partner.request_payout_method_otp:
+    post:
+      tags: [partner]
+      summary: "[PROPOSED] Send a one-time code before changing payout details"
+      description: Sends a 6-digit code to the partner's verified phone (or email), valid 10 minutes.
+      operationId: partnerRequestPayoutMethodOtp
+      x-status: proposed
+      x-phase: 3
+      x-decision: "Verification: SMS OTP, email OTP, or password re-entry? Needs an SMS provider if SMS (Sammish)"
+      x-roles: [partner]
+      responses:
+        "202":
+          description: Code sent
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, sentTo, expiresAt]
+                properties:
+                  ok: { type: boolean, enum: [true] }
+                  sentTo: { type: string, description: Masked destination, example: "+91******3412" }
+                  expiresAt: { type: string, format: date-time }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /growthx_core.api.v1.partner.update_payout_method:
+    post:
+      tags: [partner]
+      summary: "[PROPOSED] Change bank account or UPI for payouts (verified)"
+      description: |
+        Needs the code from `partner.request_payout_method_otp`. Audit-logged. The full account number is accepted here
+        but never returned; responses show `accountLast4` only.
+      operationId: partnerUpdatePayoutMethod
+      x-status: proposed
+      x-phase: 3
+      x-roles: [partner]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, otp]
+              properties:
+                type: { type: string, enum: [bank, upi] }
+                otp: { type: string, example: "123456" }
+                bank:
+                  type: object
+                  description: Required when type is bank
+                  required: [accountHolder, accountNumber, ifsc]
+                  properties:
+                    accountHolder: { type: string }
+                    accountNumber: { type: string }
+                    ifsc: { type: string, example: HDFC0001234 }
+                upiId: { type: string, description: Required when type is upi, example: partner@okhdfc }
+      responses:
+        "200":
+          description: Saved (masked)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PayoutMethod" }
+        "400":
+          description: "`invalid_otp`: wrong or expired code"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
   # ---------------------------------------------------------------- admin
   /growthx_core.api.v1.admin.summary:
     get:
@@ -1300,7 +1932,7 @@ components:
                 payment_verification_failed, payment_unavailable, site_not_ready, not_retryable,
                 slot_taken, expert_busy, not_changeable, not_started,
                 idempotency_conflict, rate_limited, bad_request, method_not_allowed, invalid_tenant_key,
-                invalid_login_token, internal_error.
+                invalid_login_token, internal_error. Proposed: duplicate_lead, invalid_otp.
               example: email_taken
             message: { type: string, example: An account with this email already exists. }
             fields:
@@ -1480,7 +2112,7 @@ components:
         number: { type: string, example: GX-2026-00412 }
         status: { $ref: "#/components/schemas/InvoiceStatus" }
         subtotal: { $ref: "#/components/schemas/Money" }
-        tax: { $ref: "#/components/schemas/Money", description: Total GST (CGST+SGST, or IGST) }
+        tax: { $ref: "#/components/schemas/Money", description: "Total GST (CGST+SGST, or IGST)" }
         total: { $ref: "#/components/schemas/Money" }
         issuedAt: { type: string, format: date-time }
         dueAt: { type: string, format: date-time, nullable: true }
@@ -1524,6 +2156,276 @@ components:
         openLeads: { type: integer, nullable: true, description: Null until lead tracking is agreed (§2.4) }
         monthlyRecurringCommission: { $ref: "#/components/schemas/Money" }
         pendingPayout: { $ref: "#/components/schemas/Money" }
+
+    # ---------------------------------------------------------------- partner app (PROPOSED)
+    PartnerDashboard:
+      description: "[PROPOSED] `PartnerSummary` plus the app's home-screen extras"
+      allOf:
+        - $ref: "#/components/schemas/PartnerSummary"
+        - type: object
+          required: [earnings, newCustomersThisMonth, trialsEndingNext7Days, unreadNotifications, recentCustomers, recentCommissions]
+          properties:
+            earnings: { $ref: "#/components/schemas/PartnerEarnings" }
+            newCustomersThisMonth: { type: integer }
+            trialsEndingNext7Days: { type: integer }
+            unreadNotifications: { type: integer }
+            recentCustomers:
+              type: array
+              items: { $ref: "#/components/schemas/PartnerCustomer" }
+            recentCommissions:
+              type: array
+              items: { $ref: "#/components/schemas/Commission" }
+
+    PartnerCustomer:
+      description: "[PROPOSED] A customer attributed to the partner"
+      type: object
+      required: [id, businessName, subscriptionStatus, siteActive, joinedAt, source]
+      properties:
+        id: { type: string }
+        businessName: { type: string, example: Noor Solar }
+        contactName: { type: string, nullable: true, example: Amina Noor }
+        phone: { type: string, nullable: true, description: "Shown so the partner can follow up. Confirm with Sammish (privacy)." }
+        email: { type: string, format: email, nullable: true }
+        city: { type: string, nullable: true }
+        productSlug: { type: string, nullable: true, example: solar }
+        plan:
+          type: object
+          nullable: true
+          required: [id, name, interval, price]
+          properties:
+            id: { type: string, example: solar-growth-month }
+            name: { type: string, example: Growth }
+            interval: { $ref: "#/components/schemas/BillingInterval" }
+            price: { $ref: "#/components/schemas/Price" }
+        subscriptionStatus: { $ref: "#/components/schemas/SubscriptionStatus" }
+        siteActive: { type: boolean, description: The customer's ERP site is ready and not suspended }
+        joinedAt: { type: string, format: date-time }
+        trialEndsAt: { type: string, format: date-time, nullable: true }
+        renewsAt: { type: string, format: date-time, nullable: true }
+        source:
+          type: object
+          required: [type]
+          properties:
+            type: { type: string, enum: [referral_link, campaign, lead] }
+            campaignId: { type: string, nullable: true }
+
+    PartnerCustomerDetail:
+      allOf:
+        - $ref: "#/components/schemas/PartnerCustomer"
+        - type: object
+          required: [timeline, commissions]
+          properties:
+            timeline:
+              type: array
+              description: Oldest first
+              items:
+                type: object
+                required: [at, event]
+                properties:
+                  at: { type: string, format: date-time }
+                  event: { type: string, enum: [signed_up, trial_started, site_ready, paid, renewed, payment_failed, suspended, canceled] }
+                  description: { type: string, nullable: true }
+            commissions:
+              type: array
+              items: { $ref: "#/components/schemas/Commission" }
+
+    ReferralStats:
+      type: object
+      required: [from, to, signups, conversions]
+      properties:
+        from: { type: string, format: date }
+        to: { type: string, format: date }
+        clicks: { type: integer, nullable: true, description: Null until the website tracks link visits }
+        signups: { type: integer }
+        conversions: { type: integer }
+        conversionRate: { type: number, nullable: true, description: conversions / signups (0 to 1). Null when signups is 0. }
+
+    CampaignStatus:
+      type: string
+      enum: [scheduled, active, paused, ended]
+
+    Campaign:
+      type: object
+      required: [id, name, code, url, status]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        code: { type: string, example: OFFER25 }
+        offer: { type: string, nullable: true, description: "What the customer gets, as display text" }
+        url: { type: string, format: uri, description: This partner's link for the campaign. Use it for share and QR. }
+        startsOn: { type: string, format: date, nullable: true }
+        endsOn: { type: string, format: date, nullable: true }
+        status: { $ref: "#/components/schemas/CampaignStatus" }
+        stats:
+          type: object
+          properties:
+            clicks: { type: integer, nullable: true }
+            signups: { type: integer }
+            conversions: { type: integer }
+
+    LeadStatus:
+      type: string
+      enum: [new, contacted, demo_scheduled, converted, lost]
+      description: "`converted` is set by the server when the lead signs up. Show `lost` as \"Not interested\"."
+
+    LeadPatch:
+      type: object
+      properties:
+        contactName: { type: string, maxLength: 140 }
+        businessName: { type: string, maxLength: 140 }
+        phone: { type: string, example: "+919846033412" }
+        email: { type: string, format: email }
+        city: { type: string, maxLength: 140 }
+        productSlug: { type: string, example: solar }
+        interestedPlanId: { type: string, example: solar-growth-month }
+        notes: { type: string, maxLength: 2000 }
+
+    LeadInput:
+      allOf:
+        - $ref: "#/components/schemas/LeadPatch"
+        - type: object
+          required: [contactName, businessName, phone]
+
+    PartnerLead:
+      allOf:
+        - $ref: "#/components/schemas/LeadPatch"
+        - type: object
+          required: [id, contactName, businessName, phone, status, createdAt, updatedAt]
+          properties:
+            id: { type: string }
+            status: { $ref: "#/components/schemas/LeadStatus" }
+            customerId: { type: string, nullable: true, description: Set once the lead signs up }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
+
+    PartnerEarnings:
+      description: "[PROPOSED] All amounts calculated on the server (commission rules: D8)"
+      type: object
+      required: [thisMonth, lastMonth, pending, approved, paidLifetime, lifetimeTotal]
+      properties:
+        thisMonth: { $ref: "#/components/schemas/Money" }
+        lastMonth: { $ref: "#/components/schemas/Money" }
+        pending: { $ref: "#/components/schemas/Money", description: Under review }
+        approved: { $ref: "#/components/schemas/Money", description: "Approved, not yet paid" }
+        paidLifetime: { $ref: "#/components/schemas/Money" }
+        lifetimeTotal: { $ref: "#/components/schemas/Money" }
+        nextPayoutDate: { type: string, format: date, nullable: true }
+        tdsRate: { type: number, nullable: true, description: "e.g. 0.02 for 2 %. Display only; TDS is calculated on the server." }
+
+    CommissionStatus:
+      type: string
+      enum: [pending, approved, paid, reversed]
+      description: "Show `pending` as \"Under review\". `reversed`: the customer was refunded."
+
+    CommissionType:
+      type: string
+      enum: [first_month, recurring, bonus]
+
+    Commission:
+      type: object
+      required: [id, type, amount, status, earnedAt]
+      properties:
+        id: { type: string }
+        customerId: { type: string, nullable: true }
+        customerName: { type: string, nullable: true, example: Noor Solar }
+        invoiceId: { type: string, nullable: true }
+        type: { $ref: "#/components/schemas/CommissionType" }
+        base: { $ref: "#/components/schemas/Money", description: Amount the commission is calculated on }
+        rate: { type: number, nullable: true, description: "e.g. 0.2 for 20 %" }
+        amount: { $ref: "#/components/schemas/Money" }
+        status: { $ref: "#/components/schemas/CommissionStatus" }
+        earnedAt: { type: string, format: date-time }
+        reviewUntil: { type: string, format: date-time, nullable: true }
+        payoutId: { type: string, nullable: true }
+
+    PayoutStatus:
+      type: string
+      enum: [processing, paid, failed]
+
+    PayoutMethod:
+      description: Always masked
+      type: object
+      required: [type]
+      properties:
+        type: { type: string, enum: [bank, upi] }
+        bankName: { type: string, nullable: true, example: HDFC Bank }
+        accountLast4: { type: string, nullable: true, example: "7812" }
+        ifsc: { type: string, nullable: true }
+        upiId: { type: string, nullable: true, description: "Masked, e.g. pa****@okhdfc" }
+
+    Payout:
+      type: object
+      required: [id, reference, period, status, gross, tds, net]
+      properties:
+        id: { type: string }
+        reference: { type: string, example: GXP-2026-0318 }
+        period: { type: string, pattern: "^\\d{4}-\\d{2}$", example: 2026-09 }
+        status: { $ref: "#/components/schemas/PayoutStatus" }
+        paidAt: { type: string, format: date-time, nullable: true }
+        method: { allOf: [{ $ref: "#/components/schemas/PayoutMethod" }], nullable: true }
+        gross: { $ref: "#/components/schemas/Money" }
+        tds: { $ref: "#/components/schemas/Money" }
+        net: { $ref: "#/components/schemas/Money" }
+
+    PayoutDetail:
+      allOf:
+        - $ref: "#/components/schemas/Payout"
+        - type: object
+          required: [commissions]
+          properties:
+            commissions:
+              type: array
+              items: { $ref: "#/components/schemas/Commission" }
+
+    NotificationCategory:
+      type: string
+      enum: [commission, payout, customer, trial, lead, account]
+
+    PartnerNotification:
+      type: object
+      required: [id, category, title, body, createdAt]
+      properties:
+        id: { type: string }
+        category: { $ref: "#/components/schemas/NotificationCategory" }
+        title: { type: string, example: Commission earned }
+        body: { type: string, example: Your commission is under review. }
+        createdAt: { type: string, format: date-time }
+        readAt: { type: string, format: date-time, nullable: true }
+        deepLink:
+          type: object
+          nullable: true
+          description: Where tapping goes. The app maps `type` to its own route.
+          required: [type]
+          properties:
+            type: { type: string, enum: [customer, lead, commission, payout, earnings, profile] }
+            id: { type: string, nullable: true }
+
+    NotificationPreferences:
+      type: object
+      properties:
+        commissions: { type: boolean }
+        newCustomers: { type: boolean }
+        trialReminders: { type: boolean }
+        productUpdates: { type: boolean }
+
+    PartnerProfile:
+      type: object
+      required: [id, name, email, status, referralCode, memberSince]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        email: { type: string, format: email }
+        phone: { type: string, nullable: true }
+        city: { type: string, nullable: true }
+        company: { type: string, nullable: true }
+        gstin: { type: string, nullable: true }
+        panMasked: { type: string, nullable: true, example: ABCDE****F }
+        tier: { type: string, nullable: true, example: Silver Partner, description: "Display label; tiers are pending D8" }
+        status: { type: string, enum: [pending_approval, active, suspended] }
+        referralCode: { type: string }
+        memberSince: { type: string, format: date }
+        payoutMethod: { allOf: [{ $ref: "#/components/schemas/PayoutMethod" }], nullable: true }
 
     AdminSummary:
       type: object
@@ -1634,6 +2536,6 @@ components:
                 required: [at, actor, action]
                 properties:
                   at: { type: string, format: date-time }
-                  actor: { type: string, description: User id, or Guest for the visitor }
+                  actor: { type: string, description: "User id, or Guest for the visitor" }
                   action: { type: string, example: reschedule }
                   details: { type: string, nullable: true }

@@ -59,10 +59,26 @@ These are deliberately left out of `openapi.yaml` until their business rules are
 
 | Phase | Endpoints |
 |---|---|
-| 2 (Self sign-up) | `customer.products`; `partner.referrals`, `partner.customers`; `admin.partners` (list, approve, suspend) |
-| 3 (Money) | `customer.payments`, `customer.invoice_pdf`, `customer.change_plan`, `customer.cancel_subscription`, `customer.billing_profile` (GSTIN, state); `partner.commissions`, `partner.payouts`, `partner.profile` (PAN, bank/UPI); `admin.subscriptions`, `admin.billing`, `admin.commissions`, `admin.run_payouts` |
+| 2 (Self sign-up) | `customer.products`; `admin.partners` (list, approve, suspend) |
+| 3 (Money) | `customer.payments`, `customer.invoice_pdf`, `customer.change_plan`, `customer.cancel_subscription`, `customer.billing_profile` (GSTIN, state); `admin.subscriptions`, `admin.billing`, `admin.commissions`, `admin.run_payouts` |
 | 4 (Launch) | `admin.products`, `admin.plans` (the ERPNext desk is used until then); `admin.analytics` |
-| Needs a decision | `customer.access` (tenant users and seats), `customer.support_tickets`, `partner.leads`; `partner.team` (only if multi-level commission is approved) |
+| Needs a decision | `customer.access` (tenant users and seats), `customer.support_tickets`; `partner.team` (only if multi-level commission is approved) |
+
+The **Partner app** endpoints are now in `openapi.yaml` as **proposed shapes** (`x-status: proposed`), from Flutter's
+"GrowthX Partner App - Proposed API Contract" (14 Oct 2026). They are for review by Flutter and Web and are not built yet:
+
+| Phase | Proposed endpoints | Blocked on |
+|---|---|---|
+| 2 | `partner.dashboard`, `partner.customers`, `partner.customer`, `partner.referral_stats`, `partner.notifications`, `partner.mark_notification_read`, `partner.mark_all_notifications_read`, `partner.dismiss_notification` (optional), `partner.register_device`, `partner.unregister_device`, `partner.profile`, `partner.update_profile`, `partner.notification_preferences`, `partner.update_notification_preferences` | — (click counts in `referral_stats` need the website to record visits) |
+| 2 | `partner.leads`, `partner.create_lead`, `partner.update_lead` | Lead rules: duplicates across partners, who changes status (Sammish) |
+| 2 | `partner.campaigns` | Do campaigns exist at launch? Global or per partner? (Sammish) |
+| 3 | `partner.earnings`, `partner.commissions`, `partner.payouts`, `partner.payout` | Commission rules, review period, TDS, payout date (D8, finance) |
+| 3 | `partner.request_payout_method_otp`, `partner.update_payout_method` | Verification method (SMS or email OTP, or password) and an SMS provider (Sammish) |
+
+How Flutter's proposal was adapted to the agreed conventions: no `{data, meta, error}` envelope (the body is the
+resource); camelCase fields; money as integer paise; `{items, page, pageSize, total}`; Frappe methods (POST with `id`
+in the body instead of `PATCH /…/{id}`); lower-case error codes. Added: device registration for push, `reversed`
+commission status (refunds), `lead` notification category, and an OTP step before changing payout details.
 
 ## 5. Known gaps in this draft
 - Real staging and production hosts are pending DevOps.
