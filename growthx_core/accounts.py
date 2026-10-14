@@ -85,6 +85,11 @@ def create_customer_account(
 		}
 	).insert(ignore_permissions=True)
 
+	if account.referred_by:
+		from growthx_core.partners.notifications import on_customer_referred
+
+		on_customer_referred(account)
+
 	if not plan:
 		return user, None
 
