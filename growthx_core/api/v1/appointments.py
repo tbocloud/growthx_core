@@ -104,7 +104,12 @@ def book():
 	if schedule.meeting_url_template:
 		appointment.db_set("meeting_url", schedule.meeting_url_template.replace("{id}", appointment.name))
 	_record_in_crm(appointment)
-	audit("appointment.booked", "GX Appointment", appointment.name, f"By the visitor for {iso(appointment.start)}")
+	audit(
+		"appointment.booked",
+		"GX Appointment",
+		appointment.name,
+		f"By the visitor for {iso(appointment.start)}",
+	)
 	_notify(appointment, "booked", token=token)
 
 	return 201, {
@@ -125,7 +130,9 @@ def manage():
 def cancel():
 	data = body()
 	appointment = _by_token(data)
-	change(appointment, "cancel", by="Visitor", reason=get_str(data, "reason", max_length=500, label="Reason"))
+	change(
+		appointment, "cancel", by="Visitor", reason=get_str(data, "reason", max_length=500, label="Reason")
+	)
 	return _public_view(appointment)
 
 
@@ -174,12 +181,16 @@ def change(appointment, action: str, by: str = "Team", start=None, expert=None, 
 		if not note:
 			raise validation_error({"note": "Write a note."})
 		stamp = f"{now_datetime():%d %b %Y %H:%M} · {frappe.session.user}"
-		appointment.db_set("admin_notes", "\n\n".join(filter(None, [appointment.admin_notes, f"[{stamp}] {note}"])))
+		appointment.db_set(
+			"admin_notes", "\n\n".join(filter(None, [appointment.admin_notes, f"[{stamp}] {note}"]))
+		)
 		audit("appointment.note", "GX Appointment", appointment.name, note)
 		return appointment
 
 	if appointment.status != "Confirmed":
-		raise ApiError(409, "not_changeable", f"This call is already {STATUS[appointment.status].replace('_', ' ')}.")
+		raise ApiError(
+			409, "not_changeable", f"This call is already {STATUS[appointment.status].replace('_', ' ')}."
+		)
 	started = appointment.start <= now_datetime()
 
 	if action in ("complete", "no_show"):
@@ -195,7 +206,12 @@ def change(appointment, action: str, by: str = "Team", start=None, expert=None, 
 	if action == "cancel":
 		appointment.db_set({"status": "Cancelled", "cancelled_by": by, "cancel_reason": reason})
 		_update_event(appointment, cancelled=True)
-		audit("appointment.cancel", "GX Appointment", appointment.name, f"By {by.lower()}" + (f": {reason}" if reason else ""))
+		audit(
+			"appointment.cancel",
+			"GX Appointment",
+			appointment.name,
+			f"By {by.lower()}" + (f": {reason}" if reason else ""),
+		)
 		_notify(appointment, "cancelled", by=by)
 		return appointment
 
@@ -224,7 +240,12 @@ def change(appointment, action: str, by: str = "Team", start=None, expert=None, 
 			)
 			frappe.db.commit()
 		_update_event(appointment)
-		audit("appointment.reschedule", "GX Appointment", appointment.name, f"By {by.lower()}: {iso(previous)} → {iso(start)}")
+		audit(
+			"appointment.reschedule",
+			"GX Appointment",
+			appointment.name,
+			f"By {by.lower()}: {iso(previous)} → {iso(start)}",
+		)
 		_notify(appointment, "rescheduled", by=by)
 		return appointment
 
@@ -251,7 +272,12 @@ def history(appointment) -> list[dict]:
 		order_by="creation asc",
 	)
 	return [
-		{"at": iso(r.creation), "actor": r.actor, "action": r.action.removeprefix("appointment."), "details": r.details}
+		{
+			"at": iso(r.creation),
+			"actor": r.actor,
+			"action": r.action.removeprefix("appointment."),
+			"details": r.details,
+		}
 		for r in rows
 	]
 
@@ -458,7 +484,11 @@ def _update_event(appointment, cancelled=False):
 	if not appointment.event:
 		return
 	try:
-		values = {"status": "Cancelled"} if cancelled else {"starts_on": appointment.start, "ends_on": appointment.end}
+		values = (
+			{"status": "Cancelled"}
+			if cancelled
+			else {"starts_on": appointment.start, "ends_on": appointment.end}
+		)
 		frappe.db.set_value("Event", appointment.event, values)
 	except Exception:
 		frappe.log_error(title=f"GrowthX: could not update the CRM event for {appointment.name}")
@@ -469,7 +499,9 @@ def _ics(appointment, cancelled=False) -> str:
 		return iso(value).replace("-", "").replace(":", "")
 
 	def text(value):
-		return (value or "").replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
+		return (
+			(value or "").replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
+		)
 
 	# Calendar apps replace the event when the UID matches and SEQUENCE is higher.
 	sequence = int(now_datetime().timestamp()) - 1_700_000_000
