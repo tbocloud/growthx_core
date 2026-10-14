@@ -7,7 +7,6 @@ from frappe.tests import IntegrationTestCase
 from growthx_core.api.v1 import _core, partner
 
 
-
 def _call(data):
 	frappe.local.form_dict = frappe._dict(data)
 	frappe.local.request_ip = "127.0.0.1"

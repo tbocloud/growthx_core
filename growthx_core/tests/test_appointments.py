@@ -138,7 +138,9 @@ class TestAppointments(AppointmentTestCase):
 
 	def test_validation(self):
 		self.assertEqual(_json(self._book("tomorrow"))["error"]["fields"].keys(), {"start"})
-		self.assertEqual(_json(self._book("2030-01-07T04:30:00", app=None))["error"]["fields"].keys(), {"start"})
+		self.assertEqual(
+			_json(self._book("2030-01-07T04:30:00", app=None))["error"]["fields"].keys(), {"start"}
+		)
 		bad_phone = self._book("2030-01-07T04:30:00Z", phone="12345")
 		self.assertEqual(bad_phone.status_code, 422)
 		self.assertIn("phone", _json(bad_phone)["error"]["fields"])
@@ -153,17 +155,25 @@ class TestAppointmentWorkflow(AppointmentTestCase):
 		self._set({"experts": f"a@{EMAIL_DOMAIN}\nb@{EMAIL_DOMAIN}"})
 		for p in (
 			patch.object(_core, "_require_auth"),  # admin endpoints: the caller is an admin
-			patch.object(appointments.secrets, "token_urlsafe", side_effect=lambda n: f"tok-{frappe.generate_hash(length=8)}"),
+			patch.object(
+				appointments.secrets,
+				"token_urlsafe",
+				side_effect=lambda n: f"tok-{frappe.generate_hash(length=8)}",
+			),
 		):
 			p.start()
 			self.addCleanup(p.stop)
 
 	def tearDown(self):
-		frappe.db.delete("GX Audit Log", {"reference_doctype": "GX Appointment", "reference_name": ("in", self._ids())})
+		frappe.db.delete(
+			"GX Audit Log", {"reference_doctype": "GX Appointment", "reference_name": ("in", self._ids())}
+		)
 		super().tearDown()
 
 	def _ids(self):
-		return frappe.get_all("GX Appointment", {"email": ("like", f"%@{EMAIL_DOMAIN}")}, pluck="name") or [""]
+		return frappe.get_all("GX Appointment", {"email": ("like", f"%@{EMAIL_DOMAIN}")}, pluck="name") or [
+			""
+		]
 
 	def _booked(self, start="2030-01-07T05:00:00Z", who="riya"):
 		with patch.object(appointments.secrets, "token_urlsafe", return_value=f"tok-{who}"):
@@ -209,7 +219,9 @@ class TestAppointmentWorkflow(AppointmentTestCase):
 	def test_admin_reschedule_keeps_the_expert_when_free(self):
 		appointment_id, _ = self._booked()
 		expert = frappe.db.get_value("GX Appointment", appointment_id, "expert")
-		body = _json(self._admin({"id": appointment_id, "action": "reschedule", "start": "2030-01-07T06:00:00Z"}))
+		body = _json(
+			self._admin({"id": appointment_id, "action": "reschedule", "start": "2030-01-07T06:00:00Z"})
+		)
 		self.assertEqual((body["start"], body["expert"]), ("2030-01-07T06:00:00Z", expert))
 		self.assertEqual([h["action"] for h in body["history"]], ["booked", "reschedule"])
 
@@ -220,7 +232,9 @@ class TestAppointmentWorkflow(AppointmentTestCase):
 		response = self._admin({"id": first, "action": "reassign", "expert": busy})
 		self.assertEqual(response.status_code, 409)
 		self.assertEqual(_json(response)["error"]["code"], "expert_busy")
-		self.assertEqual(self._admin({"id": first, "action": "reassign", "expert": "x@nowhere.example"}).status_code, 422)
+		self.assertEqual(
+			self._admin({"id": first, "action": "reassign", "expert": "x@nowhere.example"}).status_code, 422
+		)
 
 	def test_completed_and_no_show_only_after_the_call_starts(self):
 		appointment_id, _ = self._booked()

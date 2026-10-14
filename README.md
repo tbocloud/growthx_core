@@ -69,6 +69,25 @@ cd sites && ../env/bin/python -c "from frappe.app import serve; serve(port=8003,
 bench --site growthX run-tests --app growthx_core
 ```
 
+CI (`.github/workflows/ci.yml`) runs on every pull request and on every push to `main`:
+
+- **Lint:** `ruff check` and `ruff format --check` (ruff 0.6.9).
+- **Install on a fresh bench + tests:** creates a new bench with Frappe and ERPNext **v16.35.0**, installs
+  `growthx_core` on a brand-new site (MariaDB 11.8, Python 3.14, Node 24) and runs every test.
+
+To check locally that the app installs cleanly before pushing:
+
+```bash
+bench new-site gx-ci-test.localhost --db-root-username root --admin-password admin \
+  --install-app erpnext --install-app growthx_core
+bench --site gx-ci-test.localhost set-config allow_tests true
+bench --site gx-ci-test.localhost run-tests --app growthx_core
+bench drop-site gx-ci-test.localhost --force --no-backup
+```
+
+A fresh site has no Territory or Customer Group until ERPNext's setup wizard runs; `after_install`
+(`growthx_core/setup/defaults.py`) creates the ones sign-up and partner approval need.
+
 ### Contributing
 
 This app uses `pre-commit` for code formatting and linting. Please [install pre-commit](https://pre-commit.com/#installation) and enable it for this repository:
