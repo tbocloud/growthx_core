@@ -275,5 +275,8 @@ scheduler_events = {
 		# "Talk to an expert" reminders, 24 h and 1 h before each call
 		"*/5 * * * *": ["growthx_core.api.v1.appointments.send_reminders"],
 	},
-	"daily": ["growthx_core.tokens.delete_expired_tokens"],
+	"daily": [
+		"growthx_core.tokens.delete_expired_tokens",
+		"growthx_core.partners.notifications.send_trial_reminders",
+	],
 }

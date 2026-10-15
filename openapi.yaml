@@ -1,11 +1,16 @@
 openapi: 3.0.3
 info:
   title: GrowthX API
-  version: 1.0.0-draft.4
+  version: 1.0.0
   description: |
-    GrowthX Core API (Frappe app `growthx_core`). **Status: DRAFT for review by Web, Flutter and the Lead.**
-    This file is the single API contract. Once agreed, it replaces the web team's
-    `02-api-contract.md` proposal. Decisions and open items are in `docs/api-decisions.md`.
+    GrowthX Core API (Frappe app `growthx_core`). **Status: Agreed v1** (approved by Web and Flutter in the PR
+    that set version 1.0.0).
+    This file is the single API contract. It replaces the web team's `02-api-contract.md` (v0.5).
+    Decisions and open items are in `docs/api-decisions.md`.
+
+    **Changes from now on** go through a pull request reviewed by Frappe, Web and Flutter. Additive changes
+    (new endpoints, new optional fields, building a `proposed` endpoint) stay in v1 as 1.x versions; breaking
+    changes go into `growthx_core.api.v2`.
 
     ## Conventions
     - **Routing:** every endpoint is a Frappe whitelisted method in `growthx_core.api.v1.<module>`.
@@ -862,19 +867,19 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
-  # ---------------------------------------------------------------- partner app (PROPOSED, not built)
-  # Shapes for review by Flutter (Najath) and Web. Each has `x-status: proposed`: calling it today returns
-  # an error. Built in the phase given by `x-phase`; `x-decision` names a business decision still needed.
+  # ---------------------------------------------------------------- partner app (Flutter)
+  # Built: dashboard, customers, customer, referral_stats, earnings (placeholder figures), notifications,
+  # devices, profile and preferences. Still proposed (`x-status: proposed`, calling them returns an error):
+  # campaigns, leads, commissions, payouts and the payout method, which wait on business decisions.
 
   /growthx_core.api.v1.partner.dashboard:
     get:
       tags: [partner]
-      summary: "[PROPOSED] Everything the app's home screen needs, in one call"
+      summary: "Everything the app's home screen needs, in one call"
       description: |
         `partner.summary` plus the home-screen extras, so the app doesn't add up totals itself.
         `recentCustomers` and `recentCommissions` are the latest few (default 4 and 3).
       operationId: partnerDashboard
-      x-status: proposed
       x-phase: 2
       x-roles: [partner]
       parameters:
@@ -892,10 +897,9 @@ paths:
   /growthx_core.api.v1.partner.customers:
     get:
       tags: [partner]
-      summary: "[PROPOSED] Customers this partner brought in"
+      summary: "Customers this partner brought in"
       description: Only customers attributed to the calling partner. Newest first by default.
       operationId: partnerListCustomers
-      x-status: proposed
       x-phase: 2
       x-roles: [partner]
       parameters:
@@ -931,10 +935,9 @@ paths:
   /growthx_core.api.v1.partner.customer:
     get:
       tags: [partner]
-      summary: "[PROPOSED] One customer, with subscription timeline and commissions"
+      summary: "One customer, with subscription timeline and commissions"
       description: A customer not attributed to the caller returns 404.
       operationId: partnerGetCustomer
-      x-status: proposed
       x-phase: 2
       x-roles: [partner]
       parameters:
@@ -951,12 +954,11 @@ paths:
   /growthx_core.api.v1.partner.referral_stats:
     get:
       tags: [partner]
-      summary: "[PROPOSED] Referral link clicks, sign-ups and conversions for a period"
+      summary: "Referral link clicks, sign-ups and conversions for a period"
       description: |
         `clicks` is null until the website records link visits (Web). `conversions` are sign-ups that became paying.
         Defaults to the current month.
       operationId: partnerReferralStats
-      x-status: proposed
       x-phase: 2
       x-roles: [partner]
       parameters:
@@ -1103,11 +1105,10 @@ paths:
   /growthx_core.api.v1.partner.earnings:
     get:
       tags: [partner]
-      summary: "[PROPOSED] Earnings summary"
+      summary: "Earnings summary"
       operationId: partnerEarnings
-      x-status: proposed
       x-phase: 3
-      x-decision: "Commission rules, review period, TDS and payout date (D8, finance)"
+      x-note: "Placeholder figures until the commission rules are decided (D8): commission from ERPNext Sales Invoices; commission on paid invoices counts as pending; approved and paidLifetime are 0; nextPayoutDate and tdsRate are null."
       x-roles: [partner]
       responses:
         "200":
@@ -1202,10 +1203,9 @@ paths:
   /growthx_core.api.v1.partner.notifications:
     get:
       tags: [partner]
-      summary: "[PROPOSED] In-app notifications, newest first"
+      summary: "In-app notifications, newest first"
       description: The same events are also sent as push notifications (see `partner.register_device`).
       operationId: partnerListNotifications
-      x-status: proposed
       x-phase: 2
       x-roles: [partner]
       parameters:
@@ -1233,9 +1233,8 @@ paths:
   /growthx_core.api.v1.partner.mark_notification_read:
     post:
       tags: [partner]
-      summary: "[PROPOSED] Mark one notification as read"
+      summary: "Mark one notification as read"
       operationId: partnerMarkNotificationRead
-      x-status: proposed
       x-phase: 2
       x-roles: [partner]
       requestBody:
@@ -1251,9 +1250,8 @@ paths:
   /growthx_core.api.v1.partner.mark_all_notifications_read:
     post:
       tags: [partner]
-      summary: "[PROPOSED] Mark all of the partner's notifications as read"
+      summary: "Mark all of the partner's notifications as read"
       operationId: partnerMarkAllNotificationsRead
-      x-status: proposed
       x-phase: 2
       x-roles: [partner]
       responses:
@@ -1272,10 +1270,9 @@ paths:
   /growthx_core.api.v1.partner.dismiss_notification:
     post:
       tags: [partner]
-      summary: "[PROPOSED] Hide a notification from the list"
+      summary: "Hide a notification from the list"
       description: Optional. Build only if the app keeps its "remove" action.
       operationId: partnerDismissNotification
-      x-status: proposed
       x-phase: 2
       x-roles: [partner]
       requestBody:
@@ -1291,12 +1288,11 @@ paths:
   /growthx_core.api.v1.partner.register_device:
     post:
       tags: [partner]
-      summary: "[PROPOSED] Register this device for push notifications (FCM)"
+      summary: "Register this device for push notifications (FCM)"
       description: |
         Call after login and whenever FCM gives a new token. Registering the same token again just updates it.
         Push messages never contain amounts or customer personal data (they may show on the lock screen).
       operationId: partnerRegisterDevice
-      x-status: proposed
       x-phase: 2
       x-roles: [partner]
       requestBody:
@@ -1318,10 +1314,9 @@ paths:
   /growthx_core.api.v1.partner.unregister_device:
     post:
       tags: [partner]
-      summary: "[PROPOSED] Stop push notifications to this device"
+      summary: "Stop push notifications to this device"
       description: Call before `auth.logout`.
       operationId: partnerUnregisterDevice
-      x-status: proposed
       x-phase: 2
       x-roles: [partner]
       requestBody:
@@ -1336,10 +1331,9 @@ paths:
   /growthx_core.api.v1.partner.profile:
     get:
       tags: [partner]
-      summary: "[PROPOSED] The partner's profile"
+      summary: "The partner's profile"
       description: PAN and bank account are always masked.
       operationId: partnerGetProfile
-      x-status: proposed
       x-phase: 2
       x-roles: [partner]
       responses:
@@ -1353,12 +1347,11 @@ paths:
   /growthx_core.api.v1.partner.update_profile:
     post:
       tags: [partner]
-      summary: "[PROPOSED] Edit the partner's contact details"
+      summary: "Edit the partner's contact details"
       description: |
         Send only the fields to change. Tier, referral code, status, commission rate, email, PAN and payout details
         can't be changed here.
       operationId: partnerUpdateProfile
-      x-status: proposed
       x-phase: 2
       x-roles: [partner]
       requestBody:
@@ -1385,9 +1378,8 @@ paths:
   /growthx_core.api.v1.partner.notification_preferences:
     get:
       tags: [partner]
-      summary: "[PROPOSED] Which notifications the partner wants"
+      summary: "Which notifications the partner wants"
       operationId: partnerGetNotificationPreferences
-      x-status: proposed
       x-phase: 2
       x-roles: [partner]
       responses:
@@ -1401,10 +1393,9 @@ paths:
   /growthx_core.api.v1.partner.update_notification_preferences:
     post:
       tags: [partner]
-      summary: "[PROPOSED] Save notification preferences"
+      summary: "Save notification preferences"
       description: Send only the fields to change. Payout and account notifications can't be turned off.
       operationId: partnerUpdateNotificationPreferences
-      x-status: proposed
       x-phase: 2
       x-roles: [partner]
       requestBody:
@@ -2159,7 +2150,7 @@ components:
 
     # ---------------------------------------------------------------- partner app (PROPOSED)
     PartnerDashboard:
-      description: "[PROPOSED] `PartnerSummary` plus the app's home-screen extras"
+      description: "`PartnerSummary` plus the app's home-screen extras"
       allOf:
         - $ref: "#/components/schemas/PartnerSummary"
         - type: object
@@ -2177,7 +2168,7 @@ components:
               items: { $ref: "#/components/schemas/Commission" }
 
     PartnerCustomer:
-      description: "[PROPOSED] A customer attributed to the partner"
+      description: "A customer attributed to the partner. `city` is null until sign-up collects it; `source.type` is `referral_link` until campaigns and leads exist."
       type: object
       required: [id, businessName, subscriptionStatus, siteActive, joinedAt, source]
       properties:
@@ -2300,7 +2291,7 @@ components:
             updatedAt: { type: string, format: date-time }
 
     PartnerEarnings:
-      description: "[PROPOSED] All amounts calculated on the server (commission rules: D8)"
+      description: "All amounts calculated on the server. Placeholder figures until the commission rules are decided (D8)."
       type: object
       required: [thisMonth, lastMonth, pending, approved, paidLifetime, lifetimeTotal]
       properties:

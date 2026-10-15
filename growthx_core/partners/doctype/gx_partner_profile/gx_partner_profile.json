@@ -13,7 +13,15 @@
   "company",
   "column_break_1",
   "referral_code",
-  "sales_partner"
+  "sales_partner",
+  "city",
+  "gstin",
+  "tier",
+  "notifications_section",
+  "notify_commissions",
+  "notify_new_customers",
+  "notify_trial_reminders",
+  "notify_product_updates"
  ],
  "fields": [
   {
@@ -70,11 +78,56 @@
    "fieldtype": "Link",
    "label": "Sales Partner",
    "options": "Sales Partner"
+  },
+  {
+   "fieldname": "city",
+   "fieldtype": "Data",
+   "label": "City"
+  },
+  {
+   "fieldname": "gstin",
+   "fieldtype": "Data",
+   "label": "GSTIN"
+  },
+  {
+   "description": "Display label, e.g. Silver Partner (tiers are pending decision D8)",
+   "fieldname": "tier",
+   "fieldtype": "Data",
+   "label": "Tier"
+  },
+  {
+   "fieldname": "notifications_section",
+   "fieldtype": "Section Break",
+   "label": "Notification Preferences"
+  },
+  {
+   "default": "1",
+   "fieldname": "notify_commissions",
+   "fieldtype": "Check",
+   "label": "Commissions"
+  },
+  {
+   "default": "1",
+   "fieldname": "notify_new_customers",
+   "fieldtype": "Check",
+   "label": "New Customers"
+  },
+  {
+   "default": "1",
+   "fieldname": "notify_trial_reminders",
+   "fieldtype": "Check",
+   "label": "Trial Reminders"
+  },
+  {
+   "default": "0",
+   "fieldname": "notify_product_updates",
+   "fieldtype": "Check",
+   "label": "Product Updates"
   }
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-10-12 10:00:00.000000",
+ "modified": "2026-10-14 10:00:00.000000",
  "modified_by": "Administrator",
  "module": "Partners",
  "name": "GX Partner Profile",

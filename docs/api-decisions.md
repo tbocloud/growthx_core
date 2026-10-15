@@ -1,12 +1,12 @@
 # GrowthX API v1: decisions and open items
 
 **Owner:** Niranjana C (Frappe) · **Reviewers:** Mubashir T (Web), Najath Thekkeyil (Flutter), Sammish (Lead), Arun P S (DevOps, for provisioning)
-**Status:** Draft 2, 12 Oct 2026 (all v1 endpoints implemented; see §6). Responds to the web team's `02-api-contract.md` v0.5.
-**Contract:** [`openapi.yaml`](../openapi.yaml). Once agreed, it replaces `02-api-contract.md`.
+**Status:** v1 agreed, 15 Oct 2026 (`openapi.yaml` 1.0.0, approved by Web and Flutter in its PR). Responds to the web team's `02-api-contract.md` v0.5.
+**Contract:** [`openapi.yaml`](../openapi.yaml). It replaces `02-api-contract.md`.
 
 Each decision below was checked against the Frappe/ERPNext **v16** source (Frappe 16.35).
 
-## 1. Decisions (please review)
+## 1. Decisions
 
 | # | Topic (02 §2.0) | Decision | Why |
 |---|---|---|---|
@@ -43,15 +43,25 @@ Each decision below was checked against the Frappe/ERPNext **v16** source (Frapp
 **Site statuses:** `requested → provisioning → ready`, or `→ failed` (retryable). Later states are `suspended` and `archived`.
 **Provisioning steps:** `create_site → wait_for_site → install_apps → configure → health_check`.
 
-## 3. Needs a decision from the Lead
+## 3. Open items from `02-api-contract.md` §2.6
 
-| ID | Question | My recommendation |
-|---|---|---|
-| OI-2 | Does the trial start at sign-up or when the site is `ready`? Is the account kept if provisioning fails? | Start when the site is ready; keep the account. |
-| — | One site per product subscription at v1? | Yes. |
-| — | Partner sign-up: approved automatically, or by an admin? | Admin approval (`partnerStatus: pending_approval`). |
-| — | Business rules in 02 §2.0.3 (prices, GST inclusion, 14-day trial, 90-day referral window, single-level commission) | The contract carries them as data only; these need owners' approval. |
-| OI-6 | Browser → Next.js CSRF: token, or custom header | Web's call. |
+| ID | Item | Status | Owner |
+|---|---|---|---|
+| OI-1 | CSRF gap in the Next.js proxy | **Closed** 12 Oct 2026 (Web, commit `a6b7bd4`) | Mubashir |
+| OI-2 | Trial start: at sign-up or when the site is `ready`? Account kept if provisioning fails? | **Open.** Built today: the trial starts at sign-up; the account is always kept. My recommendation: start when the site is ready. Doesn't change any endpoint shape. | Sammish |
+| OI-3 | Payment contract shape | **Resolved in v1:** the gateway-neutral shape (`provider`, `reference`, `publicKey`; verify `{provider, reference, payload}`), decision 9 | Niranjana + Mubashir |
+| OI-4 | Authentication option and session design | **Resolved in v1:** option C, tokens issued by `growthx_core` (decision 1; `docs/auth-proposal.md`). Final business sign-off on lifetimes is D4 with Sammish. | Niranjana + Mubashir |
+| OI-5 | Base URL, route format, response envelope | **Resolved in v1:** Frappe methods joined with dots, no `{message}` wrapper (decisions 2 and 3) | Niranjana |
+| OI-6 | Browser → Next.js CSRF: token or custom header | **Open.** Only the browser → Next.js leg; Next.js → Core needs no CSRF token (decision 12). Doesn't change any endpoint shape. | Mubashir + Sammish |
+
+Other questions for the Lead (they don't change endpoint shapes):
+
+| Question | My recommendation |
+|---|---|
+| One site per product subscription at v1? | Yes. |
+| Partner sign-up: approved automatically, or by an admin? | Admin approval (`partnerStatus: pending_approval`). |
+| Business rules in 02 §2.0.3 (prices, GST inclusion, 14-day trial, 90-day referral window, single-level commission) | The contract carries them as data only; these need owners' approval (D6, D7, D8). |
+| Partner app: lead rules, campaigns, payout-method verification | Needed before those `proposed` endpoints are built (§4). |
 
 ## 4. 02 §2.4 gaps: target phase (not yet specified)
 
@@ -64,23 +74,22 @@ These are deliberately left out of `openapi.yaml` until their business rules are
 | 4 (Launch) | `admin.products`, `admin.plans` (the ERPNext desk is used until then); `admin.analytics` |
 | Needs a decision | `customer.access` (tenant users and seats), `customer.support_tickets`; `partner.team` (only if multi-level commission is approved) |
 
-The **Partner app** endpoints are now in `openapi.yaml` as **proposed shapes** (`x-status: proposed`), from Flutter's
-"GrowthX Partner App - Proposed API Contract" (14 Oct 2026). They are for review by Flutter and Web and are not built yet:
+The **Partner app** endpoints come from Flutter's "GrowthX Partner App - Proposed API Contract" (14 Oct 2026).
 
-| Phase | Proposed endpoints | Blocked on |
+| State | Endpoints | Notes |
 |---|---|---|
-| 2 | `partner.dashboard`, `partner.customers`, `partner.customer`, `partner.referral_stats`, `partner.notifications`, `partner.mark_notification_read`, `partner.mark_all_notifications_read`, `partner.dismiss_notification` (optional), `partner.register_device`, `partner.unregister_device`, `partner.profile`, `partner.update_profile`, `partner.notification_preferences`, `partner.update_notification_preferences` | — (click counts in `referral_stats` need the website to record visits) |
-| 2 | `partner.leads`, `partner.create_lead`, `partner.update_lead` | Lead rules: duplicates across partners, who changes status (Sammish) |
-| 2 | `partner.campaigns` | Do campaigns exist at launch? Global or per partner? (Sammish) |
-| 3 | `partner.earnings`, `partner.commissions`, `partner.payouts`, `partner.payout` | Commission rules, review period, TDS, payout date (D8, finance) |
-| 3 | `partner.request_payout_method_otp`, `partner.update_payout_method` | Verification method (SMS or email OTP, or password) and an SMS provider (Sammish) |
+| **Built** (14 Oct 2026) | `partner.dashboard`, `partner.customers`, `partner.customer`, `partner.referral_stats`, `partner.earnings`, `partner.notifications`, `partner.mark_notification_read`, `partner.mark_all_notifications_read`, `partner.dismiss_notification`, `partner.register_device`, `partner.unregister_device`, `partner.profile`, `partner.update_profile`, `partner.notification_preferences`, `partner.update_notification_preferences` | `earnings` (and `dashboard.earnings`) show placeholder figures until D8. `referral_stats.clicks` is null until the website records link visits. Push needs a Firebase project (`growthx_fcm` in site_config); until then notifications are in-app only. Notifications are created for a new referred customer and 3 days before a trial ends. |
+| Proposed | `partner.leads`, `partner.create_lead`, `partner.update_lead` | Lead rules: duplicates across partners, who changes status (Sammish). ERPNext Lead's own rule is one lead per email across the whole site. |
+| Proposed | `partner.campaigns` | Do campaigns exist at launch? Global or per partner? (Sammish) |
+| Proposed | `partner.commissions`, `partner.payouts`, `partner.payout` | Commission rules, review period, TDS, payout date (D8, finance) |
+| Proposed | `partner.request_payout_method_otp`, `partner.update_payout_method` | Verification method (SMS or email OTP, or password) and an SMS provider (Sammish) |
 
 How Flutter's proposal was adapted to the agreed conventions: no `{data, meta, error}` envelope (the body is the
 resource); camelCase fields; money as integer paise; `{items, page, pageSize, total}`; Frappe methods (POST with `id`
 in the body instead of `PATCH /…/{id}`); lower-case error codes. Added: device registration for push, `reversed`
 commission status (refunds), `lead` notification category, and an OTP step before changing payout details.
 
-## 5. Known gaps in this draft
+## 5. Known gaps
 - Real staging and production hosts are pending DevOps.
 - Rate limits are set per endpoint (e.g. login: 5 per email and 20 per IP per 15 min; sign-up: 10 per IP per hour) and return 429 `rate_limited` with `Retry-After`. They will be tuned on staging.
 
