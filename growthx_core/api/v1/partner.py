@@ -588,8 +588,11 @@ def update_profile():
 	doc.update(updates)
 	doc.save(ignore_permissions=True)
 	if "partner_name" in updates:
+		# Save the User doc (not db.set_value) so Frappe also rebuilds full_name, used by auth.me.
 		first, _, last = updates["partner_name"].partition(" ")
-		frappe.db.set_value("User", partner.user, {"first_name": first, "last_name": last or None})
+		user = frappe.get_doc("User", partner.user)
+		user.first_name, user.middle_name, user.last_name = first, None, last or None
+		user.save(ignore_permissions=True)
 	return _profile(partner.name)
 
 

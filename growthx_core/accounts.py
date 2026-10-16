@@ -86,9 +86,7 @@ def create_customer_account(
 	).insert(ignore_permissions=True)
 
 	if account.referred_by:
-		from growthx_core.partners.notifications import on_customer_referred
-
-		on_customer_referred(account)
+		_notify_partner(account)
 
 	if not plan:
 		return user, None
@@ -126,6 +124,19 @@ def create_customer_account(
 
 	runner.enqueue(tenant.name)
 	return user, tenant.name
+
+
+def _notify_partner(account):
+	"""Tell the referring partner. Never fails the customer's sign-up: on error, undo only the
+	notification and log it."""
+	from growthx_core.partners.notifications import on_customer_referred
+
+	frappe.db.savepoint("gx_notify_partner")
+	try:
+		on_customer_referred(account)
+	except Exception:
+		frappe.db.rollback(save_point="gx_notify_partner")
+		frappe.log_error(title=f"GrowthX: could not notify the partner of {account.name}")
 
 
 def create_partner_account(

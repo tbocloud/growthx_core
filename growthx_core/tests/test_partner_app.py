@@ -306,18 +306,47 @@ class TestPartnerApp(IntegrationTestCase):
 		)  # no customer names on the lock screen
 		self.assertEqual(message["data"]["notificationId"], name)
 
-	def test_uninstalled_app_token_is_removed(self):
-		self.call("register_device", {"token": "fcm-3", "platform": "ios"})
+	def _push_with_fcm_response(self, token, status_code, error_body):
+		self.call("register_device", {"token": token, "platform": "ios"})
 		frappe.db.commit()
 		name = self._notify(self.a.user)
+		response = MagicMock(status_code=status_code)
+		if isinstance(error_body, Exception):
+			response.json.side_effect = error_body
+		else:
+			response.json.return_value = error_body
 		conf = {"growthx_fcm": {"project_id": "p", "service_account": {"x": 1}}}
 		with (
 			patch.dict(frappe.local.conf, conf),
 			patch.object(notif, "_fcm_access_token", return_value="at"),
-			patch("requests.post", return_value=MagicMock(status_code=404, text="UNREGISTERED")),
+			patch("requests.post", return_value=response),
 		):
 			notif.send_push(name)
-		self.assertEqual(frappe.db.count("GX Device", {"user": self.a.user}), 0)
+		return frappe.db.count("GX Device", {"user": self.a.user})
+
+	def test_uninstalled_app_token_is_removed(self):
+		# FCM v1 says the token is dead with errorCode UNREGISTERED (sent as 404 or 400).
+		for status in (404, 400):
+			body = {
+				"error": {
+					"code": status,
+					"status": "NOT_FOUND",
+					"details": [
+						{
+							"@type": "type.googleapis.com/google.firebase.fcm.v1.FcmError",
+							"errorCode": "UNREGISTERED",
+						}
+					],
+				}
+			}
+			self.assertEqual(self._push_with_fcm_response(f"fcm-dead-{status}", status, body), 0, status)
+
+	def test_config_error_never_deletes_devices(self):
+		# A wrong project_id also returns 404, but without UNREGISTERED: every device must survive.
+		body = {"error": {"code": 404, "message": "Requested entity was not found.", "status": "NOT_FOUND"}}
+		self.assertEqual(self._push_with_fcm_response("fcm-keep-1", 404, body), 1)
+		# Unparseable bodies are treated the same way.
+		self.assertEqual(self._push_with_fcm_response("fcm-keep-2", 500, ValueError()), 2)
 
 	# ------------------------------------------------------------ profile and preferences
 
@@ -332,6 +361,9 @@ class TestPartnerApp(IntegrationTestCase):
 		)
 		self.assertEqual((status, body["name"], body["city"]), (200, "Anil Kumar", "Kochi"))
 		self.assertEqual(frappe.db.get_value("User", self.a.user, "first_name"), "Anil")
+		self.assertEqual(
+			frappe.db.get_value("User", self.a.user, "full_name"), "Anil Kumar"
+		)  # what auth.me shows
 
 		self.assertEqual(self.call("update_profile", {"referralCode": "MINE"})[0], 422)
 		self.assertEqual(self.call("update_profile", {"phone": "call me"})[0], 422)
