@@ -64,16 +64,15 @@ These are deliberately left out of `openapi.yaml` until their business rules are
 | 4 (Launch) | `admin.products`, `admin.plans` (the ERPNext desk is used until then); `admin.analytics` |
 | Needs a decision | `customer.access` (tenant users and seats), `customer.support_tickets`; `partner.team` (only if multi-level commission is approved) |
 
-The **Partner app** endpoints are now in `openapi.yaml` as **proposed shapes** (`x-status: proposed`), from Flutter's
-"GrowthX Partner App - Proposed API Contract" (14 Oct 2026). They are for review by Flutter and Web and are not built yet:
+The **Partner app** endpoints come from Flutter's "GrowthX Partner App - Proposed API Contract" (14 Oct 2026).
 
-| Phase | Proposed endpoints | Blocked on |
+| State | Endpoints | Notes |
 |---|---|---|
-| 2 | `partner.dashboard`, `partner.customers`, `partner.customer`, `partner.referral_stats`, `partner.notifications`, `partner.mark_notification_read`, `partner.mark_all_notifications_read`, `partner.dismiss_notification` (optional), `partner.register_device`, `partner.unregister_device`, `partner.profile`, `partner.update_profile`, `partner.notification_preferences`, `partner.update_notification_preferences` | — (click counts in `referral_stats` need the website to record visits) |
-| 2 | `partner.leads`, `partner.create_lead`, `partner.update_lead` | Lead rules: duplicates across partners, who changes status (Sammish) |
-| 2 | `partner.campaigns` | Do campaigns exist at launch? Global or per partner? (Sammish) |
-| 3 | `partner.earnings`, `partner.commissions`, `partner.payouts`, `partner.payout` | Commission rules, review period, TDS, payout date (D8, finance) |
-| 3 | `partner.request_payout_method_otp`, `partner.update_payout_method` | Verification method (SMS or email OTP, or password) and an SMS provider (Sammish) |
+| **Built** (14 Oct 2026) | `partner.dashboard`, `partner.customers`, `partner.customer`, `partner.referral_stats`, `partner.earnings`, `partner.notifications`, `partner.mark_notification_read`, `partner.mark_all_notifications_read`, `partner.dismiss_notification`, `partner.register_device`, `partner.unregister_device`, `partner.profile`, `partner.update_profile`, `partner.notification_preferences`, `partner.update_notification_preferences` | `earnings` (and `dashboard.earnings`) show placeholder figures until D8. `referral_stats.clicks` is null until the website records link visits. Push needs a Firebase project (`growthx_fcm` in site_config); until then notifications are in-app only. Notifications are created for a new referred customer and 3 days before a trial ends. |
+| Proposed | `partner.leads`, `partner.create_lead`, `partner.update_lead` | Lead rules: duplicates across partners, who changes status (Sammish). ERPNext Lead's own rule is one lead per email across the whole site. |
+| Proposed | `partner.campaigns` | Do campaigns exist at launch? Global or per partner? (Sammish) |
+| Proposed | `partner.commissions`, `partner.payouts`, `partner.payout` | Commission rules, review period, TDS, payout date (D8, finance) |
+| Proposed | `partner.request_payout_method_otp`, `partner.update_payout_method` | Verification method (SMS or email OTP, or password) and an SMS provider (Sammish) |
 
 How Flutter's proposal was adapted to the agreed conventions: no `{data, meta, error}` envelope (the body is the
 resource); camelCase fields; money as integer paise; `{items, page, pageSize, total}`; Frappe methods (POST with `id`
