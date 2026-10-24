@@ -84,8 +84,12 @@ class FakePressClient(PressClient):
 
 	def get_site(self, site_id):
 		self._maybe_fail("wait_for_site")
-		verticals = [app for app in frappe.get_all("GX Product", pluck="vertical_app") if app]
-		return PressSite(id=site_id, status="active", apps=["frappe", "erpnext", "growthx_theme", *verticals])
+		# Reports every app a product or tenant lists (plus the always-installed ones) as installed.
+		from growthx_core.provisioning.apps import BASE_APPS, THEME_APP, all_listed_apps
+
+		return PressSite(
+			id=site_id, status="active", apps=[*BASE_APPS, THEME_APP, *sorted(all_listed_apps())]
+		)
 
 	def find_site(self, subdomain):
 		return None
@@ -236,7 +240,9 @@ class LocalPressClient(PressClient):
 			json.loads(self._frappe("--site", site_id, "list-apps", "-f", "json")).get(site_id, [])
 		)
 		if self.allow_missing_apps:
-			verticals = [app for app in frappe.get_all("GX Product", pluck="vertical_app") if app]
+			from growthx_core.provisioning.apps import THEME_APP, all_listed_apps
+
+			verticals = [app for app in all_listed_apps() if app != THEME_APP]
 			# Never growthx_theme: without it single sign-on can't work, so the job must fail.
 			missing = [app for app in verticals if app not in self._bench_apps()]
 			installed += missing

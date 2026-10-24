@@ -20,6 +20,7 @@ from frappe.utils import cint, now_datetime
 
 from growthx_core.api.v1._serializers import STEP_LABELS
 from growthx_core.provisioning import site_login
+from growthx_core.provisioning.apps import site_apps
 from growthx_core.provisioning.press import PressClient, PressError, get_client
 
 STEPS = ["create_site", "wait_for_site", "install_apps", "configure", "health_check"]
@@ -157,9 +158,8 @@ def _create_site(tenant, step, client: PressClient):
 	if tenant.press_site_id:
 		return  # already created on an earlier attempt
 	product = frappe.get_cached_doc("GX Product", tenant.product)
-	apps = ["frappe", "erpnext", "growthx_theme"] + ([product.vertical_app] if product.vertical_app else [])
 	site = client.find_site(tenant.subdomain) or client.create_site(
-		tenant.subdomain, product.press_release_group, apps
+		tenant.subdomain, product.press_release_group, site_apps(tenant)
 	)
 	tenant.press_site_id = site.id
 	tenant.site_url = client.site_url(tenant.subdomain)
@@ -180,11 +180,10 @@ def _wait_for_site(tenant, step, client: PressClient):
 
 
 def _install_apps(tenant, step, client: PressClient):
-	product = frappe.get_cached_doc("GX Product", tenant.product)
-	required = {"erpnext", "growthx_theme"} | ({product.vertical_app} if product.vertical_app else set())
-	missing = required - set(client.get_site(tenant.press_site_id).apps)
+	missing = [app for app in site_apps(tenant) if app != "frappe"]
+	missing = sorted(set(missing) - set(client.get_site(tenant.press_site_id).apps))
 	if missing:
-		raise PressError(f"Apps not installed on {tenant.press_site_id}: {', '.join(sorted(missing))}")
+		raise PressError(f"Apps not installed on {tenant.press_site_id}: {', '.join(missing)}")
 
 
 def _configure(tenant, step, client: PressClient):
