@@ -20,6 +20,7 @@ from growthx_core.api.v1._core import (
 	validation_error,
 	web_url,
 )
+from growthx_core.provisioning import countries, runner
 
 GROWTHX_ROLES = {"GrowthX Customer", "GrowthX Partner", "GrowthX Admin"}
 MIN_PASSWORD_LENGTH = 8
@@ -92,6 +93,7 @@ def signup():
 	phone = get_str(data, "phone", max_length=20, label="Phone")
 	company = get_str(data, "company", required=account_type == "customer", label="Company")
 	client = _client(data)
+	site = _signup_site(data) if account_type == "customer" else {}
 	_check_password_policy(password, "password", (name, email, company))
 
 	if frappe.db.exists("User", {"email": email}) or frappe.db.exists("User", email):
@@ -105,15 +107,24 @@ def signup():
 	tenant = None
 	if account_type == "customer":
 		plan = _signup_plan(data)
-		user, tenant = accounts.create_customer_account(
-			email=email,
-			full_name=name,
-			company=company,
-			password=password,
-			phone=phone,
-			plan=plan,
-			referral_code=get_str(data, "referralCode", max_length=40),
-		)
+		# Last, because it calls Press (10 name checks a minute for the whole team).
+		if plan and site["subdomain"] and runner.press_name_taken(site["subdomain"]):
+			raise _subdomain_taken()
+		try:
+			user, tenant = accounts.create_customer_account(
+				email=email,
+				full_name=name,
+				company=company,
+				password=password,
+				phone=phone,
+				plan=plan,
+				referral_code=get_str(data, "referralCode", max_length=40),
+				**site,
+			)
+		except frappe.UniqueValidationError:
+			if site["subdomain"]:
+				raise _subdomain_taken()  # someone else signed up with it a moment ago
+			raise
 	else:
 		user = accounts.create_partner_account(
 			email=email, full_name=name, password=password, phone=phone, company=company
@@ -123,6 +134,46 @@ def signup():
 	if tenant:
 		result["site"] = {"id": tenant, "status": frappe.db.get_value("GX Tenant", tenant, "status")}
 	return 201, result
+
+
+SUBDOMAIN_MESSAGES = {
+	"invalid": "Use {min}-{max} lowercase letters, numbers and hyphens, starting and ending with a letter or number.",
+	"reserved": "This address is reserved. Please choose another.",
+	"taken": "This address is already taken.",
+}
+
+
+def subdomain_message(problem: str) -> str:
+	return SUBDOMAIN_MESSAGES[problem].format(min=5, max=runner.longest_subdomain())
+
+
+def _subdomain_taken():
+	message = subdomain_message("taken")
+	return ApiError(409, "subdomain_taken", message, fields={"subdomain": message})
+
+
+def _signup_site(data) -> dict:
+	"""A customer's choices for their site (docs 09 §2). All optional: without them the site is
+	set up for India, with a subdomain made from the company name."""
+	code = get_choice(data, "country", tuple(countries.COUNTRIES), default=countries.DEFAULT)
+	country = countries.COUNTRIES[code]
+	chart = get_str(data, "chartOfAccounts", label="Chart of accounts")
+	if chart and chart not in countries.charts(code):
+		raise validation_error({"chartOfAccounts": "This chart of accounts isn't available for the country."})
+
+	subdomain = get_str(data, "subdomain", max_length=64, label="Subdomain")
+	if subdomain:
+		subdomain = subdomain.lower()
+		problem = runner.subdomain_problem(subdomain)
+		if problem == "taken":
+			raise _subdomain_taken()
+		if problem:
+			raise validation_error({"subdomain": subdomain_message(problem)})
+	return {
+		"subdomain": subdomain,
+		"country": country.country,
+		"chart_of_accounts": chart or country.default_chart,
+	}
 
 
 def _signup_plan(data):

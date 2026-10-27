@@ -46,8 +46,14 @@ def create_customer_account(
 	phone: str | None = None,
 	plan=None,
 	referral_code: str | None = None,
+	subdomain: str | None = None,
+	country: str | None = None,
+	chart_of_accounts: str | None = None,
 ) -> tuple[str, str | None]:
-	"""Returns (user, tenant_name or None). The caller commits; provisioning starts after commit."""
+	"""Returns (user, tenant_name or None). The caller commits; provisioning starts after commit.
+
+	`subdomain` is the one the customer chose (already checked); without it, one is made from
+	the company name. `country` is a Country name; site set-up follows it (see countries.py)."""
 	user = create_user(email, full_name, password, CUSTOMER_ROLE, phone)
 	partner = referrals.resolve(referral_code, email)
 
@@ -113,7 +119,9 @@ def create_customer_account(
 			"product": plan.product,
 			"subscription": subscription.name,
 			"display_name": company,
-			"subdomain": runner.make_subdomain(company),
+			"subdomain": runner.site_subdomain(subdomain) if subdomain else runner.make_subdomain(company),
+			"country": country,
+			"chart_of_accounts": chart_of_accounts,
 			"status": "requested",
 			"status_message": "Preparing your site.",
 		}

@@ -19,9 +19,9 @@ import frappe
 from frappe.utils import cint, now_datetime
 
 from growthx_core.api.v1._serializers import STEP_LABELS
-from growthx_core.provisioning import site_login
+from growthx_core.provisioning import countries, site_login
 from growthx_core.provisioning.apps import site_apps
-from growthx_core.provisioning.press import PressClient, PressError, get_client
+from growthx_core.provisioning.press import SUBDOMAIN, PressClient, PressError, get_client
 
 STEPS = ["create_site", "wait_for_site", "install_apps", "configure", "health_check"]
 WAIT_TIMEOUT = timedelta(minutes=30)
@@ -29,16 +29,35 @@ STALE_AFTER = timedelta(minutes=2)
 FAILED_MESSAGE = (
 	"We hit a problem while preparing your site. Our team has been alerted and will fix it shortly."
 )
-# Also blocked in Press. Names under 5 characters can never be Press sites and get "-site" anyway.
+# Must match Press's Blocked Domains (DevOps) and the website's list (docs 09 §2). Names under
+# 5 characters can never be Press sites anyway. Anything starting with "test-" is reserved too.
 RESERVED_SUBDOMAINS = {
-	"admin",
-	"support",
-	"growthx-core",
+	"www",
+	"api",
+	"app",
+	"mail",
+	"core",
 	"core-test",
-	"staging",
-	"press",
+	"admin",
 	"status",
+	"support",
 	"billing",
+	"growthx",
+	"growthx-core",
+	"web-origin",
+	"autodiscover",
+	"bounce",
+	"partner",
+	"partners",
+	"portal",
+	"login",
+	"signup",
+	"account",
+	"staging",
+	"email",
+	"docs",
+	"help",
+	"press",
 }
 TEST_PREFIX = "test-"
 MAX_BUILDING = 2  # Press's agent runs 2 jobs at a time; more creations only queue there
@@ -68,6 +87,54 @@ def make_subdomain(display_name: str) -> str:
 		n += 1
 		candidate = f"{base}-{n}"
 	return candidate
+
+
+def site_subdomain(chosen: str) -> str:
+	"""The Press name for a subdomain the customer chose: test-<name> on the Core test site."""
+	return TEST_PREFIX + chosen if _test_sites() else chosen
+
+
+def subdomain_problem(chosen: str) -> str | None:
+	"""Why the customer can't have this subdomain ("invalid", "reserved" or "taken"), or None.
+	Checked within Core only: Press allows 10 name checks a minute (auth.signup asks Press)."""
+	if not chosen or not SUBDOMAIN.match(chosen):
+		return "invalid"
+	if chosen in RESERVED_SUBDOMAINS or chosen.startswith(TEST_PREFIX):
+		return "reserved"
+	if not SUBDOMAIN.match(site_subdomain(chosen)):
+		return "invalid"  # too long for test-<name> on the Core test site
+	if frappe.db.exists("GX Tenant", {"subdomain": site_subdomain(chosen)}):
+		return "taken"
+	return None
+
+
+def longest_subdomain() -> int:
+	return 32 - (len(TEST_PREFIX) if _test_sites() else 0)
+
+
+def suggest_subdomain(chosen: str) -> str | None:
+	"""A free name close to one that is taken or reserved, e.g. noor-solar-2."""
+	if chosen.startswith(TEST_PREFIX):
+		return None
+	for n in range(2, 22):
+		suffix = f"-{n}"
+		candidate = f"{chosen[: longest_subdomain() - len(suffix)].strip('-')}{suffix}"
+		if not subdomain_problem(candidate):
+			return candidate
+	return None
+
+
+def press_name_taken(chosen: str) -> bool:
+	"""Ask Press whether a chosen name is still free (auth.signup only: Press allows 10 checks a
+	minute). If Press can't answer, sign-up goes ahead; create_site refuses a name that isn't ours."""
+	client = get_client()
+	if not hasattr(client, "exists"):
+		return False  # the fake and local clients have no shared namespace
+	try:
+		return client.exists(site_subdomain(chosen))
+	except PressError:
+		frappe.log_error(title=f"GrowthX: Press couldn't check the name {chosen}")
+		return False
 
 
 def init_steps(tenant):
@@ -266,11 +333,14 @@ def tenant_settings(tenant, reset_owner_password: bool = False) -> dict:
 	these settings to the site straight away."""
 	account = frappe.db.get_value("GX Account", tenant.account, ["account_name", "user"], as_dict=True)
 	owner = frappe.db.get_value("User", account.user, ["email", "full_name"], as_dict=True)
+	country = countries.for_tenant(tenant)
 	return {
 		"company_name": account.account_name,
-		"country": "India",
-		"currency": "INR",
-		"timezone": "Asia/Kolkata",
+		"country": country.country,
+		"currency": country.currency,
+		"timezone": country.timezone,
+		"fiscal_year_start": country.fiscal_year_start,
+		"chart_of_accounts": tenant.get("chart_of_accounts") or country.default_chart,
 		"owner_email": owner.email,
 		"owner_name": owner.full_name or account.account_name,
 		"reset_owner_password": reset_owner_password,
@@ -334,6 +404,19 @@ def _test_sites() -> bool:
 	return bool(cint((frappe.conf.get("growthx_press") or {}).get("test_sites")))
 
 
+def _ready_email(tenant, dashboard_url: str) -> str:
+	esc = frappe.utils.escape_html
+	lines = [f"<p>Your site <b>{esc(tenant.display_name or tenant.name)}</b> is ready.</p>"]
+	if tenant.site_url:
+		lines.append(f'<p>Its address: <a href="{esc(tenant.site_url)}">{esc(tenant.site_url)}</a></p>')
+	lines.append(
+		f'<p>To sign in, <a href="{esc(dashboard_url)}">open your GrowthX dashboard</a> and click "Open my app". '
+		"Or go to your site's address and choose \"Login with Email Link\": we'll email you a sign-in link. "
+		"There's no separate password for your site.</p>"
+	)
+	return "".join(lines)
+
+
 def _send_ready_email(tenant):
 	from growthx_core.api.v1._core import web_url
 
@@ -344,10 +427,7 @@ def _send_ready_email(tenant):
 		frappe.sendmail(
 			recipients=[email],
 			subject="Your GrowthX site is ready",
-			message=(
-				f"<p>Your site <b>{frappe.utils.escape_html(tenant.display_name or tenant.name)}</b> is ready.</p>"
-				f'<p><a href="{web_url("/dashboard")}">Open your GrowthX dashboard</a> and click "Open my app".</p>'
-			),
+			message=_ready_email(tenant, web_url("/dashboard")),
 		)
 	except Exception:
 		frappe.log_error(title=f"GrowthX: could not send site-ready email for {tenant.name}")
