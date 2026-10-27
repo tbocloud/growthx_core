@@ -29,7 +29,20 @@ STALE_AFTER = timedelta(minutes=2)
 FAILED_MESSAGE = (
 	"We hit a problem while preparing your site. Our team has been alerted and will fix it shortly."
 )
-RESERVED_SUBDOMAINS = {"www", "api", "app", "admin", "core", "staging", "mail", "press", "status", "docs"}
+# Also blocked in Press. Names under 5 characters can never be Press sites and get "-site" anyway.
+RESERVED_SUBDOMAINS = {
+	"admin",
+	"support",
+	"growthx-core",
+	"core-test",
+	"staging",
+	"press",
+	"status",
+	"billing",
+}
+TEST_PREFIX = "test-"
+MAX_BUILDING = 2  # Press's agent runs 2 jobs at a time; more creations only queue there
+MAX_TEST_SITES = 5  # live test sites allowed at once (DevOps)
 
 
 class StepPending(Exception):
@@ -40,8 +53,15 @@ class StepPending(Exception):
 
 
 def make_subdomain(display_name: str) -> str:
-	base = re.sub(r"[^a-z0-9]+", "-", (display_name or "").lower()).strip("-")[:30].strip("-") or "site"
-	if base in RESERVED_SUBDOMAINS:
+	"""A unique Press name: 5-32 of a-z, 0-9 and -. The Core test site makes only test-<name>
+	sites; production never does."""
+	base = re.sub(r"[^a-z0-9]+", "-", (display_name or "").lower()).strip("-") or "my-site"
+	if _test_sites():
+		base = base if base.startswith(TEST_PREFIX) else TEST_PREFIX + base
+	elif base.startswith(TEST_PREFIX):
+		base = base.replace("-", "", 1)
+	base = base[:28].strip("-")
+	if base in RESERVED_SUBDOMAINS or len(base) < 5:
 		base = f"{base}-site"
 	candidate, n = base, 1
 	while frappe.db.exists("GX Tenant", {"subdomain": candidate}):
@@ -158,9 +178,14 @@ def _create_site(tenant, step, client: PressClient):
 	if tenant.press_site_id:
 		return  # already created on an earlier attempt
 	product = frappe.get_cached_doc("GX Product", tenant.product)
-	site = client.find_site(tenant.subdomain) or client.create_site(
-		tenant.subdomain, product.press_release_group, site_apps(tenant)
-	)
+	site = client.find_site(tenant.subdomain)
+	if site and site.status in ("broken", "archived"):
+		# An earlier attempt's broken site, being archived: Press frees the name only when
+		# the archive finishes, so wait until the name is free before creating it again.
+		_keep_waiting(step, f"Press to archive the old {site.id}")
+	if not site:
+		_check_capacity(tenant)
+		site = client.create_site(tenant.subdomain, product.press_release_group, site_apps(tenant))
 	tenant.press_site_id = site.id
 	tenant.site_url = client.site_url(tenant.subdomain)
 	# Save right away: this is what makes the job idempotent.
@@ -168,15 +193,50 @@ def _create_site(tenant, step, client: PressClient):
 	frappe.db.commit()
 
 
+def _check_capacity(tenant):
+	"""Wait while MAX_BUILDING sites are building; on the Core test site, refuse a 6th live site."""
+	others = frappe.get_all(
+		"GX Tenant",
+		filters={"press_site_id": ("is", "set"), "status": ("!=", "archived"), "name": ("!=", tenant.name)},
+		fields=["name", "status", "subdomain"],
+	)
+	live_tests = [row for row in others if row.subdomain.startswith(TEST_PREFIX)]
+	if _test_sites() and len(live_tests) >= MAX_TEST_SITES:
+		raise PressError(
+			f"{len(live_tests)} test sites are live; archive some first (at most {MAX_TEST_SITES})"
+		)
+	provisioning = [row.name for row in others if row.status == "provisioning"]
+	building = provisioning and frappe.db.count(
+		"GX Provisioning Step",
+		{"parent": ("in", provisioning), "step_key": "wait_for_site", "state": ("!=", "done")},
+	)
+	if building and building >= MAX_BUILDING:
+		raise StepPending
+
+
+def _keep_waiting(step, what: str):
+	if step.started_at and now_datetime() - step.started_at > WAIT_TIMEOUT:
+		raise PressError(f"Timed out after {WAIT_TIMEOUT} waiting for {what}")
+	raise StepPending
+
+
 def _wait_for_site(tenant, step, client: PressClient):
 	site = client.get_site(tenant.press_site_id)
 	if site.status == "active":
 		return
 	if site.status == "broken":
-		raise PressError(f"Press reports the site as broken ({site.id})")
-	if step.started_at and now_datetime() - step.started_at > WAIT_TIMEOUT:
-		raise PressError(f"Timed out after {WAIT_TIMEOUT} waiting for Press to create {site.id}")
-	raise StepPending
+		# Archive it now; an admin retry then creates it again under the same name.
+		client.archive_site(site.id)
+		tenant.press_site_id = None
+		for row in tenant.steps:
+			if row.step_key == "create_site":
+				row.state = "pending"
+		tenant.save(ignore_permissions=True)
+		frappe.db.commit()  # _fail rolls back; the archive has already been asked for
+		raise PressError(f"Press reports {site.id} as broken. It is being archived; Retry creates it again.")
+	if site.status in ("inactive", "archived"):
+		raise PressError(f"Press reports {site.id} as {site.status} while it was being created")
+	_keep_waiting(step, f"Press to create {site.id}")
 
 
 def _install_apps(tenant, step, client: PressClient):
@@ -187,7 +247,16 @@ def _install_apps(tenant, step, client: PressClient):
 
 
 def _configure(tenant, step, client: PressClient):
-	client.configure_site(tenant.press_site_id, tenant_settings(tenant))
+	configure(tenant, client)
+
+
+def configure(tenant, client: PressClient, reset_owner_password: bool = False):
+	"""Set up the tenant's site, and keep the API key of the GrowthX service user it creates."""
+	result = client.configure_site(tenant.press_site_id, tenant_settings(tenant, reset_owner_password))
+	if result and result.get("apiKey"):
+		tenant.service_api_key = result["apiKey"]
+		tenant.service_api_secret = result["apiSecret"]
+		tenant.save(ignore_permissions=True)
 
 
 def tenant_settings(tenant, reset_owner_password: bool = False) -> dict:
@@ -243,9 +312,26 @@ def resume_pending():
 		pluck="name",
 	):
 		if frappe.db.exists(
-			"GX Provisioning Step", {"parent": name, "step_key": "wait_for_site", "state": "running"}
+			"GX Provisioning Step",
+			{"parent": name, "step_key": ("in", ["create_site", "wait_for_site"]), "state": "running"},
 		):
 			enqueue(name)
+
+
+def archive(tenant_name: str, client: PressClient | None = None):
+	"""Delete the tenant's site on Press (it is backed up first) and mark the tenant archived."""
+	client = client or get_client()
+	tenant = frappe.get_doc("GX Tenant", tenant_name, for_update=True)
+	if tenant.press_site_id:
+		client.archive_site(tenant.press_site_id)
+	tenant.status = "archived"
+	tenant.status_message = None
+	tenant.save(ignore_permissions=True)
+	frappe.db.commit()
+
+
+def _test_sites() -> bool:
+	return bool(cint((frappe.conf.get("growthx_press") or {}).get("test_sites")))
 
 
 def _send_ready_email(tenant):

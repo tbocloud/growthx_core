@@ -18,6 +18,8 @@
   "attempts",
   "ready_at",
   "tenant_key_hash",
+  "service_api_key",
+  "service_api_secret",
   "apps_section",
   "apps",
   "status_section",
@@ -109,6 +111,21 @@
    "unique": 1
   },
   {
+   "description": "API key of the GrowthX service user on the tenant site, created during set-up. Core uses it for calls after provisioning.",
+   "fieldname": "service_api_key",
+   "fieldtype": "Data",
+   "label": "Service API Key",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "service_api_secret",
+   "fieldtype": "Password",
+   "label": "Service API Secret",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
    "fieldname": "apps_section",
    "fieldtype": "Section Break",
    "label": "Apps on this site"
@@ -147,7 +164,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-10-24 10:00:00.000000",
+ "modified": "2026-10-26 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Provisioning",
  "name": "GX Tenant",
