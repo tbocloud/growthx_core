@@ -2,9 +2,15 @@
 
     bench --site <site> execute growthx_core.setup.seed.run
     bench --site <site> execute growthx_core.setup.seed.run --kwargs "{'password': '...'}"
+    bench --site <site> execute growthx_core.setup.seed.run --kwargs "{'release_group': 'bench-0017'}"
 
 Safe to run more than once. Demo passwords are never stored in the repo: pass one, or a random
-one is generated and printed. Prices, trial length and commission are PLACEHOLDERS until the
+one is generated and printed.
+
+On a site that provisions on real Press (growthx_press mode "press"), pass the Solar release group
+(Press's group ID, e.g. bench-0017). Demo users are skipped there: the demo customer would create
+a real site. A release group already set on a product (by an admin, or an earlier seed) is only
+changed when one is passed. Prices, trial length and commission are PLACEHOLDERS until the
 business decisions D6 (pricing/GST), D7 (trial) and D8 (commission) are made.
 """
 
@@ -26,7 +32,7 @@ PRODUCTS = [
 			{"app_name": "growthx_theme", "repository": "https://github.com/tbocloud/growthx_theme.git"},
 			{"app_name": "solar", "repository": "https://github.com/tbocloud/solar_operations.git"},
 		],
-		press_release_group="solar",
+		press_release_group="solar",  # development placeholder; real Press needs its group ID
 		sort_order=1,
 	),
 	dict(
@@ -86,9 +92,16 @@ TIERS = [
 ]
 
 
-def run(password: str | None = None):
-	_products()
+def run(password: str | None = None, release_group: str | None = None):
+	real_press = (frappe.conf.get("growthx_press") or {}).get("mode") == "press"
+	if real_press and not release_group:
+		frappe.throw("This site uses real Press: pass release_group (the Solar group ID, e.g. bench-0017)")
+	_products(release_group)
 	_plans()
+	if real_press:
+		frappe.db.commit()
+		print("GrowthX products and plans are in place. Demo users skipped: this site uses real Press.")
+		return
 	password = password or secrets.token_urlsafe(12)
 	created = _demo_users(password)
 	frappe.db.commit()
@@ -104,16 +117,20 @@ def run(password: str | None = None):
 def _upsert(doctype, name, values):
 	if frappe.db.exists(doctype, name):
 		doc = frappe.get_doc(doctype, name)
-		# Apps are managed by admins after the first seed; never overwrite their edits.
-		doc.update({k: v for k, v in values.items() if k != "apps"})
+		# Apps and the release group are managed by admins after the first seed; never overwrite their edits.
+		doc.update({k: v for k, v in values.items() if k not in ("apps", "press_release_group")})
 		doc.save(ignore_permissions=True)
 	else:
 		frappe.get_doc({"doctype": doctype, **values}).insert(ignore_permissions=True)
 
 
-def _products():
+def _products(release_group: str | None = None):
 	for p in PRODUCTS:
+		if release_group and p.get("press_release_group"):
+			p = {**p, "press_release_group": release_group}
 		_upsert("GX Product", p["slug"], p)
+		if release_group and p.get("press_release_group"):
+			frappe.db.set_value("GX Product", p["slug"], "press_release_group", release_group)
 
 
 def _plans():
