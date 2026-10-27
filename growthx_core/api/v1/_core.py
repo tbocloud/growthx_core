@@ -13,6 +13,8 @@ See openapi.yaml for the contract and docs/api-decisions.md for why it looks lik
 
 import functools
 import hashlib
+import hmac
+import ipaddress
 import json
 import re
 from dataclasses import dataclass
@@ -245,8 +247,30 @@ def current_user() -> str:
 	return frappe.session.user
 
 
+# The website calls Core from its own server, so Core would see one IP for every visitor. It
+# forwards the visitor's IP; Core trusts it only with the shared key (`growthx_web_key` in
+# site_config, GROWTHX_WEB_KEY on the website).
+WEB_KEY_HEADER = "X-GrowthX-Web-Key"
+CLIENT_IP_HEADER = "X-GrowthX-Client-IP"
+
+
 def client_ip() -> str:
-	return getattr(frappe.local, "request_ip", None) or "unknown"
+	"""The caller's IP address, for rate limits and records: the visitor's, for website calls."""
+	return _forwarded_client_ip() or getattr(frappe.local, "request_ip", None) or "unknown"
+
+
+def _forwarded_client_ip() -> str | None:
+	if getattr(frappe.local, "request", None) is None:
+		return None
+	key = frappe.conf.get("growthx_web_key")
+	sent = frappe.get_request_header(WEB_KEY_HEADER)
+	if not key or not sent or not hmac.compare_digest(sent.encode(), str(key).encode()):
+		return None
+	ip = (frappe.get_request_header(CLIENT_IP_HEADER) or "").strip()
+	try:
+		return str(ipaddress.ip_address(ip))
+	except ValueError:
+		return None  # "unknown" (the website had no X-Real-IP) or junk: use the connection's IP
 
 
 # ---------------------------------------------------------------- input

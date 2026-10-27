@@ -30,6 +30,9 @@ info:
     - **IDs:** opaque strings (Frappe document names). Clients must not parse them.
     - **Idempotency:** `auth.signup`, `billing.create_checkout` and `admin.retry_provisioning` accept an
       `Idempotency-Key` header (a UUID). A repeat with the same key within 24 h returns the original result.
+    - **Visitor IP (website server only):** per-IP rate limits count the caller's IP. The website calls Core from
+      its server, so it sends the visitor's IP in `X-GrowthX-Client-IP` with the shared secret in
+      `X-GrowthX-Web-Key` (Core's `growthx_web_key`). Without the right key the header is ignored.
     - **Versioning:** additive changes stay in `v1`. Breaking changes go into a new `growthx_core.api.v2` module,
       and both run in parallel during migration.
     - **Phase:** `x-phase` on each operation is the delivery phase (1 Foundation, 2 Self sign-up,
