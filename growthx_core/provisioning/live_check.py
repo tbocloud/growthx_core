@@ -147,7 +147,11 @@ def _new_tenant():
 			"product": PRODUCT,
 			"display_name": "Live Check",
 			"subdomain": runner.make_subdomain(f"Live Check {frappe.generate_hash(length=4)}"),
-			"status": "provisioning",
+			# Not "provisioning": this check runs the steps itself, and the scheduler's resume_pending
+			# would otherwise start runner.run on the same tenant (a second site.new or configure).
+			# runner.run ignores tenants in any other status.
+			"status": "suspended",
+			"status_message": "Live check: steps run by live_check, not the scheduler.",
 		}
 	).insert(ignore_permissions=True)
 	runner.init_steps(tenant)
