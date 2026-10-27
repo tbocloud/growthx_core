@@ -54,6 +54,8 @@ tags:
   - name: catalogue
   - name: appointments
   - name: auth
+  - name: signup
+    description: What the sign-up form offers, and the live subdomain check (docs 09 sign-up v2).
   - name: customer
   - name: billing
   - name: partner
@@ -414,6 +416,26 @@ paths:
                     `solar-growth-year`). If omitted, the product's highlighted plan for `billingInterval` is used.
                 billingInterval: { $ref: "#/components/schemas/BillingInterval" }
                 referralCode: { type: string, example: OKAFOR-7Q2 }
+                subdomain:
+                  type: string
+                  example: noor-solar
+                  description: |
+                    Customer only, optional. The site's address, `<subdomain>.<tenantDomain>`: 5-32 of a-z, 0-9 and
+                    `-`, starting and ending with a letter or digit (`^[a-z0-9][a-z0-9-]{3,30}[a-z0-9]$`); at most 27
+                    on the Core test site, which creates `test-<subdomain>`. Upper case is lowered. Not reserved, not
+                    taken (check with `tenant.check_subdomain`). Without it, one is made from `company`. Ignored when
+                    no product is chosen (no site is created).
+                country:
+                  type: string
+                  enum: [IN, AE]
+                  default: IN
+                  description: |
+                    Customer only. A `code` from `signup.options`. Sets the site's currency, timezone and fiscal year;
+                    those are never sent.
+                chartOfAccounts:
+                  type: string
+                  example: India - Chart of Accounts
+                  description: Customer only. One of the country's `charts` from `signup.options`; default its `defaultChart`.
                 client: { $ref: "#/components/schemas/ClientKind" }
       responses:
         "201":
@@ -428,10 +450,98 @@ paths:
                       site:
                         $ref: "#/components/schemas/SiteRef"
         "409":
-          description: "`email_taken` (with `fields.email`), or `idempotency_conflict` (same key, different body)"
+          description: |
+            `email_taken` (with `fields.email`); `subdomain_taken` (with `fields.subdomain`): the chosen subdomain was
+            taken since the form checked it (in Core or on Press); or `idempotency_conflict` (same key, different body).
+            An invalid or reserved `subdomain`, an unknown `country` or a `chartOfAccounts` not offered for the country
+            is 422 with the field in `fields`.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /growthx_core.api.v1.signup.options:
+    get:
+      tags: [signup]
+      summary: Countries and charts of accounts for the sign-up form
+      description: |
+        Countries a customer can choose (India and UAE at launch), with the currency, timezone and fiscal-year start
+        Core sets from each, and ERPNext's charts of accounts for it. Load the form from this, so adding a country
+        needs no website change. Changes rarely: the website may keep it for the page's lifetime.
+      operationId: signupOptions
+      x-phase: 2
+      security: []
+      responses:
+        "200":
+          description: The sign-up options
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tenantDomain, countries, defaultCountry]
+                properties:
+                  tenantDomain: { type: string, example: tbogrowthx.com }
+                  defaultCountry: { type: string, example: IN }
+                  countries:
+                    type: array
+                    items:
+                      type: object
+                      required: [code, name, currency, timezone, fiscalYearStart, charts, defaultChart]
+                      properties:
+                        code: { type: string, example: IN }
+                        name: { type: string, example: India }
+                        currency: { type: string, example: INR }
+                        timezone: { type: string, example: Asia/Kolkata }
+                        fiscalYearStart: { type: string, pattern: "^\\d{2}-\\d{2}$", example: "04-01", description: "MM-DD" }
+                        charts:
+                          type: array
+                          items: { type: string }
+                          example: [India - Chart of Accounts, Standard, Standard with Numbers]
+                        defaultChart: { type: string, example: India - Chart of Accounts }
+        "5XX": { $ref: "#/components/responses/ServerError" }
+
+  /growthx_core.api.v1.tenant.check_subdomain:
+    get:
+      tags: [signup]
+      summary: Is this subdomain free?
+      description: |
+        For the sign-up form, as the customer types (at least 400 ms after the last keystroke). Checked within Core
+        only (pattern, reserved names, existing sites), never on Press, so `auth.signup` can still return
+        `409 subdomain_taken`. Upper case is lowered. Rate-limited to 120 per minute per IP address.
+      operationId: checkSubdomain
+      x-phase: 2
+      security: []
+      parameters:
+        - name: subdomain
+          in: query
+          required: true
+          schema: { type: string, maxLength: 64 }
+      responses:
+        "200":
+          description: The answer (also when the name is invalid)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [subdomain, address, available, reason, suggestion]
+                properties:
+                  subdomain: { type: string, example: noor-solar }
+                  address:
+                    type: string
+                    example: noor-solar.tbogrowthx.com
+                    description: The full address the site would get (`test-...` on the Core test site)
+                  available: { type: boolean }
+                  reason:
+                    type: string
+                    nullable: true
+                    enum: [invalid, reserved, taken, null]
+                    description: Why it isn't available; null when it is
+                  suggestion:
+                    type: string
+                    nullable: true
+                    example: noor-solar-2
+                    description: A free name close to a taken or reserved one; null otherwise
         "422": { $ref: "#/components/responses/ValidationFailed" }
         "429": { $ref: "#/components/responses/RateLimited" }
 

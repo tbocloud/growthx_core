@@ -1,13 +1,29 @@
-"""Server-to-server endpoints called by tenant sites (not by Web or Flutter).
+"""Tenant sites.
 
-The caller is a tenant site, not a user: it authenticates with its own key in the
-`X-GX-Tenant-Key` header (see provisioning/site_login.py).
+`check_subdomain` is public: the sign-up form calls it as the customer types.
+`redeem_login` is server to server, called by tenant sites (not by Web or Flutter): the caller
+authenticates with its own key in the `X-GX-Tenant-Key` header (see provisioning/site_login.py).
 """
 
 import frappe
 
-from growthx_core.api.v1._core import ApiError, RateLimit, audit, body, endpoint, get_str
-from growthx_core.provisioning import site_login
+from growthx_core.api.v1._core import ApiError, RateLimit, audit, body, endpoint, get_str, query
+from growthx_core.provisioning import runner, site_login
+from growthx_core.provisioning.press import tenant_domain
+
+
+@endpoint(methods=("GET",), auth=False, rate_limit=RateLimit(120, 60))
+def check_subdomain():
+	"""Is this subdomain free? Checked within Core only (auth.signup also asks Press)."""
+	subdomain = get_str(query(), "subdomain", required=True, max_length=64, label="Subdomain").lower()
+	reason = runner.subdomain_problem(subdomain)
+	return {
+		"subdomain": subdomain,
+		"address": f"{runner.site_subdomain(subdomain)}.{tenant_domain()}",
+		"available": reason is None,
+		"reason": reason,
+		"suggestion": runner.suggest_subdomain(subdomain) if reason in ("taken", "reserved") else None,
+	}
 
 
 def _invalid_link():

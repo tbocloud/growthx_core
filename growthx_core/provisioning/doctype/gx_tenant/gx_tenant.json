@@ -11,6 +11,8 @@
   "product",
   "subscription",
   "status",
+  "country",
+  "chart_of_accounts",
   "column_break_1",
   "subdomain",
   "site_url",
@@ -65,6 +67,19 @@
    "in_standard_filter": 1,
    "label": "Status",
    "options": "requested\nprovisioning\nready\nfailed\nsuspended\narchived"
+  },
+  {
+   "description": "Chosen at sign-up. Sets the site's currency, timezone and fiscal year. Empty: India.",
+   "fieldname": "country",
+   "fieldtype": "Link",
+   "label": "Country",
+   "options": "Country"
+  },
+  {
+   "description": "ERPNext chart of accounts for the site's company. Empty: the country's default.",
+   "fieldname": "chart_of_accounts",
+   "fieldtype": "Data",
+   "label": "Chart of Accounts"
   },
   {
    "fieldname": "column_break_1",
@@ -164,7 +179,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-10-26 12:00:00.000000",
+ "modified": "2026-10-27 18:00:00.000000",
  "modified_by": "Administrator",
  "module": "Provisioning",
  "name": "GX Tenant",
