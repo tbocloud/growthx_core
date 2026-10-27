@@ -22,7 +22,10 @@ PRODUCTS = [
 		category="Solar installers & distributors",
 		summary="Site surveys, projects, installation and service for solar businesses.",
 		availability="available",
-		vertical_app="solar_operations",
+		apps=[
+			{"app_name": "growthx_theme", "repository": "https://github.com/tbocloud/growthx_theme.git"},
+			{"app_name": "solar", "repository": "https://github.com/tbocloud/solar_operations.git"},
+		],
 		press_release_group="solar",
 		sort_order=1,
 	),
@@ -101,7 +104,8 @@ def run(password: str | None = None):
 def _upsert(doctype, name, values):
 	if frappe.db.exists(doctype, name):
 		doc = frappe.get_doc(doctype, name)
-		doc.update(values)
+		# Apps are managed by admins after the first seed; never overwrite their edits.
+		doc.update({k: v for k, v in values.items() if k != "apps"})
 		doc.save(ignore_permissions=True)
 	else:
 		frappe.get_doc({"doctype": doctype, **values}).insert(ignore_permissions=True)

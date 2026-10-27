@@ -118,6 +118,9 @@ class TestPartnerApp(IntegrationTestCase):
 	def _cleanup(cls):
 		accounts = frappe.get_all("GX Account", {"contact_email": ("like", f"{PREFIX}%")}, pluck="name")
 		if accounts:
+			tenants = frappe.get_all("GX Tenant", {"account": ("in", accounts)}, pluck="name")
+			if tenants:
+				frappe.db.delete("GX Product App", {"parenttype": "GX Tenant", "parent": ("in", tenants)})
 			frappe.db.delete("GX Tenant", {"account": ("in", accounts)})
 			frappe.db.delete("GX Subscription", {"account": ("in", accounts)})
 			frappe.db.delete("GX Account", {"name": ("in", accounts)})
@@ -129,6 +132,7 @@ class TestPartnerApp(IntegrationTestCase):
 		for user in users:
 			frappe.delete_doc("User", user, force=True, ignore_permissions=True)
 		frappe.db.delete("GX Plan", {"name": PLAN})
+		frappe.db.delete("GX Product App", {"parenttype": "GX Product", "parent": PRODUCT})
 		frappe.db.delete("GX Product", {"name": PRODUCT})
 		frappe.db.commit()
 

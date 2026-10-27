@@ -3,19 +3,16 @@
 `growthx_press` in site_config selects the client:
     {"mode": "fake"}                         # default: local development and tests
     {"mode": "fake", "fail_step": "configure"}  # make the fake fail a step, to test retries
-    {"mode": "press", "url": "...", "token": "..."}  # real Press, once DevOps delivers the API
+    {"mode": "press", ...}                   # tbocloud.in Press, see RealPressClient
     {"mode": "local", ...}                   # real sites on this bench, see LocalPressClient
-
-The real Press calls are not written yet: the endpoints, payloads and auth are open questions
-for DevOps (Arun). Until then `mode: press` fails at the first step with a clear admin error.
 """
 
 import json
 import os
+import re
 import shlex
 import subprocess
 from dataclasses import dataclass, field
-from datetime import date
 from urllib.parse import urlsplit
 
 import frappe
@@ -27,10 +24,14 @@ class PressError(Exception):
 	"""Press refused or failed. The message is admin-only detail."""
 
 
+class PressNotFound(PressError):
+	"""Press has no such site, or it isn't the GrowthX team's (Press answers the same for both)."""
+
+
 @dataclass
 class PressSite:
 	id: str
-	status: str  # creating | active | broken
+	status: str  # creating | active | broken | inactive | archived
 	apps: list[str] = field(default_factory=list)
 
 
@@ -47,21 +48,25 @@ class PressClient:
 	def find_site(self, subdomain: str) -> PressSite | None:
 		raise NotImplementedError
 
+	def archive_site(self, site_id: str) -> None:
+		"""Delete a site (Press backs it up first). Press frees the name only when this finishes."""
+		raise NotImplementedError
+
 	def install_app(self, site_id: str, app: str) -> None:
 		"""Install `app` on an existing site (used to backfill growthx_theme)."""
 		raise NotImplementedError
 
-	def configure_site(self, site_id: str, settings: dict) -> None:
+	def configure_site(self, site_id: str, settings: dict) -> dict | None:
 		"""Set up a new site. Safe to run again on a configured site.
 
 		`settings`: company_name, country, currency, timezone, plus for single sign-on:
 		- owner_email, owner_name: the customer's user. Created with a random password nobody
 		  knows (they sign in through GrowthX, or with an email link); `reset_owner_password`
 		  replaces the password of an existing owner the same way.
-		- core_url, tenant_key: written to the site's config as `growthx_core_url` and
-		  `growthx_tenant_key`, for growthx_theme's sso.login.
+		- core_url, tenant_key: stored on the site for growthx_theme's sso.login.
 		Also enables "Login with Email Link" as the fallback way in.
-		The vertical's own set-up (solar_operations) is being agreed with Nahala."""
+		Returns the GrowthX service user's {"apiKey", "apiSecret"} when the site has one.
+		The vertical's own set-up (solar) is being agreed with Nahala."""
 		raise NotImplementedError
 
 	def health_check(self, site_url: str) -> bool:
@@ -84,11 +89,18 @@ class FakePressClient(PressClient):
 
 	def get_site(self, site_id):
 		self._maybe_fail("wait_for_site")
-		verticals = [app for app in frappe.get_all("GX Product", pluck="vertical_app") if app]
-		return PressSite(id=site_id, status="active", apps=["frappe", "erpnext", "growthx_theme", *verticals])
+		# Reports every app a product or tenant lists (plus the always-installed ones) as installed.
+		from growthx_core.provisioning.apps import BASE_APPS, THEME_APP, all_listed_apps
+
+		return PressSite(
+			id=site_id, status="active", apps=[*BASE_APPS, THEME_APP, *sorted(all_listed_apps())]
+		)
 
 	def find_site(self, subdomain):
 		return None
+
+	def archive_site(self, site_id):
+		pass
 
 	def install_app(self, site_id, app):
 		pass
@@ -101,35 +113,189 @@ class FakePressClient(PressClient):
 		return True
 
 
-class RealPressClient(PressClient):
-	def __init__(self, url: str | None, token: str | None):
-		self.url = url
-		self.token = token
+SUBDOMAIN = re.compile(r"^[a-z0-9][a-z0-9-]{3,30}[a-z0-9]$")  # Press: 5-32 characters
+TEST_PREFIX = "test-"
+PRESS_STATUS = {
+	"Pending": "creating",
+	"Installing": "creating",
+	"Updating": "creating",  # busy for a moment (deploys, restores): keep waiting
+	"Recovering": "creating",
+	"Active": "active",
+	"Broken": "broken",
+	"Inactive": "inactive",
+	"Suspended": "inactive",
+	"Archived": "archived",
+}
 
-	def _pending(self):
-		raise PressError(
-			"The Press API client is not implemented yet: waiting on DevOps for endpoints, payloads and a scoped token."
-		)
+
+class RealPressClient(PressClient):
+	"""TBO's self-hosted Press, tbocloud.in (DevOps guide: docs/press-api-for-core.md, Arun).
+
+	    {"mode": "press",
+	     "url": "https://tbocloud.in", "team": "lgcrlmj0t5",
+	     "api_key": "...", "api_secret": "...",      # this Core site's own Press user; never in Git
+	     "domain": "tbogrowthx.com", "plan": "GrowthX Demo",
+	     "test_sites": 1}     # the Core test site: may create only test-<name> sites. Production
+	                          # Core leaves it out and refuses test- names.
+
+	The key reaches everything the GrowthX team owns, including Core's own site, so every call
+	that changes a site first checks that the site belongs to a GX Tenant (`_own`).
+	"""
+
+	def __init__(self, conf: dict):
+		self.url = (conf.get("url") or "https://tbocloud.in").rstrip("/")
+		self.team = conf.get("team")
+		self.domain = conf.get("domain") or "tbogrowthx.com"
+		self.plan = conf.get("plan") or "GrowthX Demo"
+		self.test_sites = cint(conf.get("test_sites"))
+		self.session = requests.Session()
+		self.session.headers["Authorization"] = f"token {conf.get('api_key')}:{conf.get('api_secret')}"
+		if self.team:
+			self.session.headers["X-Press-Team"] = self.team
+
+	# ---- Press API
+
+	def _call(self, method: str, get: bool = False, timeout: int = 30, **params):
+		url = f"{self.url}/api/method/{method}"
+		try:
+			if get:
+				r = self.session.get(url, params=params, timeout=timeout, allow_redirects=False)
+			else:
+				r = self.session.post(url, json=params, timeout=timeout, allow_redirects=False)
+		except requests.RequestException as e:
+			raise PressError(f"{method}: Press unreachable ({type(e).__name__})") from None
+		if r.status_code == 200:
+			return r.json().get("message")
+		detail = _error_text(r)
+		if r.status_code == 403 or "DoesNotExistError" in detail:
+			raise PressNotFound(f"{method}: {detail}")
+		raise PressError(f"{method}: HTTP {r.status_code} {detail}")
+
+	def site_name(self, subdomain: str) -> str:
+		return f"{subdomain}.{self.domain}"
+
+	def site_url(self, subdomain):
+		return f"https://{self.site_name(subdomain)}"
+
+	def exists(self, subdomain: str) -> bool:
+		"""True if the name is taken or reserved. Press allows 10 calls a minute."""
+		return bool(self._call("press.api.site.exists", get=True, subdomain=subdomain, domain=self.domain))
+
+	def group_apps(self, group: str) -> list[str]:
+		return sorted({_app_name(row) for row in self._call("press.api.bench.apps", name=group) or []})
+
+	# ---- safety
+
+	def check_subdomain(self, subdomain: str):
+		if not SUBDOMAIN.match(subdomain or ""):
+			raise PressError(f"{subdomain!r} isn't a valid Press name (5-32 of a-z, 0-9 and -)")
+		if self.test_sites and not subdomain.startswith(TEST_PREFIX):
+			raise PressError(f"This is the Core test site: it may only create {TEST_PREFIX}<name> sites")
+		if not self.test_sites and subdomain.startswith(TEST_PREFIX):
+			raise PressError(f"{TEST_PREFIX}<name> sites are for the Core test site only")
+
+	def _own(self, site_id: str):
+		"""Refuse any site that isn't a GX Tenant's, such as Core's own site."""
+		if not frappe.db.exists("GX Tenant", {"press_site_id": site_id}):
+			raise PressError(f"Refusing to act on {site_id}: it isn't a GrowthX tenant site")
+
+	# ---- PressClient
 
 	def create_site(self, subdomain, release_group, apps):
-		self._pending()
+		self.check_subdomain(subdomain)
+		if not frappe.db.exists("GX Tenant", {"subdomain": subdomain}):
+			raise PressError(f"Refusing to create {subdomain}: no GX Tenant has this subdomain")
+		if not release_group:
+			raise PressError("The product has no Press release group (GX Product → Press Release Group)")
+		# Press would accept the request and then fail the site; refuse it here instead.
+		missing = sorted(set(apps) - set(self.group_apps(release_group)))
+		if missing:
+			raise PressError(f"Not in Press release group {release_group}: {', '.join(missing)}")
+		result = self._call(
+			"press.api.site.new",
+			site={
+				"name": subdomain,
+				"domain": self.domain,
+				"group": release_group,
+				"apps": list(apps),
+				"plan": self.plan,
+				"cluster": "Default",
+			},
+		)
+		return PressSite(id=result["site"], status="creating", apps=[])
 
 	def get_site(self, site_id):
-		self._pending()
+		site = self._call("press.api.site.get", name=site_id)
+		status = PRESS_STATUS.get(site.get("status"), "creating")
+		apps = []
+		if status == "active":
+			apps = [_app_name(row) for row in self._call("press.api.site.installed_apps", name=site_id) or []]
+		return PressSite(id=site_id, status=status, apps=apps)
 
 	def find_site(self, subdomain):
-		self._pending()
+		if not self.exists(subdomain):
+			return None
+		try:
+			return self.get_site(self.site_name(subdomain))
+		except PressNotFound:
+			raise PressError(f"{subdomain} is taken on Press by a site that isn't GrowthX's") from None
+
+	def archive_site(self, site_id):
+		self._own(site_id)
+		self._call("press.api.site.archive", name=site_id, force=1)
 
 	def install_app(self, site_id, app):
-		self._pending()
+		self._own(site_id)
+		self._call("press.api.site.install_app", name=site_id, app=app)
 
 	def configure_site(self, site_id, settings):
-		# Needs from Press: run set-up on the site, and set site config keys (growthx_core_url,
-		# growthx_tenant_key) without exposing them in logs.
-		self._pending()
+		"""Log in as Administrator through Press, then run growthx_theme's set-up on the site.
+
+		The tenant key goes to the site directly over HTTPS, never through Press's update_config,
+		whose values can end up in Press-side logs."""
+		self._own(site_id)
+		login = self._call("press.api.site.login", name=site_id, reason="GrowthX provisioning")
+		try:
+			r = requests.post(
+				f"https://{site_id}/api/method/growthx_theme.setup.configure",
+				json={"settings": settings},
+				cookies={"sid": login["sid"]},
+				timeout=300,  # the setup wizard takes a minute or two
+				allow_redirects=False,
+			)
+		except requests.RequestException as e:
+			raise PressError(f"Configuring {site_id}: site unreachable ({type(e).__name__})") from None
+		if r.status_code != 200:
+			raise PressError(f"Configuring {site_id}: HTTP {r.status_code} {_error_text(r)}")
+		return r.json().get("message")
 
 	def health_check(self, site_url):
-		self._pending()
+		# Only a direct 200 from the tenant counts: an unknown name redirects (307) to tbocloud.in.
+		try:
+			r = requests.get(f"{site_url}/api/method/ping", timeout=15, allow_redirects=False)
+		except requests.RequestException:
+			return False
+		return r.status_code == 200 and r.json().get("message") == "pong"
+
+
+def _app_name(row) -> str:
+	return row if isinstance(row, str) else (row.get("app") or row.get("name"))
+
+
+def _error_text(response) -> str:
+	"""Press's error message, short. Never the request (it carries the key)."""
+	try:
+		body = response.json()
+	except ValueError:
+		return response.text[:300]
+	messages = []
+	for raw in json.loads(body.get("_server_messages") or "[]"):
+		try:
+			messages.append(json.loads(raw).get("message") or raw)
+		except (ValueError, AttributeError):
+			messages.append(raw)
+	text = " ".join(filter(None, [body.get("exc_type"), *messages])) or str(body.get("message") or "")
+	return text[:300]
 
 
 class LocalPressClient(PressClient):
@@ -236,7 +402,9 @@ class LocalPressClient(PressClient):
 			json.loads(self._frappe("--site", site_id, "list-apps", "-f", "json")).get(site_id, [])
 		)
 		if self.allow_missing_apps:
-			verticals = [app for app in frappe.get_all("GX Product", pluck="vertical_app") if app]
+			from growthx_core.provisioning.apps import THEME_APP, all_listed_apps
+
+			verticals = [app for app in all_listed_apps() if app != THEME_APP]
 			# Never growthx_theme: without it single sign-on can't work, so the job must fail.
 			missing = [app for app in verticals if app not in self._bench_apps()]
 			installed += missing
@@ -256,56 +424,15 @@ class LocalPressClient(PressClient):
 			self._frappe("--site", site_id, "install-app", app)
 
 	def configure_site(self, site_id, settings):
-		"""Run ERPNext's setup wizard, create the customer's user and set up single sign-on."""
-		today = date.today()
-		fy_start = date(today.year if today.month >= 4 else today.year - 1, 4, 1)
-		args = {
-			"language": "English",
-			"country": settings.get("country") or "India",
-			"currency": settings.get("currency") or "INR",
-			"timezone": settings.get("timezone") or "Asia/Kolkata",
-			"company_name": settings.get("company_name") or site_id,
-			"chart_of_accounts": "Standard",
-			"fy_start_date": fy_start.isoformat(),
-			"fy_end_date": date(fy_start.year + 1, 3, 31).isoformat(),
-		}
-		owner = {
-			"email": settings.get("owner_email"),
-			"name": settings.get("owner_name") or args["company_name"],
-			"reset_password": bool(settings.get("reset_owner_password")),
-			"core_url": settings.get("core_url"),
-		}
+		"""Run growthx_theme's set-up on the site, the same code Core calls on Press sites."""
+		public = {k: v for k, v in settings.items() if k != "tenant_key"}
 		code = f"""
-import json, os, secrets, frappe
-from frappe.installer import update_site_config
-from frappe.utils.password import update_password
+import json, os, frappe
 frappe.init(site={site_id!r}, sites_path={self.sites!r}); frappe.connect()
 frappe.set_user("Administrator")
-args, owner = json.loads({json.dumps(args)!r}), json.loads({json.dumps(owner)!r})
-if not frappe.is_setup_complete():
-	from frappe.desk.page.setup_wizard.setup_wizard import setup_complete
-	result = setup_complete(args)
-	if not frappe.is_setup_complete():
-		raise SystemExit(f"setup wizard failed: {{result}}")
-email = owner["email"]
-if email:
-	created = not frappe.db.exists("User", email)
-	if created:
-		first, _, last = owner["name"].partition(" ")
-		user = frappe.get_doc({{"doctype": "User", "email": email, "first_name": first,
-			"last_name": last or None, "send_welcome_email": 0}})
-		user.append("roles", {{"role": "System Manager"}})
-		user.insert(ignore_permissions=True)
-	if created or owner["reset_password"]:
-		# A random password nobody knows: the customer signs in through GrowthX ("Open my app")
-		# or with an email link, never with a tenant password.
-		update_password(email, secrets.token_urlsafe(32))
-frappe.db.set_single_value("System Settings", "login_with_email_link", 1)
-key = os.environ.get("GX_TENANT_KEY")
-if key:
-	update_site_config("growthx_core_url", owner["core_url"])
-	update_site_config("growthx_tenant_key", key)
-frappe.db.commit()
+from growthx_theme.setup import configure
+settings = {{**json.loads({json.dumps(public)!r}), "tenant_key": os.environ.get("GX_TENANT_KEY")}}
+print("GX_RESULT " + json.dumps(configure(settings)))
 frappe.destroy()
 """
 		# The tenant key goes through the environment, not the command line, so it can't be read from `ps`.
@@ -315,6 +442,9 @@ frappe.destroy()
 		)
 		if result.returncode != 0:
 			raise PressError(f"Configuring {site_id} failed: {(result.stderr or result.stdout)[-800:]}")
+		for line in result.stdout.splitlines():
+			if line.startswith("GX_RESULT "):
+				return json.loads(line.removeprefix("GX_RESULT "))
 
 	def health_check(self, site_url):
 		# Log in as Administrator, connecting to this machine directly with the site in the Host
@@ -336,7 +466,7 @@ frappe.destroy()
 def get_client() -> PressClient:
 	conf = frappe.conf.get("growthx_press") or {}
 	if conf.get("mode") == "press":
-		return RealPressClient(conf.get("url"), conf.get("token"))
+		return RealPressClient(conf)
 	if conf.get("mode") == "local":
 		return LocalPressClient(conf)
 	return FakePressClient(fail_step=conf.get("fail_step"))
