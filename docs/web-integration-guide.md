@@ -94,6 +94,7 @@ A slash (`{GROWTHX_API_URL}/catalogue.products`) is not a Frappe method and retu
 | GET | `admin.appointment_experts` | admin | 2 | *new* |
 | POST | `auth.login` | none | 1 | `POST /auth/login` |
 | POST | `auth.signup` | none | 2 | `POST /auth/signup` |
+| POST | `auth.google` | none | 2 | *new* (§5.12) |
 | POST | `auth.refresh` | none | 1 | *new* |
 | POST | `auth.logout` | any | 1 | `POST /auth/logout` |
 | GET | `auth.me` | any | 1 | `GET /me` |
@@ -469,12 +470,44 @@ Idempotency-Key: …
 - **Emails:** every change emails the visitor (copy to the expert) with an updated calendar invite (`.ics` with the same UID, so calendars move or cancel the event). Reminders go out 24 h and 1 h before the call (scheduler, every 5 minutes; a call booked less than 24 h ahead gets only the 1-hour one).
 - **ERPNext:** the Event moves or is cancelled with the booking.
 
+### 5.12 Sign in with Google (web)
+
+The website runs the Google redirect; Core does the code exchange (it holds the client secret).
+
+1. **"Continue with Google"** → redirect to `https://accounts.google.com/o/oauth2/v2/auth` with `client_id`,
+   `redirect_uri={website}/api/auth/google/callback`, `response_type=code`, `scope=openid email profile`, a random
+   `state` (keep it in a short-lived httpOnly cookie) and, recommended, PKCE (`code_challenge`, `S256`).
+   - Client ID: production `942801595002-v2nb2bdu6vl3t4dfun707sqkco3f7je9.apps.googleusercontent.com`; core-test
+     (your local site on port 3000) `942801595002-he8h4q519jkgesln920aq39d14pinu5p.apps.googleusercontent.com`.
+     The client ID is public; the secret is only on Core.
+2. **`GET /api/auth/google/callback`** (Next.js route): check `state`, then server-to-server:
+
+```http
+POST {GROWTHX_API_URL}.auth.google     {"code": "<code>", "codeVerifier": "<if PKCE>"}
+```
+
+- `200` → the same session as `auth.login`: store it and go to the dashboard.
+- `202 {"signupRequired": true, "signupToken": "gxg_…", "expiresAt", "email", "name"}` → no account yet. Show the
+  sign-up form with name and email filled in (email read-only, no password fields), then send
+  `auth.signup` with `"googleSignupToken": "<signupToken>"` instead of `email` and `password` (everything else as
+  usual: `accountType`, `company`, plan, site choices). The token lasts 30 minutes; after a 422 or 409 it still
+  works, so the user can fix the form. `400 google_signup_expired` → start again from step 1.
+- `400 google_failed` (code used, expired, or redirect URI mismatch), `403 email_not_verified`,
+  `403 account_unavailable` (disabled or staff account), `503 google_unavailable` → back to the login page with a
+  message.
+
+Core sends Google the redirect URI from its config, so it must be exactly the one in step 1. An existing
+email-and-password account can also sign in with Google (same email); a Google-only account can set a password
+later with "Forgot password".
+
 ## 6. Error codes
 
 | HTTP | `code` | When |
 |---|---|---|
 | 400 | `bad_request` | Body isn't a JSON object |
 | 400 | `invalid_reset_key` | Reset key unknown, used or expired |
+| 400 | `google_failed`, `google_signup_expired` | Google sign-in (§5.12) |
+| 403 | `email_not_verified`, `account_unavailable` | Google sign-in (§5.12) |
 | 400 | `payment_verification_failed` | Gateway signature doesn't match |
 | 401 | `unauthenticated` | No token, or the token expired or was revoked → refresh once, then log in |
 | 401 | `invalid_credentials` | Wrong email or password |
@@ -487,6 +520,7 @@ Idempotency-Key: …
 | 429 | `rate_limited` | Wait `Retry-After` seconds |
 | 500 | `internal_error` | Show a friendly message with `reference` |
 | 503 | `payment_unavailable` | Gateway not configured or unreachable |
+| 503 | `google_unavailable` | Google sign-in not configured or Google unreachable |
 
 ## 7. What the web app needs to add
 

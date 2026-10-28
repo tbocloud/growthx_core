@@ -372,6 +372,75 @@ paths:
         "422": { $ref: "#/components/responses/ValidationFailed" }
         "429": { $ref: "#/components/responses/RateLimited" }
 
+  /growthx_core.api.v1.auth.google:
+    post:
+      tags: [auth]
+      summary: Sign in with Google (web)
+      description: |
+        The Next.js server sends the user to Google (authorization-code flow, scope `openid email profile`, PKCE
+        recommended), receives `code` at its callback, and posts it here **server-to-server**. Core exchanges it with
+        Google using the same redirect URI: `<website>/api/auth/google/callback` (production
+        `https://tbogrowthx.com/api/auth/google/callback`; core-test `http://localhost:3000/api/auth/google/callback`).
+        A code works once.
+
+        - The email belongs to an account: **200**, logged in (same body as `auth.login`).
+        - A new email: **202** with a `signupToken`. Show the sign-up form with the name and email filled in (email
+          read-only), and send the token to `auth.signup` as `googleSignupToken` instead of `email` and `password`.
+
+        Flutter will send a Google ID token instead (later). Rate-limited per IP address.
+      operationId: googleSignin
+      x-phase: 2
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, maxLength: 2048, description: "`code` from Google's redirect to the callback" }
+                codeVerifier: { type: string, maxLength: 128, description: The PKCE verifier, if the website used PKCE }
+                client: { $ref: "#/components/schemas/ClientKind" }
+      responses:
+        "200":
+          description: Logged in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthSession" }
+        "202":
+          description: No account with this email yet
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [signupRequired, signupToken, expiresAt, email, name]
+                properties:
+                  signupRequired: { type: boolean, enum: [true] }
+                  signupToken: { type: string, example: gxg_..., description: "For `auth.signup`; works for one account" }
+                  expiresAt: { type: string, format: date-time, description: 30 minutes from now }
+                  email: { type: string, format: email, description: Verified by Google }
+                  name: { type: string, description: "The Google account's name; may be empty" }
+        "400":
+          description: "`google_failed`: the code is invalid, used or expired, or the redirect URI doesn't match"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: |
+            `email_not_verified`: Google hasn't verified the email. `account_unavailable`: the account is disabled, or
+            is a staff account.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503":
+          description: "`google_unavailable`: Google sign-in isn't configured on this Core, or Google can't be reached"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /growthx_core.api.v1.auth.signup:
     post:
       tags: [auth]
@@ -399,8 +468,16 @@ paths:
             schema:
               type: object
               required: [accountType, name, email, password]
+              description: With `googleSignupToken`, `email` and `password` aren't needed, and `name` defaults to the Google name.
               properties:
                 accountType: { type: string, enum: [customer, partner] }
+                googleSignupToken:
+                  type: string
+                  description: |
+                    The `signupToken` from `auth.google` (202). The account gets the email Google verified; any `email`
+                    sent is ignored. Without `password` the account has none; the user can set one with "Forgot
+                    password". Unknown, expired or used: 400 `google_signup_expired` (go through Google again). A
+                    form error (422, 409) keeps the token, so the user can fix the form and resubmit.
                 name: { type: string, maxLength: 140 }
                 company: { type: string, maxLength: 140, description: Required when accountType is customer }
                 email: { type: string, format: email }

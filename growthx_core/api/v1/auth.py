@@ -5,7 +5,7 @@ from frappe.core.doctype.user.user import test_password_strength
 from frappe.utils import cint, now_datetime, sha256_hash
 from frappe.utils.password import check_password, update_password
 
-from growthx_core import accounts, tokens
+from growthx_core import accounts, google_signin, tokens
 from growthx_core.api.v1 import _serializers as s
 from growthx_core.api.v1._core import (
 	ApiError,
@@ -16,6 +16,7 @@ from growthx_core.api.v1._core import (
 	get_choice,
 	get_email,
 	get_str,
+	iso,
 	ok,
 	validation_error,
 	web_url,
@@ -83,18 +84,48 @@ def login():
 	return s.auth_session(pair, user)
 
 
+@endpoint(methods=("POST",), auth=False, rate_limit=RateLimit(20, 15 * 60))
+def google():
+	"""Sign in with Google: an existing account is logged in (200); a new email gets a sign-up
+	token for `auth.signup` (202)."""
+	data = body()
+	code = get_str(data, "code", required=True, max_length=2048, label="Code")
+	code_verifier = get_str(data, "codeVerifier", max_length=128, label="Code verifier")
+	identity = google_signin.verified_identity(code, code_verifier)
+
+	user = _growthx_user(identity["email"])
+	if user:
+		return s.auth_session(tokens.issue(user, _client(data)), user)
+	if frappe.db.exists("User", {"email": identity["email"]}) or frappe.db.exists("User", identity["email"]):
+		# A disabled account, or a staff account without a GrowthX role.
+		raise ApiError(403, "account_unavailable", "This account can't sign in here.")
+	return 202, {
+		"signupRequired": True,
+		"signupToken": google_signin.issue_signup_token(identity),
+		"expiresAt": iso(now_datetime() + timedelta(seconds=google_signin.SIGNUP_TTL)),
+		"email": identity["email"],
+		"name": identity["name"],
+	}
+
+
 @endpoint(methods=("POST",), auth=False, rate_limit=RateLimit(10, 60 * 60), idempotent=True)
 def signup():
 	data = body()
 	account_type = get_choice(data, "accountType", ("customer", "partner"), required=True)
-	name = get_str(data, "name", required=True, label="Name")
-	email = get_email(data)
-	password = _password(data)
+	google_token = get_str(data, "googleSignupToken", max_length=100)
+	google = _google_signup(google_token) if google_token else None
+	name = get_str(data, "name", required=not google, label="Name") or google["name"]
+	if not name:
+		raise validation_error({"name": "Name is required."})
+	email = google["email"] if google else get_email(data)
+	# With Google there's no password; the user can set one later with "Forgot password".
+	password = _password(data) if not google or data.get("password") else frappe.generate_hash(length=32)
 	phone = get_str(data, "phone", max_length=20, label="Phone")
 	company = get_str(data, "company", required=account_type == "customer", label="Company")
 	client = _client(data)
 	site = _signup_site(data) if account_type == "customer" else {}
-	_check_password_policy(password, "password", (name, email, company))
+	if not google or data.get("password"):
+		_check_password_policy(password, "password", (name, email, company))
 
 	if frappe.db.exists("User", {"email": email}) or frappe.db.exists("User", email):
 		raise ApiError(
@@ -130,10 +161,23 @@ def signup():
 			email=email, full_name=name, password=password, phone=phone, company=company
 		)
 
+	if google_token:
+		google_signin.use_signup_token(google_token)
 	result = s.auth_session(tokens.issue(user, client), user)
 	if tenant:
 		result["site"] = {"id": tenant, "status": frappe.db.get_value("GX Tenant", tenant, "status")}
 	return 201, result
+
+
+def _google_signup(token: str) -> dict:
+	identity = google_signin.signup_identity(token)
+	if not identity:
+		raise ApiError(
+			400,
+			"google_signup_expired",
+			"Your Google sign-in has expired. Please continue with Google again.",
+		)
+	return identity
 
 
 SUBDOMAIN_MESSAGES = {
