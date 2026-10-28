@@ -268,6 +268,10 @@ auth_hooks = ["growthx_core.tokens.authenticate_request"]
 # including errors that Frappe raises before our code runs (e.g. an expired token).
 after_request = ["growthx_core.api.v1._core.after_request"]
 
+# Site settings Core needs (email footer); see setup/install.py
+after_install = "growthx_core.setup.install.after_install"
+after_migrate = ["growthx_core.setup.install.after_migrate"]
+
 scheduler_events = {
 	"cron": {
 		# Resume provisioning jobs that are waiting on Press, or whose worker died
