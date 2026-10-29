@@ -472,6 +472,57 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /growthx_core.api.v1.auth.send_signup_code:
+    post:
+      tags: [auth]
+      summary: Email a sign-up verification code
+      description: |
+        Step before `auth.signup` (not needed with `googleSignupToken`). Emails a 6-digit code that lasts 10 minutes
+        and allows 5 wrong tries. A new code replaces the previous one; it can be asked for again from `resendAfter`
+        (60 seconds). Rate-limited to 10 per hour per IP address and 5 per hour per email.
+      operationId: sendSignupCode
+      x-phase: 2
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+                client: { $ref: "#/components/schemas/ClientKind" }
+      responses:
+        "202":
+          description: Code sent
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [expiresAt, resendAfter]
+                properties:
+                  expiresAt: { type: string, format: date-time }
+                  resendAfter: { type: string, format: date-time, description: Show the resend countdown until then }
+        "409":
+          description: "`email_taken` (with `fields.email`)"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429":
+          description: |
+            `rate_limited`: asked again before `resendAfter`, or too many requests. `Retry-After` gives the seconds to
+            wait.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "`email_unavailable`: the email couldn't be sent; try again shortly"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /growthx_core.api.v1.auth.signup:
     post:
       tags: [auth]
@@ -498,8 +549,10 @@ paths:
           application/json:
             schema:
               type: object
-              required: [accountType, name, email, password]
-              description: With `googleSignupToken`, `email` and `password` aren't needed, and `name` defaults to the Google name.
+              required: [accountType]
+              description: |
+                Either `email`, `password`, `name` and `emailCode` (from `auth.send_signup_code`), or `googleSignupToken`
+                (from `auth.google`), with which `name` defaults to the Google name.
               properties:
                 accountType: { type: string, enum: [customer, partner] }
                 googleSignupToken:
@@ -511,13 +564,23 @@ paths:
                     form error (422, 409) keeps the token, so the user can fix the form and resubmit.
                 name: { type: string, maxLength: 140 }
                 company: { type: string, maxLength: 140, description: Required when accountType is customer }
-                email: { type: string, format: email }
+                email: { type: string, format: email, description: Required without googleSignupToken }
+                emailCode:
+                  type: string
+                  pattern: "^\\d{6}$"
+                  description: |
+                    Required without `googleSignupToken`. The code `auth.send_signup_code` emailed. Wrong: 422 with
+                    `fields.emailCode` (it says how many tries are left). Expired, never sent, or 5 wrong tries: 400
+                    `email_code_expired`. It stays valid after other form errors, and is used up when the account is
+                    created.
                 phone: { type: string, example: "+919876543210" }
                 password:
                   type: string
                   format: password
                   minLength: 8
-                  description: The site's password-strength policy also applies; a weak password returns 422 with `fields.password`.
+                  description: |
+                    Required without `googleSignupToken`. The site's password-strength policy also applies; a weak
+                    password returns 422 with `fields.password`.
                 productSlug: { type: string, example: solar }
                 planId:
                   type: string
@@ -560,6 +623,13 @@ paths:
                     properties:
                       site:
                         $ref: "#/components/schemas/SiteRef"
+        "400":
+          description: |
+            `email_code_expired`: the email code expired, was never sent, or had 5 wrong tries (ask for a new one).
+            `google_signup_expired`: the Google sign-up token is unknown, expired or used (continue with Google again).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "409":
           description: |
             `email_taken` (with `fields.email`); `subdomain_taken` (with `fields.subdomain`): the chosen subdomain was

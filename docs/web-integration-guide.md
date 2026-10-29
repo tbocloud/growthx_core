@@ -95,6 +95,7 @@ A slash (`{GROWTHX_API_URL}/catalogue.products`) is not a Frappe method and retu
 | POST | `auth.login` | none | 1 | `POST /auth/login` |
 | POST | `auth.signup` | none | 2 | `POST /auth/signup` |
 | POST | `auth.google` | none | 2 | *new* (§5.12) |
+| POST | `auth.send_signup_code` | none | 2 | *new* (§5.4) |
 | POST | `auth.refresh` | none | 1 | *new* |
 | POST | `auth.logout` | any | 1 | `POST /auth/logout` |
 | GET | `auth.me` | any | 1 | `GET /me` |
@@ -215,6 +216,17 @@ Six plans in total: `solar-{starter,growth,scale}-{month,year}`.
 **Each plan has one interval.** Group plans by `name` to show the monthly/yearly toggle, and send the matching plan `id`. The prices (₹699 / ₹1,499 / ₹3,999, yearly = 10 × monthly, GST excluded) are **placeholders** until the pricing decision (D6).
 
 ### 5.4 Sign-up, then poll provisioning
+
+**First, verify the email** (not needed for a Google sign-up, §5.12):
+
+```http
+POST {GROWTHX_API_URL}.auth.send_signup_code     {"email": "customer@growthx.test", "client": "web"}
+```
+→ `202 {"expiresAt", "resendAfter"}`. The 6-digit code lasts 10 minutes; show the resend countdown until
+`resendAfter` (60 s). Asking sooner → `429` with `Retry-After`. `409 email_taken` (with `fields.email`),
+`503 email_unavailable` (couldn't send; try again). Then send the code as `emailCode` with the sign-up below.
+A wrong code → `422` with `fields.emailCode` (it says how many tries are left); expired or 5 wrong tries →
+`400 email_code_expired` (ask for a new code). Other form errors don't use the code up.
 
 ```http
 POST {GROWTHX_API_URL}.auth.signup
@@ -507,6 +519,7 @@ later with "Forgot password".
 | 400 | `bad_request` | Body isn't a JSON object |
 | 400 | `invalid_reset_key` | Reset key unknown, used or expired |
 | 400 | `google_failed`, `google_signup_expired` | Google sign-in (§5.12) |
+| 400 | `email_code_expired` | Sign-up email code expired, never sent, or 5 wrong tries (§5.4) |
 | 403 | `email_not_verified`, `account_unavailable` | Google sign-in (§5.12) |
 | 400 | `payment_verification_failed` | Gateway signature doesn't match |
 | 401 | `unauthenticated` | No token, or the token expired or was revoked → refresh once, then log in |
@@ -521,6 +534,7 @@ later with "Forgot password".
 | 500 | `internal_error` | Show a friendly message with `reference` |
 | 503 | `payment_unavailable` | Gateway not configured or unreachable |
 | 503 | `google_unavailable` | Google sign-in not configured or Google unreachable |
+| 503 | `email_unavailable` | The sign-up code email couldn't be sent |
 
 ## 7. What the web app needs to add
 
