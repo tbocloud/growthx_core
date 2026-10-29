@@ -182,6 +182,18 @@ def retry_provisioning():
 	return 202, s.admin_tenant_detail(frappe.get_doc("GX Tenant", tenant_id))
 
 
+@endpoint(methods=("POST",), roles=("admin",), idempotent=True)
+def archive_tenant():
+	"""Archive a failed site (its Press site, if any, is backed up and deleted)."""
+	tenant_id = get_str(body(), "id", required=True)
+	if not frappe.db.exists("GX Tenant", tenant_id):
+		raise not_found()
+	if not runner.archive_failed(tenant_id):
+		raise ApiError(409, "not_archivable", "Only a failed site can be archived.")
+	audit("archive_tenant", "GX Tenant", tenant_id)
+	return s.admin_tenant_detail(frappe.get_doc("GX Tenant", tenant_id))
+
+
 # ---------------------------------------------------------------- appointments ("Talk to an expert")
 
 APPOINTMENT_STATUSES = {"confirmed": "Confirmed", "completed": "Completed", "cancelled": "Cancelled", "no_show": "No Show"}

@@ -1848,6 +1848,43 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /growthx_core.api.v1.admin.archive_tenant:
+    post:
+      tags: [admin]
+      summary: Archive a failed site
+      description: |
+        For a site whose creation failed (e.g. a test sign-up): its Press site, if one was created, is backed up and
+        deleted, and the tenant becomes `archived`, so it no longer counts in `health.provisioning`. Ready, suspended
+        and in-progress sites can't be archived here. Also a button on the GX Tenant form in Core's desk.
+      operationId: adminArchiveTenant
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string, description: Tenant id }
+      responses:
+        "200":
+          description: Archived
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminTenantDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`not_archivable`: the tenant is not in `failed` status"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /growthx_core.api.v1.admin.appointments:
     get:
       tags: [admin]

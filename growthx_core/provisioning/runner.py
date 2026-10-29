@@ -388,6 +388,15 @@ def resume_pending():
 			enqueue(name)
 
 
+def archive_failed(tenant_name: str) -> bool:
+	"""Admin: archive a site whose creation failed (e.g. a test sign-up), so it stops counting in
+	health.provisioning. Returns False unless the tenant is `failed`; ready sites are never archived here."""
+	if frappe.db.get_value("GX Tenant", tenant_name, "status") != "failed":
+		return False
+	archive(tenant_name)
+	return True
+
+
 def archive(tenant_name: str, client: PressClient | None = None):
 	"""Delete the tenant's site on Press (it is backed up first) and mark the tenant archived."""
 	client = client or get_client()
