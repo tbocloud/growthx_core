@@ -7,6 +7,8 @@ white-label leak, and the outside link makes spam filters treat GrowthX mail as 
 
 import frappe
 
+from growthx_core.setup import defaults
+
 EMAIL_FOOTER = "TBO GrowthX · https://tbogrowthx.com"
 
 
@@ -23,6 +25,8 @@ def after_migrate():
 
 
 def apply_settings():
+	# A Customer Group and Territory for sign-ups and partners (ERPNext's wizard may never have run).
+	defaults.ensure_all()
 	_set_system_setting("disable_standard_email_footer", 1)
 	# Our own footer, unless someone has set one (System Settings → Email Footer Address).
 	if not frappe.db.get_single_value("System Settings", "email_footer_address"):
