@@ -2,6 +2,7 @@ import frappe
 from frappe.query_builder.functions import Count
 
 from growthx_core.api.v1 import _serializers as s
+from growthx_core.api.v1 import appointments as appts
 from growthx_core.api.v1._core import (
 	ApiError,
 	audit,
@@ -20,7 +21,6 @@ from growthx_core.api.v1._core import (
 	query,
 	validation_error,
 )
-from growthx_core.api.v1 import appointments as appts
 from growthx_core.provisioning import runner
 
 CUSTOMER_STATUSES = ("trial", "active", "suspended", "churned")
@@ -194,12 +194,236 @@ def archive_tenant():
 	return s.admin_tenant_detail(frappe.get_doc("GX Tenant", tenant_id))
 
 
+# ---------------------------------------------------------------- partners
+
+PARTNER_STATUSES = ("pending_approval", "active", "suspended")
+# action: (statuses it applies to, new status)
+PARTNER_ACTIONS = {
+	"approve": (("pending_approval",), "active"),
+	"suspend": (("pending_approval", "active"), "suspended"),
+	"reactivate": (("suspended",), "active"),
+}
+PARTNER_FIELDS = ["name", "partner_name", "user", "company", "referral_code", "status", "tier", "creation"]
+
+
+def _partner_numbers(partner_names: list[str]) -> dict:
+	"""{partner: {referred, paying, mrr}} from the customers each partner referred."""
+	numbers = {name: {"referred": 0, "paying": 0, "mrr": 0.0} for name in partner_names}
+	accounts = frappe.get_all(
+		"GX Account",
+		{"referred_by": ("in", partner_names or [""])},
+		["name", "referred_by", "status"],
+	)
+	for a in accounts:
+		numbers[a.referred_by]["referred"] += 1
+		if a.status == "active":
+			numbers[a.referred_by]["paying"] += 1
+	partner_of = {a.name: a.referred_by for a in accounts}
+	for sub in frappe.get_all(
+		"GX Subscription",
+		{"account": ("in", list(partner_of) or [""]), "status": "active"},
+		["account", "price", "gst_included", "gst_rate", "billing_interval"],
+	):
+		numbers[partner_of[sub.account]]["mrr"] += _mrr(sub)
+	return numbers
+
+
+def _admin_partner(p, email, numbers) -> dict:
+	return {
+		"id": p.name,
+		"name": p.partner_name,
+		"email": email,
+		"company": p.company or None,
+		"referralCode": p.referral_code,
+		"status": p.status,
+		"tier": p.tier or None,
+		"joinedAt": iso(p.creation),
+		"referredCustomers": numbers["referred"],
+		"payingCustomers": numbers["paying"],
+		"mrr": money(numbers["mrr"]),
+	}
+
+
+def _emails(users) -> dict:
+	return dict(
+		frappe.get_all(
+			"User", {"name": ("in", [u for u in users if u] or [""])}, ["name", "email"], as_list=True
+		)
+	)
+
+
+@endpoint(methods=("GET",), roles=("admin",))
+def partners():
+	data = query()
+	page, page_size = page_params(data)
+	status = get_choice(data, "status", PARTNER_STATUSES)
+	q = get_str(data, "q", max_length=100)
+	order_by = get_sort(data, {"joinedAt": "creation", "name": "partner_name"}, "-joinedAt")
+
+	filters = {"status": status} if status else {}
+	or_filters = None
+	if q:
+		or_filters = {
+			"partner_name": ("like", f"%{q}%"),
+			"company": ("like", f"%{q}%"),
+			"referral_code": ("like", f"%{q}%"),
+			"user": ("like", f"%{q}%"),
+		}
+	rows = frappe.get_all(
+		"GX Partner Profile",
+		filters=filters,
+		or_filters=or_filters,
+		fields=PARTNER_FIELDS,
+		order_by=order_by,
+		limit_start=(page - 1) * page_size,
+		limit_page_length=page_size,
+	)
+	total = _count("GX Partner Profile", filters, or_filters)
+	numbers = _partner_numbers([r.name for r in rows])
+	emails = _emails([r.user for r in rows])
+	return page_meta(
+		page, page_size, total, [_admin_partner(r, emails.get(r.user), numbers[r.name]) for r in rows]
+	)
+
+
+def _partner_detail(partner_id: str) -> dict:
+	p = frappe.db.get_value(
+		"GX Partner Profile", partner_id, [*PARTNER_FIELDS, "phone", "city", "gstin"], as_dict=True
+	)
+	result = _admin_partner(p, _emails([p.user]).get(p.user), _partner_numbers([p.name])[p.name])
+	result.update({"phone": p.phone or None, "city": p.city or None, "gstin": p.gstin or None})
+
+	accounts = frappe.get_all(
+		"GX Account",
+		{"referred_by": p.name},
+		["name", "account_name", "contact_email", "status", "creation"],
+		order_by="creation desc",
+	)
+	subs = {}
+	for sub in frappe.get_all(
+		"GX Subscription",
+		{"account": ("in", [a.name for a in accounts] or [""])},
+		["account", "plan", "status", "price", "gst_included", "gst_rate", "billing_interval"],
+		order_by="creation asc",
+	):
+		subs[sub.account] = sub  # latest wins
+	plan_names = dict(frappe.get_all("GX Plan", fields=["name", "plan_name"], as_list=True))
+	result["customers"] = [
+		{
+			"id": a.name,
+			"company": a.account_name,
+			"contactEmail": a.contact_email,
+			"status": a.status,
+			"plan": plan_names.get(subs[a.name].plan) if a.name in subs else None,
+			"mrr": money(_mrr(subs[a.name]) if a.name in subs and subs[a.name].status == "active" else 0),
+			"createdAt": iso(a.creation),
+		}
+		for a in accounts
+	]
+	result["history"] = [
+		{
+			"at": iso(r.creation),
+			"actor": r.actor,
+			"action": r.action.removeprefix("partner."),
+			"details": r.details,
+		}
+		for r in frappe.get_all(
+			"GX Audit Log",
+			filters={"reference_doctype": "GX Partner Profile", "reference_name": p.name},
+			fields=["creation", "actor", "action", "details"],
+			order_by="creation asc",
+		)
+	]
+	return result
+
+
+@endpoint(methods=("GET",), roles=("admin",))
+def partner():
+	partner_id = get_str(query(), "id", required=True)
+	if not frappe.db.exists("GX Partner Profile", partner_id):
+		raise not_found()
+	return _partner_detail(partner_id)
+
+
+@endpoint(methods=("POST",), roles=("admin",), idempotent=True)
+def update_partner_status():
+	"""approve (pending → active: creates the ERPNext Sales Partner and emails the partner),
+	suspend {reason} (pending or active → suspended: their referral code stops working),
+	reactivate (suspended → active). Returns the partner's details."""
+	data = body()
+	partner_id = get_str(data, "id", required=True)
+	action = get_choice(data, "action", tuple(PARTNER_ACTIONS), required=True)
+	reason = get_str(data, "reason", required=action == "suspend", max_length=500, label="Reason")
+	if not frappe.db.exists("GX Partner Profile", partner_id):
+		raise not_found()
+
+	doc = frappe.get_doc("GX Partner Profile", partner_id, for_update=True)
+	allowed_from, new_status = PARTNER_ACTIONS[action]
+	if doc.status not in allowed_from:
+		done = {"approve": "approved", "suspend": "suspended", "reactivate": "reactivated"}[action]
+		state = doc.status.replace("_", " ")
+		raise ApiError(409, "not_changeable", f"A partner who is {state} can't be {done}.")
+	previous = doc.status
+	doc.status = new_status
+	doc.save(ignore_permissions=True)
+	audit(
+		f"partner.{action}",
+		"GX Partner Profile",
+		doc.name,
+		f"{previous} → {new_status}" + (f": {reason}" if reason else ""),
+	)
+	if action == "approve":
+		_email_partner_approved(doc)
+	return _partner_detail(doc.name)
+
+
+def _email_partner_approved(doc):
+	from growthx_core.api.v1._core import web_url
+
+	email = frappe.db.get_value("User", doc.user, "email") if doc.user else None
+	if not email:
+		return
+	esc = frappe.utils.escape_html
+	login_url = web_url("/login")
+	try:
+		frappe.sendmail(
+			recipients=[email],
+			subject="Your GrowthX partner account is approved",
+			message=(
+				f"<p>Hi {esc(doc.partner_name)},</p>"
+				"<p>Your GrowthX partner account is approved.</p>"
+				f"<p>Your referral code: <b>{esc(doc.referral_code)}</b></p>"
+				f'<p><a href="{esc(login_url)}">Sign in</a> to see your referral link and the customers you refer.</p>'
+			),
+		)
+	except Exception:
+		# The approval stands; admins see the failure in the Error Log.
+		frappe.log_error(title=f"GrowthX: could not send partner-approved email for {doc.name}")
+
+
 # ---------------------------------------------------------------- appointments ("Talk to an expert")
 
-APPOINTMENT_STATUSES = {"confirmed": "Confirmed", "completed": "Completed", "cancelled": "Cancelled", "no_show": "No Show"}
+APPOINTMENT_STATUSES = {
+	"confirmed": "Confirmed",
+	"completed": "Completed",
+	"cancelled": "Cancelled",
+	"no_show": "No Show",
+}
 APPOINTMENT_FIELDS = [
-	"name", "status", "start", "end", "full_name", "email", "phone", "company", "app", "notes",
-	"expert", "meeting_url", "lead", "creation",
+	"name",
+	"status",
+	"start",
+	"end",
+	"full_name",
+	"email",
+	"phone",
+	"company",
+	"app",
+	"notes",
+	"expert",
+	"meeting_url",
+	"lead",
+	"creation",
 ]
 
 
@@ -290,8 +514,16 @@ def appointment_experts():
 	experts = frappe.get_single("GX Appointment Settings").expert_list()
 	upcoming = frappe.get_all(
 		"GX Appointment",
-		filters={"status": "Confirmed", "start": (">=", frappe.utils.now_datetime()), "expert": ("in", experts or [""])},
+		filters={
+			"status": "Confirmed",
+			"start": (">=", frappe.utils.now_datetime()),
+			"expert": ("in", experts or [""]),
+		},
 		pluck="expert",
 	)
-	names = dict(frappe.get_all("User", {"name": ("in", experts or [""])}, ["name", "full_name"], as_list=True))
-	return {"items": [{"email": e, "name": names.get(e) or e, "upcoming": upcoming.count(e)} for e in experts]}
+	names = dict(
+		frappe.get_all("User", {"name": ("in", experts or [""])}, ["name", "full_name"], as_list=True)
+	)
+	return {
+		"items": [{"email": e, "name": names.get(e) or e, "upcoming": upcoming.count(e)} for e in experts]
+	}
