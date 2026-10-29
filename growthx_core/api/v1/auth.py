@@ -172,7 +172,9 @@ def signup():
 		# Last, because it calls Press (10 name checks a minute for the whole team).
 		if plan and site["subdomain"] and runner.press_name_taken(site["subdomain"]):
 			raise _subdomain_taken()
-		try:
+	referral_code = get_str(data, "referralCode", max_length=40)
+	try:
+		if account_type == "customer":
 			user, tenant = accounts.create_customer_account(
 				email=email,
 				full_name=name,
@@ -180,17 +182,19 @@ def signup():
 				password=password,
 				phone=phone,
 				plan=plan,
-				referral_code=get_str(data, "referralCode", max_length=40),
+				referral_code=referral_code,
 				**site,
 			)
-		except frappe.UniqueValidationError:
-			if site["subdomain"]:
-				raise _subdomain_taken()  # someone else signed up with it a moment ago
-			raise
-	else:
-		user = accounts.create_partner_account(
-			email=email, full_name=name, password=password, phone=phone, company=company
-		)
+		else:
+			user = accounts.create_partner_account(
+				email=email, full_name=name, password=password, phone=phone, company=company
+			)
+	except frappe.ValidationError as e:
+		if isinstance(e, frappe.UniqueValidationError) and site.get("subdomain"):
+			raise _subdomain_taken()  # someone else signed up with it a moment ago
+		# Everything the visitor can fix was checked above; this is Core's setup (e.g. ERPNext
+		# defaults). A 500 with a reference, logged, instead of ERPNext's text as a 422.
+		raise AccountSetupError(f"Creating the {account_type} account failed") from e
 
 	if google_token:
 		google_signin.use_signup_token(google_token)
@@ -200,6 +204,10 @@ def signup():
 	if tenant:
 		result["site"] = {"id": tenant, "status": frappe.db.get_value("GX Tenant", tenant, "status")}
 	return 201, result
+
+
+class AccountSetupError(Exception):
+	"""Creating an account failed for a reason the visitor can't fix."""
 
 
 def _google_signup(token: str) -> dict:

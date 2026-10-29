@@ -5,6 +5,7 @@ from frappe.utils import cint, now_datetime
 
 from growthx_core.partners import referrals
 from growthx_core.provisioning import runner
+from growthx_core.setup.defaults import default_link
 
 CUSTOMER_ROLE = "GrowthX Customer"
 PARTNER_ROLE = "GrowthX Partner"
@@ -27,14 +28,6 @@ def create_user(email: str, full_name: str, password: str, role: str, phone: str
 	)
 	user.insert(ignore_permissions=True)
 	return user.name
-
-
-def _default(settings_field: str, doctype: str, fallback: str) -> str:
-	value = frappe.db.get_single_value("Selling Settings", settings_field)
-	if value:
-		return value
-	leaf = frappe.db.get_value(doctype, {"is_group": 0}, "name")
-	return leaf or fallback
 
 
 def create_customer_account(
@@ -62,8 +55,8 @@ def create_customer_account(
 			"doctype": "Customer",
 			"customer_name": company,
 			"customer_type": "Company",
-			"customer_group": _default("customer_group", "Customer Group", "All Customer Groups"),
-			"territory": _default("territory", "Territory", "All Territories"),
+			"customer_group": default_link("Customer Group"),
+			"territory": default_link("Territory"),
 			"email_id": email,
 			"mobile_no": phone,
 		}
