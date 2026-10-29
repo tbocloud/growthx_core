@@ -177,6 +177,16 @@ class TestPartnerApp(IntegrationTestCase):
 		first = body["items"][0]
 		self.assertEqual(first["plan"]["price"], {"amount": 149900, "currency": "INR", "gstIncluded": False})
 		self.assertNotIn("_sub", first)
+		self._assert_no_contact_details(body["items"])
+
+	def _assert_no_contact_details(self, customers):
+		"""Partners never get a customer's email or phone (decided 29 Oct 2026)."""
+		self.assertTrue(customers)
+		for c in customers:
+			self.assertNotIn("email", c)
+			self.assertNotIn("phone", c)
+			self.assertNotIn("+919800000000", json.dumps(c))
+			self.assertNotIn("@example.com", json.dumps(c))
 
 	def test_customer_filters_search_sort_and_paging(self):
 		self.assertEqual(
@@ -196,6 +206,7 @@ class TestPartnerApp(IntegrationTestCase):
 		self.assertEqual(body["timeline"][0]["event"], "signed_up")
 		self.assertIn("site_ready", [e["event"] for e in body["timeline"]])
 		self.assertEqual(body["commissions"], [])
+		self._assert_no_contact_details([body])
 		self.assertEqual(self.call("customer", {"id": self.other.name})[0], 404)
 
 	def test_referral_stats(self):
@@ -211,6 +222,7 @@ class TestPartnerApp(IntegrationTestCase):
 		self.assertEqual(body["referredSignups"], 3)
 		self.assertEqual(body["trialsEndingNext7Days"], 1)
 		self.assertEqual(len(body["recentCustomers"]), 2)
+		self._assert_no_contact_details(body["recentCustomers"])
 		self.assertEqual(body["earnings"]["thisMonth"], {"amount": 0, "currency": "INR"})
 		self.assertEqual(self.call("earnings")[1]["approved"], {"amount": 0, "currency": "INR"})
 
