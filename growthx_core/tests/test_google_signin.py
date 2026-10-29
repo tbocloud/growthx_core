@@ -77,6 +77,7 @@ class TestGoogleSignin(IntegrationTestCase):
 		self.assertEqual(status, 200)
 		self.assertTrue(body["accessToken"].startswith("gxa_"))
 		self.assertEqual(body["user"]["email"], EXISTING)
+		self.assertTrue(accounts.signs_in_with_google(EXISTING))  # linked on first Google sign-in
 		sent = post.call_args.kwargs["data"]
 		self.assertEqual(sent["redirect_uri"], CONF["google_oauth_redirect_uri"])
 		self.assertEqual((sent["code"], sent["code_verifier"]), ("4/abc", "v" * 43))
@@ -96,6 +97,7 @@ class TestGoogleSignin(IntegrationTestCase):
 		self.assertEqual(status, 201, body)
 		self.assertEqual(body["user"]["email"], NEW)
 		self.assertEqual(frappe.db.get_value("User", {"email": NEW}, "full_name"), "Noor Google")
+		self.assertTrue(accounts.signs_in_with_google(body["user"]["id"]))  # for the welcome email
 
 		# The token works for one account only.
 		status, body = _call(auth.signup, {"accountType": "partner", "googleSignupToken": token})

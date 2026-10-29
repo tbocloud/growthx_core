@@ -95,6 +95,7 @@ def google():
 
 	user = _growthx_user(identity["email"])
 	if user:
+		accounts.link_google(user, identity["sub"])
 		return s.auth_session(tokens.issue(user, _client(data)), user)
 	if _email_taken(identity["email"]):
 		# A disabled account, or a staff account without a GrowthX role.
@@ -197,6 +198,7 @@ def signup():
 		raise AccountSetupError(f"Creating the {account_type} account failed") from e
 
 	if google_token:
+		accounts.link_google(user, google["sub"])
 		google_signin.use_signup_token(google_token)
 	if check_code:
 		signup_codes.use(email)
@@ -340,6 +342,7 @@ def forgot_password():
 			frappe.sendmail(
 				recipients=[email],
 				subject="Reset your GrowthX password",
+				now=True,  # at once, not via the queue: the user is waiting for it
 				message=(
 					"<p>We received a request to reset your GrowthX password.</p>"
 					f'<p><a href="{link}">Choose a new password</a>. The link works once and expires in 24 hours.</p>'
