@@ -166,7 +166,12 @@ def invoice(i) -> dict:
 	}
 
 
-APPOINTMENT_STATUS = {"Confirmed": "confirmed", "Completed": "completed", "Cancelled": "cancelled", "No Show": "no_show"}
+APPOINTMENT_STATUS = {
+	"Confirmed": "confirmed",
+	"Completed": "completed",
+	"Cancelled": "cancelled",
+	"No Show": "no_show",
+}
 
 
 def admin_appointment(row) -> dict:

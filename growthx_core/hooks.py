@@ -83,7 +83,7 @@ required_apps = ["erpnext"]
 # ------------
 
 # before_install = "growthx_core.install.before_install"
-# after_install = "growthx_core.install.after_install"
+after_install = "growthx_core.setup.defaults.after_install"
 
 # Uninstallation
 # ------------

@@ -2,6 +2,7 @@ import frappe
 from frappe.query_builder.functions import Count
 
 from growthx_core.api.v1 import _serializers as s
+from growthx_core.api.v1 import appointments as appts
 from growthx_core.api.v1._core import (
 	ApiError,
 	audit,
@@ -20,7 +21,6 @@ from growthx_core.api.v1._core import (
 	query,
 	validation_error,
 )
-from growthx_core.api.v1 import appointments as appts
 from growthx_core.provisioning import runner
 
 CUSTOMER_STATUSES = ("trial", "active", "suspended", "churned")
@@ -196,10 +196,27 @@ def archive_tenant():
 
 # ---------------------------------------------------------------- appointments ("Talk to an expert")
 
-APPOINTMENT_STATUSES = {"confirmed": "Confirmed", "completed": "Completed", "cancelled": "Cancelled", "no_show": "No Show"}
+APPOINTMENT_STATUSES = {
+	"confirmed": "Confirmed",
+	"completed": "Completed",
+	"cancelled": "Cancelled",
+	"no_show": "No Show",
+}
 APPOINTMENT_FIELDS = [
-	"name", "status", "start", "end", "full_name", "email", "phone", "company", "app", "notes",
-	"expert", "meeting_url", "lead", "creation",
+	"name",
+	"status",
+	"start",
+	"end",
+	"full_name",
+	"email",
+	"phone",
+	"company",
+	"app",
+	"notes",
+	"expert",
+	"meeting_url",
+	"lead",
+	"creation",
 ]
 
 
@@ -290,8 +307,16 @@ def appointment_experts():
 	experts = frappe.get_single("GX Appointment Settings").expert_list()
 	upcoming = frappe.get_all(
 		"GX Appointment",
-		filters={"status": "Confirmed", "start": (">=", frappe.utils.now_datetime()), "expert": ("in", experts or [""])},
+		filters={
+			"status": "Confirmed",
+			"start": (">=", frappe.utils.now_datetime()),
+			"expert": ("in", experts or [""]),
+		},
 		pluck="expert",
 	)
-	names = dict(frappe.get_all("User", {"name": ("in", experts or [""])}, ["name", "full_name"], as_list=True))
-	return {"items": [{"email": e, "name": names.get(e) or e, "upcoming": upcoming.count(e)} for e in experts]}
+	names = dict(
+		frappe.get_all("User", {"name": ("in", experts or [""])}, ["name", "full_name"], as_list=True)
+	)
+	return {
+		"items": [{"email": e, "name": names.get(e) or e, "upcoming": upcoming.count(e)} for e in experts]
+	}

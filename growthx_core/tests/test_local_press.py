@@ -18,7 +18,9 @@ class TestLocalPress(IntegrationTestCase):
 		self.assertEqual(self.client.site_url("noor-solar"), "http://noor-solar.localhost:8123")
 
 	def test_default_site_url_is_https_on_tenant_domain(self):
-		self.assertEqual(FakePressClient().site_url("noor-solar"), f"https://noor-solar.{press.tenant_domain()}")
+		self.assertEqual(
+			FakePressClient().site_url("noor-solar"), f"https://noor-solar.{press.tenant_domain()}"
+		)
 
 	def test_get_client_selects_local_mode(self):
 		frappe.conf["growthx_press"] = {"mode": "local", "bench_path": self.tmp}
