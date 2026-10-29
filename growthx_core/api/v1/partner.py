@@ -148,7 +148,8 @@ TRIAL_SOON_DAYS = 7
 
 
 def _partner_customers(partner) -> list[dict]:
-	"""Every customer attributed to `partner`, newest first, as PartnerCustomer dicts.
+	"""Every customer attributed to `partner`, newest first, as PartnerCustomer dicts. Never the
+	customer's email or phone: partners don't get customers' contact details (decided 29 Oct 2026).
 
 	Each dict also carries "_sub" (the latest subscription row) for detail views. Partners have a
 	few hundred customers at most, so filtering and paging happen in Python."""
@@ -159,8 +160,6 @@ def _partner_customers(partner) -> list[dict]:
 			"name",
 			"account_name",
 			"user",
-			"contact_email",
-			"phone",
 			"status",
 			"referred_at",
 			"creation",
@@ -213,8 +212,6 @@ def _partner_customers(partner) -> list[dict]:
 				"id": a.name,
 				"businessName": a.account_name,
 				"contactName": users.get(a.user) or None,
-				"phone": a.phone or None,
-				"email": a.contact_email or None,
 				"city": None,
 				"productSlug": sub.product if sub else None,
 				"plan": {

@@ -2635,8 +2635,6 @@ components:
         id: { type: string }
         businessName: { type: string, example: Noor Solar }
         contactName: { type: string, nullable: true, example: Amina Noor }
-        phone: { type: string, nullable: true, description: "Shown so the partner can follow up. Confirm with Sammish (privacy)." }
-        email: { type: string, format: email, nullable: true }
         city: { type: string, nullable: true }
         productSlug: { type: string, nullable: true, example: solar }
         plan:
