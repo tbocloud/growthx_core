@@ -5,7 +5,7 @@ from frappe.core.doctype.user.user import test_password_strength
 from frappe.utils import cint, now_datetime, sha256_hash
 from frappe.utils.password import check_password, update_password
 
-from growthx_core import accounts, google_signin, tokens
+from growthx_core import accounts, google_signin, signup_codes, tokens
 from growthx_core.api.v1 import _serializers as s
 from growthx_core.api.v1._core import (
 	ApiError,
@@ -96,7 +96,7 @@ def google():
 	user = _growthx_user(identity["email"])
 	if user:
 		return s.auth_session(tokens.issue(user, _client(data)), user)
-	if frappe.db.exists("User", {"email": identity["email"]}) or frappe.db.exists("User", identity["email"]):
+	if _email_taken(identity["email"]):
 		# A disabled account, or a staff account without a GrowthX role.
 		raise ApiError(403, "account_unavailable", "This account can't sign in here.")
 	return 202, {
@@ -106,6 +106,35 @@ def google():
 		"email": identity["email"],
 		"name": identity["name"],
 	}
+
+
+@endpoint(
+	methods=("POST",),
+	auth=False,
+	rate_limit=(RateLimit(10, 60 * 60), RateLimit(5, 60 * 60, by_field="email")),
+)
+def send_signup_code():
+	"""Email a 6-digit code to verify the address before `auth.signup` (not needed with Google)."""
+	data = body()
+	email = get_email(data)
+	_client(data)
+	if _email_taken(email):
+		raise _email_taken_error()
+	sent = signup_codes.send(email)
+	return 202, {"expiresAt": iso(sent["expiresAt"]), "resendAfter": iso(sent["resendAfter"])}
+
+
+def _email_taken(email: str) -> bool:
+	return bool(frappe.db.exists("User", {"email": email}) or frappe.db.exists("User", email))
+
+
+def _email_taken_error():
+	return ApiError(
+		409,
+		"email_taken",
+		"An account with this email already exists.",
+		fields={"email": "An account with this email already exists."},
+	)
 
 
 @endpoint(methods=("POST",), auth=False, rate_limit=RateLimit(10, 60 * 60), idempotent=True)
@@ -127,13 +156,15 @@ def signup():
 	if not google or data.get("password"):
 		_check_password_policy(password, "password", (name, email, company))
 
-	if frappe.db.exists("User", {"email": email}) or frappe.db.exists("User", email):
-		raise ApiError(
-			409,
-			"email_taken",
-			"An account with this email already exists.",
-			fields={"email": "An account with this email already exists."},
-		)
+	if _email_taken(email):
+		raise _email_taken_error()
+	# Google has verified a Google sign-up's email; everyone else proves it with the emailed code.
+	check_code = not google and signup_codes.required()
+	if check_code:
+		code = get_str(data, "emailCode", required=True, max_length=6, label="Code")
+		if not (len(code) == 6 and code.isdigit()):
+			raise validation_error({"emailCode": "Enter the 6-digit code from the email."})
+		signup_codes.check(email, code)
 
 	tenant = None
 	if account_type == "customer":
@@ -163,6 +194,8 @@ def signup():
 
 	if google_token:
 		google_signin.use_signup_token(google_token)
+	if check_code:
+		signup_codes.use(email)
 	result = s.auth_session(tokens.issue(user, client), user)
 	if tenant:
 		result["site"] = {"id": tenant, "status": frappe.db.get_value("GX Tenant", tenant, "status")}

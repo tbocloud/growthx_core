@@ -7,6 +7,7 @@ from unittest.mock import patch
 import frappe
 from frappe.tests import IntegrationTestCase
 
+from growthx_core import signup_codes
 from growthx_core.api.v1 import _core, auth, signup, tenant
 from growthx_core.provisioning import runner
 from growthx_core.provisioning.press import PressError, RealPressClient
@@ -28,6 +29,9 @@ def _call(fn, data=None):
 class TestSignupV2(IntegrationTestCase):
 	def setUp(self):
 		frappe.set_user("Administrator")
+		code_check = patch.object(signup_codes, "check")  # email codes: test_signup_email_code
+		code_check.start()
+		self.addCleanup(code_check.stop)
 		frappe.get_doc(
 			{"doctype": "GX Product", "slug": PRODUCT, "product_name": "Test", "availability": "available"}
 		).insert()
@@ -62,6 +66,7 @@ class TestSignupV2(IntegrationTestCase):
 				"name": "Noor Test",
 				"email": f"gx-signup-v2-{key}@example.com",
 				"password": "Long-Enough-Pass-91",
+				"emailCode": "123456",
 				"company": f"Noor Signup {key}",
 				"planId": PLAN,
 				**extra,
