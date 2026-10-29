@@ -87,6 +87,37 @@ paths:
                   status: { type: string, enum: [ok] }
                   version: { type: string, example: 0.0.1 }
 
+  /growthx_core.api.v1.health.provisioning:
+    get:
+      tags: [health]
+      summary: Site-creation health, for the uptime alert
+      description: |
+        For DevOps monitoring: alert on any status other than 200. Counts only, no tenant or user data.
+        Rate-limited to 60 per minute per IP address.
+
+        `problems` (503):
+        - `failed_sites`: sites in `failed` status; an admin retries or archives them.
+        - `stuck_sites`: sites not ready 45 minutes after their current attempt started (a retry starts a new one).
+        - `no_workers`: no worker on the `long` queue, so no site creation runs.
+        - `queue_unreachable`: Core can't reach Redis.
+        - `scheduler_not_running`: the scheduler is disabled or paused, or `resume_pending` (every minute) hasn't
+          run for 5 minutes, so sites waiting on Press never move on.
+      operationId: healthProvisioning
+      x-phase: 2
+      security: []
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProvisioningHealth" }
+        "503":
+          description: At least one problem
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProvisioningHealth" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
   # ---------------------------------------------------------------- catalogue (public)
   /growthx_core.api.v1.catalogue.products:
     get:
@@ -2168,6 +2199,36 @@ components:
           enum: [pending_approval, active, suspended]
           nullable: true
           description: Set only for partners
+
+    ProvisioningHealth:
+      type: object
+      required: [status, problems, sites, jobs, scheduler, checkedAt]
+      properties:
+        status: { type: string, enum: [ok, alert] }
+        problems:
+          type: array
+          items: { type: string, enum: [failed_sites, stuck_sites, no_workers, queue_unreachable, scheduler_not_running] }
+        sites:
+          type: object
+          required: [failed, stuck]
+          properties:
+            failed: { type: integer }
+            stuck: { type: integer }
+        jobs:
+          type: object
+          nullable: true
+          description: "Core's site-creation jobs on the `long` queue; null if Redis can't be reached"
+          properties:
+            queued: { type: integer }
+            running: { type: integer }
+            failedLast24h: { type: integer, description: "Jobs that crashed (e.g. timed out); the site then shows as stuck" }
+            workers: { type: integer, description: Workers on the long queue }
+        scheduler:
+          type: object
+          properties:
+            active: { type: boolean }
+            lastRun: { type: string, format: date-time, nullable: true, description: "Last run of resume_pending" }
+        checkedAt: { type: string, format: date-time }
 
     AuthSession:
       type: object
