@@ -30,6 +30,29 @@ def create_user(email: str, full_name: str, password: str, role: str, phone: str
 	return user.name
 
 
+GOOGLE = "google"
+
+
+def link_google(user: str, google_id: str):
+	"""Record that the user signs in with Google (Frappe's User Social Login), for the welcome email."""
+	if frappe.db.exists("User Social Login", {"parent": user, "provider": GOOGLE}):
+		return
+	frappe.get_doc(
+		{
+			"doctype": "User Social Login",
+			"parent": user,
+			"parenttype": "User",
+			"parentfield": "social_logins",
+			"provider": GOOGLE,
+			"userid": google_id,
+		}
+	).insert(ignore_permissions=True)
+
+
+def signs_in_with_google(user: str | None) -> bool:
+	return bool(user and frappe.db.exists("User Social Login", {"parent": user, "provider": GOOGLE}))
+
+
 def create_customer_account(
 	*,
 	email: str,

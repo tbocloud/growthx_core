@@ -413,30 +413,53 @@ def _test_sites() -> bool:
 	return bool(cint((frappe.conf.get("growthx_press") or {}).get("test_sites")))
 
 
-def _ready_email(tenant, dashboard_url: str) -> str:
+def _ready_email(tenant, login_email: str, google: bool) -> str:
+	"""Welcome email when the site is ready: how to get in, never a password."""
+	from growthx_core.api.v1._core import web_url
+
 	esc = frappe.utils.escape_html
-	lines = [f"<p>Your site <b>{esc(tenant.display_name or tenant.name)}</b> is ready.</p>"]
+	login_url, forgot_url = web_url("/login"), web_url("/forgot-password")
+	if google:
+		how = (
+			"<b>Continue with Google</b>, using this Google account. You can also set a password: "
+			f'<a href="{esc(forgot_url)}">Forgot password</a> sends you a link.'
+		)
+	else:
+		how = (
+			"your <b>email and the password</b> you chose at sign-up. "
+			f'Forgot it? <a href="{esc(forgot_url)}">Reset your password</a>.'
+		)
+	lines = [
+		f"<p>Welcome to GrowthX! Your site <b>{esc(tenant.display_name or tenant.name)}</b> is ready.</p>"
+	]
 	if tenant.site_url:
-		lines.append(f'<p>Its address: <a href="{esc(tenant.site_url)}">{esc(tenant.site_url)}</a></p>')
-	lines.append(
-		f'<p>To sign in, <a href="{esc(dashboard_url)}">open your GrowthX dashboard</a> and click "Open my app". '
-		"Or go to your site's address and choose \"Login with Email Link\": we'll email you a sign-in link. "
-		"There's no separate password for your site.</p>"
-	)
+		lines.append(f'<p>Site address: <a href="{esc(tenant.site_url)}">{esc(tenant.site_url)}</a></p>')
+	lines += [
+		f"<p>Your login email: <b>{esc(login_email)}</b></p>",
+		f"<p>How you sign in: {how}</p>",
+		"<p><b>To open your site:</b></p><ol>"
+		f'<li>Sign in at <a href="{esc(login_url)}">{esc(login_url)}</a>.</li>'
+		"<li>Click <b>Open app</b>: it signs you in to your site.</li></ol>",
+		"<p>There's no separate password for your site. At your site's address you can also choose "
+		'"Login with Email Link" to get a sign-in link by email.</p>',
+	]
 	return "".join(lines)
 
 
 def _send_ready_email(tenant):
-	from growthx_core.api.v1._core import web_url
+	from growthx_core import accounts
 
-	email = frappe.db.get_value("GX Account", tenant.account, "contact_email")
-	if not email:
+	account = frappe.db.get_value("GX Account", tenant.account, ["contact_email", "user"], as_dict=True)
+	if not account or not account.contact_email:
 		return
+	login_email = frappe.db.get_value("User", account.user, "email") if account.user else None
 	try:
 		frappe.sendmail(
-			recipients=[email],
-			subject="Your GrowthX site is ready",
-			message=_ready_email(tenant, web_url("/dashboard")),
+			recipients=[account.contact_email],
+			subject="Welcome to GrowthX: your site is ready",
+			message=_ready_email(
+				tenant, login_email or account.contact_email, accounts.signs_in_with_google(account.user)
+			),
 		)
 	except Exception:
 		frappe.log_error(title=f"GrowthX: could not send site-ready email for {tenant.name}")

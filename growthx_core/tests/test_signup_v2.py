@@ -215,8 +215,33 @@ class TestSignupV2(IntegrationTestCase):
 		site = frappe._dict(
 			display_name="Noor <Solar>", name="GXT-1", site_url="https://noor-solar.tbogrowthx.com"
 		)
-		html = runner._ready_email(site, "https://tbogrowthx.com/dashboard")
+		with patch.dict(frappe.conf, {"growthx_web_url": "https://tbogrowthx.com"}):
+			html = runner._ready_email(site, "noor@example.com", google=False)
+			google_html = runner._ready_email(site, "noor@example.com", google=True)
 		self.assertIn('href="https://noor-solar.tbogrowthx.com"', html)
-		self.assertIn("Open my app", html)
-		self.assertIn("Login with Email Link", html)
+		self.assertIn("noor@example.com", html)
+		self.assertIn('href="https://tbogrowthx.com/login"', html)
+		self.assertIn("Open app", html)
+		self.assertIn('href="https://tbogrowthx.com/forgot-password"', html)
+		self.assertIn("email and the password", html)
 		self.assertIn("Noor &lt;Solar&gt;", html)
+		self.assertIn("Continue with Google", google_html)
+		self.assertNotIn("email and the password", google_html)
+
+	def test_ready_email_goes_to_the_account_and_knows_google(self):
+		from growthx_core import accounts
+
+		status, body = self._signup("welcome")
+		self.assertEqual(status, 201, body)
+		tenant = self._tenant(body)
+		with patch("frappe.sendmail") as sendmail:
+			runner._send_ready_email(tenant)
+		self.assertEqual(sendmail.call_args.kwargs["recipients"], ["gx-signup-v2-welcome@example.com"])
+		self.assertIn("email and the password", sendmail.call_args.kwargs["message"])
+		self.assertNotIn("Long-Enough-Pass-91", sendmail.call_args.kwargs["message"])
+
+		frappe.set_user("Administrator")
+		accounts.link_google(body["user"]["id"], "1234567890")
+		with patch("frappe.sendmail") as sendmail:
+			runner._send_ready_email(tenant)
+		self.assertIn("Continue with Google", sendmail.call_args.kwargs["message"])

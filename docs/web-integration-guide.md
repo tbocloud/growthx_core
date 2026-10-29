@@ -566,7 +566,8 @@ later with "Forgot password".
 7. **New pages:**
    - `/reset-password?key=…` (from the reset email),
    - `/r/CODE` (referral welcome page: "<partner> invited you"; also accepts `/signup?ref=CODE`),
-   - `/dashboard` (linked from the "site is ready" email).
+   - `/login` and `/forgot-password` (linked from the welcome email when a site is ready; it then says to click
+     "Open app").
 
    Tell me if your paths differ; they're one setting (`growthx_web_url`) plus these paths.
 8. **Mock:** regenerate it from `openapi.yaml`.
