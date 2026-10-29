@@ -1825,6 +1825,113 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /growthx_core.api.v1.admin.partners:
+    get:
+      tags: [admin]
+      summary: Partners (all statuses)
+      operationId: adminListPartners
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - name: q
+          in: query
+          description: Searches name, company, referral code and email
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/PartnerStatus" }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [joinedAt, -joinedAt, name, -name]
+            default: -joinedAt
+      responses:
+        "200":
+          description: Partners
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/AdminPartner" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.partner:
+    get:
+      tags: [admin]
+      summary: One partner, with their referred customers and history
+      operationId: adminGetPartner
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The partner
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminPartnerDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /growthx_core.api.v1.admin.update_partner_status:
+    post:
+      tags: [admin]
+      summary: Approve, suspend or reactivate a partner
+      description: |
+        - `approve`: `pending_approval` → `active`. Creates the partner's ERPNext Sales Partner (commission) and emails
+          them that they're approved, with their referral code.
+        - `suspend` (`reason` required): `pending_approval` or `active` → `suspended`. Their referral code stops
+          working for new sign-ups (customers already referred stay theirs). Use it to reject an application too.
+        - `reactivate`: `suspended` → `active`.
+
+        Every action is in the audit log (`history` in the response). Accepts `Idempotency-Key`.
+      operationId: adminUpdatePartnerStatus
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, action]
+              properties:
+                id: { type: string, description: Partner id }
+                action: { type: string, enum: [approve, suspend, reactivate] }
+                reason: { type: string, maxLength: 500, description: Required for suspend; optional otherwise }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminPartnerDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`not_changeable`: the action doesn't apply to the partner's status (e.g. approving an active partner)"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
   /growthx_core.api.v1.admin.tenants:
     get:
       tags: [admin]
@@ -2784,6 +2891,57 @@ components:
     CustomerStatus:
       type: string
       enum: [trial, active, suspended, churned]
+
+    PartnerStatus:
+      type: string
+      enum: [pending_approval, active, suspended]
+
+    AdminPartner:
+      type: object
+      required: [id, name, email, referralCode, status, joinedAt, referredCustomers, payingCustomers, mrr]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        email: { type: string, format: email, nullable: true }
+        company: { type: string, nullable: true }
+        referralCode: { type: string, example: OKAFOR-7GB }
+        status: { $ref: "#/components/schemas/PartnerStatus" }
+        tier: { type: string, nullable: true }
+        joinedAt: { type: string, format: date-time }
+        referredCustomers: { type: integer, description: All customers who signed up with their code }
+        payingCustomers: { type: integer, description: Referred customers with status active (not trial) }
+        mrr: { $ref: "#/components/schemas/Money", description: "Referred customers' active subscriptions, monthly, excluding GST" }
+
+    AdminPartnerDetail:
+      allOf:
+        - $ref: "#/components/schemas/AdminPartner"
+        - type: object
+          required: [customers, history]
+          properties:
+            phone: { type: string, nullable: true }
+            city: { type: string, nullable: true }
+            gstin: { type: string, nullable: true }
+            customers:
+              type: array
+              items:
+                type: object
+                properties:
+                  id: { type: string }
+                  company: { type: string }
+                  contactEmail: { type: string }
+                  status: { $ref: "#/components/schemas/CustomerStatus" }
+                  plan: { type: string, nullable: true }
+                  mrr: { $ref: "#/components/schemas/Money" }
+                  createdAt: { type: string, format: date-time }
+            history:
+              type: array
+              items:
+                type: object
+                properties:
+                  at: { type: string, format: date-time }
+                  actor: { type: string }
+                  action: { type: string, enum: [approve, suspend, reactivate] }
+                  details: { type: string, example: "active → suspended: Spam referrals" }
 
     AdminCustomer:
       type: object

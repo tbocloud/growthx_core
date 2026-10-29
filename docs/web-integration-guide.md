@@ -454,6 +454,17 @@ Idempotency-Key: …
 - If a job is already running, you get `202` with its current state, and no new job starts.
 - If the tenant isn't `failed` → `409 {"error": {"code": "not_retryable", "message": "Only a failed site can be retried."}}`.
 
+**Partners** (`/admin/partners`):
+- `GET admin.partners?q=&status=&page=&pageSize=&sort=` → every partner (not only those with referrals): `id`, `name`,
+  `email`, `company`, `referralCode`, `status` (`pending_approval` / `active` / `suspended`), `tier`, `joinedAt`,
+  `referredCustomers`, `payingCustomers`, `mrr`. `q` searches name, company, referral code and email.
+- `GET admin.partner?id=` → the same plus `phone`, `city`, `gstin`, `customers` (each referred customer with status,
+  plan and MRR) and `history` (who approved or suspended them, when, and why).
+- `POST admin.update_partner_status {id, action, reason?}`: `approve` (pending → active; creates their commission
+  record in ERPNext and emails them), `suspend` (`reason` required; pending or active → suspended; their code stops
+  working for new sign-ups; use it to reject an application too), `reactivate` (suspended → active). Returns the
+  partner's details. Wrong state → `409 not_changeable`.
+
 ### 5.10 Contact form
 
 `POST {GROWTHX_API_URL}.contact.submit` with body `{"name", "email", "company"?, "message"}` → `202 {"ok": true}`. A bad email gives `422` with `fields.email`.
