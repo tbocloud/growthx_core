@@ -459,11 +459,18 @@ PARTNER_FIELDS = ["name", "partner_name", "user", "company", "referral_code", "s
 def _partner_numbers(partner_names: list[str]) -> dict:
 	"""{partner: {referred, paying, mrr}} from the customers each partner referred."""
 	numbers = {name: {"referred": 0, "paying": 0, "mrr": 0.0} for name in partner_names}
-	accounts = frappe.get_all(
-		"GX Account",
-		{"referred_by": ("in", partner_names or [""])},
-		["name", "referred_by", "status"],
-	)
+	if not numbers:
+		return numbers
+	# Never filter on `in [""]`: Frappe matches NULL with it, so customers with no partner came back.
+	accounts = [
+		a
+		for a in frappe.get_all(
+			"GX Account", {"referred_by": ("in", partner_names)}, ["name", "referred_by", "status"]
+		)
+		if a.referred_by in numbers
+	]
+	if not accounts:
+		return numbers
 	for a in accounts:
 		numbers[a.referred_by]["referred"] += 1
 		if a.status == "active":
@@ -471,7 +478,7 @@ def _partner_numbers(partner_names: list[str]) -> dict:
 	partner_of = {a.name: a.referred_by for a in accounts}
 	for sub in frappe.get_all(
 		"GX Subscription",
-		{"account": ("in", list(partner_of) or [""]), "status": "active"},
+		{"account": ("in", list(partner_of)), "status": "active"},
 		["account", "price", "gst_included", "gst_rate", "billing_interval"],
 	):
 		numbers[partner_of[sub.account]]["mrr"] += _mrr(sub)
