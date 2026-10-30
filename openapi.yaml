@@ -765,6 +765,76 @@ paths:
         "200": { $ref: "#/components/responses/Ok" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
 
+  /growthx_core.api.v1.auth.change_password:
+    post:
+      tags: [auth]
+      summary: Change the logged-in user's password
+      description: |
+        Every other session of the user is logged out (all their tokens are revoked), and this device gets new tokens
+        in the response: replace the stored session with them. Google-only accounts (`user.hasPassword: false`) get
+        `409 no_password`: point them to Forgot password to set one. Rate-limited to 5 per 15 minutes per user.
+      operationId: changePassword
+      x-phase: 2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string, format: password }
+                newPassword:
+                  type: string
+                  format: password
+                  minLength: 10
+                  maxLength: 128
+                  description: |
+                    At least one letter and one number; must differ from the current one. The site's password-strength
+                    policy also applies. Problems: 422 with `fields.newPassword`.
+      responses:
+        "200":
+          description: Changed; new tokens for this device
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthSession" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "409":
+          description: "`no_password`: the account signs in with Google and has no password yet"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: "`wrong_password` (with `fields.currentPassword`), or `validation_failed` (`fields.newPassword`)"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /growthx_core.api.v1.auth.logout_others:
+    post:
+      tags: [auth]
+      summary: Log out every other device
+      description: Revokes all the user's tokens except the access and refresh token making this call.
+      operationId: logoutOthers
+      x-phase: 2
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: Done
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, revoked]
+                properties:
+                  ok: { type: boolean, enum: [true] }
+                  revoked: { type: integer, description: How many sessions were logged out }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
   /growthx_core.api.v1.auth.me:
     get:
       tags: [auth]
@@ -1932,6 +2002,161 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
 
+  /growthx_core.api.v1.admin.customer:
+    get:
+      tags: [admin]
+      summary: One customer, with sites, subscriptions and history
+      operationId: adminGetCustomer
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The customer
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminCustomerDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /growthx_core.api.v1.admin.update_customer_status:
+    post:
+      tags: [admin]
+      summary: Extend a trial, suspend or reactivate a customer
+      description: |
+        - `extend_trial` (`days` 1-30, a whole number): status `trial` only. Adds the days to whichever is later, now or
+          the trial end.
+        - `suspend` (`reason` required): `trial` or `active` → `suspended`. Their ready sites are taken offline (Press
+          keeps the data).
+        - `reactivate`: `suspended` → `trial` if the trial hasn't ended, otherwise `active`. Their suspended sites come
+          back.
+
+        Subscriptions are not changed (billing will own them). If Press refuses a site, the action still completes,
+        that site keeps its status, and the history entry names it. Every action is in `history` and the audit log.
+        Accepts `Idempotency-Key`: a new key per intended action.
+      operationId: adminUpdateCustomerStatus
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, action]
+              properties:
+                id: { type: string, description: Customer id }
+                action: { type: string, enum: [extend_trial, suspend, reactivate] }
+                days: { type: integer, minimum: 1, maximum: 30, description: Required for extend_trial }
+                reason: { type: string, maxLength: 500, description: Required for suspend; optional otherwise }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminCustomerDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`invalid_transition`: the action doesn't apply to the customer's status (or there's no trial to extend)"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.audit_log:
+    get:
+      tags: [admin]
+      summary: Audit log, newest first
+      operationId: adminAuditLog
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - name: entityType
+          in: query
+          schema: { type: string, enum: [customer, partner, tenant, appointment] }
+        - name: entityId
+          in: query
+          schema: { type: string }
+        - name: actor
+          in: query
+          description: The user's email (exact)
+          schema: { type: string }
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          description: Inclusive
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: Entries
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/AuditLogEntry" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.referral.record_click:
+    post:
+      tags: [partner]
+      summary: Record a visit to a referral link (website server only)
+      description: |
+        Called by the website's server when `/r/CODE` loads, after it has skipped link previews, bots and prefetches.
+        No user token: it needs `X-GrowthX-Web-Key` (403 without a valid one), and the visitor's IP in
+        `X-GrowthX-Client-IP`. Counts at most one click per code and visitor IP every 30 minutes; only a hash of the IP
+        is kept. Always `202` with `counted`, also for an unknown or inactive code, so it can't be used to find codes.
+        Make the call fire-and-forget with a short timeout.
+      operationId: recordReferralClick
+      x-phase: 2
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, maxLength: 40, example: OKAFOR-7GB }
+                landingPath: { type: string, maxLength: 200, example: /r/OKAFOR-7GB }
+      responses:
+        "202":
+          description: Recorded, or not counted (duplicate, unknown or inactive code)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [counted]
+                properties:
+                  counted: { type: boolean }
+        "403":
+          description: "`forbidden`: missing or wrong web key"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
   /growthx_core.api.v1.admin.tenants:
     get:
       tags: [admin]
@@ -2413,6 +2638,11 @@ components:
           enum: [pending_approval, active, suspended]
           nullable: true
           description: Set only for partners
+        hasPassword:
+          type: boolean
+          description: |
+            False for a Google sign-up that never set a password: show "Set a password" (Forgot password) instead of
+            "Change password".
 
     ProvisioningHealth:
       type: object
@@ -2684,7 +2914,7 @@ components:
       properties:
         from: { type: string, format: date }
         to: { type: string, format: date }
-        clicks: { type: integer, nullable: true, description: Null until the website tracks link visits }
+        clicks: { type: integer, nullable: true, description: "Referral link visits in the range, as recorded by `referral.record_click`" }
         signups: { type: integer }
         conversions: { type: integer }
         conversionRate: { type: number, nullable: true, description: conversions / signups (0 to 1). Null when signups is 0. }
@@ -2953,6 +3183,61 @@ components:
         partnerName: { type: string, nullable: true }
         mrr: { $ref: "#/components/schemas/Money" }
         createdAt: { type: string, format: date-time }
+
+    AdminCustomerDetail:
+      allOf:
+        - $ref: "#/components/schemas/AdminCustomer"
+        - type: object
+          required: [sites, subscriptions, history]
+          properties:
+            contactName: { type: string, nullable: true }
+            country: { type: string, nullable: true, example: India }
+            trialEndsAt: { type: string, format: date-time, nullable: true }
+            sites:
+              type: array
+              items:
+                type: object
+                properties:
+                  id: { type: string }
+                  productSlug: { type: string }
+                  siteUrl: { type: string, nullable: true }
+                  status: { $ref: "#/components/schemas/SiteStatus" }
+            subscriptions:
+              type: array
+              items:
+                type: object
+                properties:
+                  id: { type: string }
+                  plan: { type: string }
+                  status: { $ref: "#/components/schemas/SubscriptionStatus" }
+                  currentPeriodEnd: { type: string, format: date-time, nullable: true }
+            history:
+              type: array
+              items:
+                type: object
+                properties:
+                  at: { type: string, format: date-time }
+                  actor: { type: string }
+                  action: { type: string, enum: [extend_trial, suspend, reactivate] }
+                  details: { type: string, example: "trial → suspended: Chargeback" }
+
+    AuditLogEntry:
+      type: object
+      required: [id, at, action]
+      properties:
+        id: { type: string }
+        at: { type: string, format: date-time }
+        actor: { type: string, nullable: true, description: The user's email }
+        action:
+          type: string
+          example: suspend
+          description: |
+            Without the entity prefix, e.g. `suspend` (customer), `approve` (partner), `reschedule` (appointment),
+            `retry_provisioning` / `archive_tenant` / `open_site` (tenant)
+        entityType: { type: string, nullable: true, enum: [customer, partner, tenant, appointment, null] }
+        entityId: { type: string, nullable: true }
+        entityLabel: { type: string, nullable: true, description: "Company, partner, site or visitor name" }
+        details: { type: string, nullable: true }
 
     AdminTenant:
       type: object

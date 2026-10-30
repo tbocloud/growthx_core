@@ -199,6 +199,8 @@ def signup():
 
 	if google_token:
 		accounts.link_google(user, google["sub"])
+		if not data.get("password"):
+			accounts.mark_no_password(user)
 		google_signin.use_signup_token(google_token)
 	if check_code:
 		signup_codes.use(email)
@@ -384,5 +386,67 @@ def reset_password():
 	_check_password_policy(new_password, "newPassword", tuple(user_inputs or ()))
 	update_password(row.name, new_password)
 	frappe.db.set_value("User", row.name, "reset_password_key", "")
+	accounts.mark_has_password(row.name)
 	tokens.revoke_all(row.name)
 	return ok()
+
+
+# ---------------------------------------------------------------- account settings
+
+NEW_PASSWORD_MIN = 10
+
+
+def _new_password(data, key="newPassword") -> str:
+	"""Account settings rule (the website's sign-up rule): 10+ characters with a letter and a number."""
+	value = data.get(key)
+	if not isinstance(value, str) or not value:
+		raise validation_error({key: "Password is required."})
+	if len(value) < NEW_PASSWORD_MIN or len(value) > 128:
+		raise validation_error({key: f"Use {NEW_PASSWORD_MIN} to 128 characters."})
+	if not (any(c.isalpha() for c in value) and any(c.isdigit() for c in value)):
+		raise validation_error({key: "Use at least one letter and one number."})
+	return value
+
+
+@endpoint(methods=("POST",), rate_limit=RateLimit(5, 15 * 60, by_user=True))
+def change_password():
+	"""New password for the logged-in user. Every other session is logged out; this device gets
+	new tokens."""
+	data = body()
+	user = current_user()
+	current = data.get("currentPassword")
+	if not accounts.has_password(user):
+		raise ApiError(
+			409,
+			"no_password",
+			"Your account signs in with Google and has no password yet. Use Forgot password to set one.",
+		)
+	if not isinstance(current, str) or not current:
+		raise validation_error({"currentPassword": "Enter your current password."})
+	new_password = _new_password(data)
+	try:
+		check_password(user, current)
+	except frappe.AuthenticationError:
+		raise ApiError(
+			422,
+			"wrong_password",
+			"Your current password is incorrect.",
+			fields={"currentPassword": "Your current password is incorrect."},
+		)
+	if new_password == current:
+		raise validation_error({"newPassword": "Choose a password you haven't been using."})
+	user_inputs = frappe.db.get_value("User", user, ["first_name", "last_name", "email"])
+	_check_password_policy(new_password, "newPassword", tuple(user_inputs or ()))
+
+	client = frappe.db.get_value("GX Auth Token", frappe.local.gx_token, "client") or "web"
+	update_password(user, new_password)
+	accounts.mark_has_password(user)
+	tokens.revoke_all(user)
+	return s.auth_session(tokens.issue(user, client), user)
+
+
+@endpoint(methods=("POST",))
+def logout_others():
+	"""Log out every other device: revoke all the user's tokens except the one making this call."""
+	revoked = tokens.revoke_all(current_user(), keep=frappe.local.gx_token)
+	return {"ok": True, "revoked": revoked}

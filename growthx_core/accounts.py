@@ -49,6 +49,23 @@ def link_google(user: str, google_id: str):
 	).insert(ignore_permissions=True)
 
 
+# A Google sign-up without a password gets a random one nobody knows. Kept as a user default
+# (no DocType change) until the user sets a password ("Forgot password" or change_password).
+NO_PASSWORD = "growthx_no_password"
+
+
+def mark_no_password(user: str):
+	frappe.db.set_default(NO_PASSWORD, "1", parent=user)
+
+
+def mark_has_password(user: str):
+	frappe.db.delete("DefaultValue", {"parent": user, "defkey": NO_PASSWORD})
+
+
+def has_password(user: str) -> bool:
+	return not frappe.db.get_value("DefaultValue", {"parent": user, "defkey": NO_PASSWORD})
+
+
 def signs_in_with_google(user: str | None) -> bool:
 	return bool(user and frappe.db.exists("User Social Login", {"parent": user, "provider": GOOGLE}))
 

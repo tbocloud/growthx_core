@@ -211,7 +211,7 @@ class TestPartnerApp(IntegrationTestCase):
 
 	def test_referral_stats(self):
 		body = self.call("referral_stats")[1]
-		self.assertEqual((body["signups"], body["conversions"], body["clicks"]), (2, 0, None))
+		self.assertEqual((body["signups"], body["conversions"], body["clicks"]), (2, 0, 0))
 		wide = self.call("referral_stats", {"from": "2000-01-01", "to": "2100-01-01"})[1]
 		self.assertEqual((wide["signups"], wide["conversions"], wide["conversionRate"]), (3, 1, 0.3333))
 		self.assertEqual(self.call("referral_stats", {"from": "2026-12-01", "to": "2026-01-01"})[0], 422)

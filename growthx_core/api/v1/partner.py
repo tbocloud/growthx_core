@@ -321,13 +321,18 @@ def referral_stats():
 	if start > end:
 		raise validation_error({"from": "from must be on or before to."})
 
-	rows = [r for r in _partner_customers(current_partner()) if start <= r["_joined"].date() <= end]
+	partner = current_partner()
+	rows = [r for r in _partner_customers(partner) if start <= r["_joined"].date() <= end]
+	clicks = frappe.db.count(
+		"GX Referral Click",
+		{"partner": partner.name, "creation": ("between", [f"{start} 00:00:00", f"{end} 23:59:59.999999"])},
+	)
 	signups = len(rows)
 	conversions = sum(1 for r in rows if r["subscriptionStatus"] in ("active", "past_due"))
 	return {
 		"from": start.isoformat(),
 		"to": end.isoformat(),
-		"clicks": None,  # until the website records link visits
+		"clicks": clicks,  # recorded by the website through referral.record_click
 		"signups": signups,
 		"conversions": conversions,
 		"conversionRate": round(conversions / signups, 4) if signups else None,

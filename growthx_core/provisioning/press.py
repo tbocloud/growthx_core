@@ -56,6 +56,14 @@ class PressClient:
 		"""Install `app` on an existing site (used to backfill growthx_theme)."""
 		raise NotImplementedError
 
+	def suspend_site(self, site_id: str) -> None:
+		"""Take a site offline (an admin suspended the customer). Its data is kept."""
+		raise NotImplementedError
+
+	def resume_site(self, site_id: str) -> None:
+		"""Bring a suspended site back online."""
+		raise NotImplementedError
+
 	def configure_site(self, site_id: str, settings: dict) -> dict | None:
 		"""Set up a new site. Safe to run again on a configured site.
 
@@ -103,6 +111,12 @@ class FakePressClient(PressClient):
 		pass
 
 	def install_app(self, site_id, app):
+		pass
+
+	def suspend_site(self, site_id):
+		pass
+
+	def resume_site(self, site_id):
 		pass
 
 	def configure_site(self, site_id, settings):
@@ -247,6 +261,14 @@ class RealPressClient(PressClient):
 	def install_app(self, site_id, app):
 		self._own(site_id)
 		self._call("press.api.site.install_app", name=site_id, app=app)
+
+	def suspend_site(self, site_id):
+		self._own(site_id)
+		self._call("press.api.site.deactivate", name=site_id)
+
+	def resume_site(self, site_id):
+		self._own(site_id)
+		self._call("press.api.site.activate", name=site_id)
 
 	def configure_site(self, site_id, settings):
 		"""Log in as Administrator through Press, then run growthx_theme's set-up on the site.
@@ -415,6 +437,12 @@ class LocalPressClient(PressClient):
 		if os.path.isdir(os.path.join(self.sites, site)) or os.path.exists(self._status_file(site)):
 			return self.get_site(site)
 		return None
+
+	def suspend_site(self, site_id):
+		pass  # local sites stay up; the tenant's status is what blocks "Open my app"
+
+	def resume_site(self, site_id):
+		pass
 
 	def install_app(self, site_id, app):
 		if app not in self._bench_apps():
