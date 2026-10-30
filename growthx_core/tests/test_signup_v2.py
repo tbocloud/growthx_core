@@ -226,6 +226,7 @@ class TestSignupV2(IntegrationTestCase):
 		self.assertIn("email and the password", html)
 		self.assertIn("Noor &lt;Solar&gt;", html)
 		self.assertIn("Continue with Google", google_html)
+		self.assertNotIn("Email Link", html)  # customer sites can't send it yet
 		self.assertNotIn("email and the password", google_html)
 
 	def test_ready_email_goes_to_the_account_and_knows_google(self):

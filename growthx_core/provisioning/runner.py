@@ -440,8 +440,9 @@ def _ready_email(tenant, login_email: str, google: bool) -> str:
 		"<p><b>To open your site:</b></p><ol>"
 		f'<li>Sign in at <a href="{esc(login_url)}">{esc(login_url)}</a>.</li>'
 		"<li>Click <b>Open app</b>: it signs you in to your site.</li></ol>",
-		"<p>There's no separate password for your site. At your site's address you can also choose "
-		'"Login with Email Link" to get a sign-in link by email.</p>',
+		# Customer sites can't send email yet, so no "Login with Email Link" (launch checklist item 19:
+		# point to "Sign in with GrowthX" on the site once it exists).
+		"<p>There's no separate password for your site: always open it from GrowthX.</p>",
 	]
 	return "".join(lines)
 
