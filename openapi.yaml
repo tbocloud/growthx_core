@@ -995,6 +995,150 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /growthx_core.api.v1.customer.custom_domain:
+    get:
+      tags: [customer]
+      summary: The site's custom domain, if it has one
+      description: |
+        A customer can point one domain they own (e.g. `app.noorsolar.com`)
+        at their site, besides its `<subdomain>.tbogrowthx.com` address. `customDomain` is null when there is none.
+      operationId: getCustomDomain
+      x-phase: 2
+      x-roles: [customer]
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: The custom domain, or null
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [customDomain]
+                properties:
+                  customDomain:
+                    nullable: true
+                    allOf:
+                      - $ref: "#/components/schemas/CustomDomain"
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /growthx_core.api.v1.customer.add_custom_domain:
+    post:
+      tags: [customer]
+      summary: Add a custom domain to a site
+      description: |
+        Starts as `pending_dns`, with the DNS record the customer must add at their domain provider: one CNAME
+        from the domain to the site's `<subdomain>.tbogrowthx.com` address (no TXT; Press checks the record points at the site).
+        One custom domain per site. Paid plans only: today a subscription that isn't `active` (e.g. a trial) gets
+        `403 plan_required` (management to confirm). Lower-cased. Subdomains only at launch
+        (`app.noorsolar.com`, not `noorsolar.com`): a root domain needs an A record to the proxy's IP, which would break if it changed.
+        `403 plan_required`: the site's subscription is on a trial or a plan without custom domains.
+        `409 domain_taken`: another site uses it. `409 domain_exists`: this site already has one (remove it first).
+        `409 site_not_ready`: the site isn't `ready`. `422 validation_failed` with `fields.domain`: not a valid domain, a root
+        domain, or a system domain (tbogrowthx.com, tbocloud.in and Press's other domains).
+      operationId: addCustomDomain
+      x-phase: 2
+      x-roles: [customer]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, domain]
+              properties:
+                id: { type: string, description: The site's id }
+                domain: { type: string, example: app.noorsolar.com }
+      responses:
+        "201":
+          description: Added; waiting for DNS
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CustomDomain" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403":
+          description: "`plan_required`: custom domains need a paid plan"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`domain_taken`, `domain_exists` or `site_not_ready`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.customer.check_custom_domain:
+    post:
+      tags: [customer]
+      summary: Check the DNS records now
+      description: |
+        Core also checks on its own schedule; this is the customer's "Check now". Core runs Press's
+        `site.check_dns`; when the record is right it calls `site.add_domain` and the status moves to `verifying` (Press is
+        getting the Let's Encrypt certificate), then `active` once `site.domains` says so, at which point Core makes it the
+        primary host (`site.set_host_name`) and "Open my app" uses it. When the record isn't right yet the status stays
+        `pending_dns` with a `dnsProblem` saying why, and `message` says how to fix it. A domain another site on Press
+        already has ends as `failed` with a `message` (no `dnsProblem`): remove it and contact support. If Press can't be
+        reached the status doesn't change and `message` says to try again. Scheduled checks: every 10 minutes, for 3 days
+        after adding while `pending_dns`, and until done while `verifying`. 6 checks a minute per site (`429`). `404` when
+        the site has no custom domain.
+      operationId: checkCustomDomain
+      x-phase: 2
+      x-roles: [customer]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string, description: The site's id }
+      responses:
+        "200":
+          description: The domain after the check
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CustomDomain" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /growthx_core.api.v1.customer.remove_custom_domain:
+    post:
+      tags: [customer]
+      summary: Remove the site's custom domain
+      description: |
+        The site keeps working at its tbogrowthx.com address (Core makes that the primary host again first). `404` when the
+        site has no custom domain. `503 hosting_unavailable` when Press can't be reached: nothing changed, try again.
+      operationId: removeCustomDomain
+      x-phase: 2
+      x-roles: [customer]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string, description: The site's id }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503":
+          description: "`hosting_unavailable`: Press can't be reached; try again shortly"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /growthx_core.api.v1.customer.subscriptions:
     get:
       tags: [customer]
@@ -2751,6 +2895,37 @@ components:
         startedAt: { type: string, format: date-time, nullable: true }
         finishedAt: { type: string, format: date-time, nullable: true }
 
+    CustomDomain:
+      type: object
+      description: A customer's own domain pointed at their site.
+      required: [domain, status, records]
+      properties:
+        domain: { type: string, example: app.noorsolar.com }
+        status:
+          type: string
+          enum: [pending_dns, verifying, active, failed]
+          description: "`pending_dns`: waiting for the records; `verifying`: records found, HTTPS certificate being issued; `active`: live; `failed`: see `message` (remove the domain and add it again)"
+        records:
+          type: array
+          description: DNS records to add at the domain provider. Shown until the domain is active; empty once it is.
+          items:
+            type: object
+            required: [type, host, value]
+            properties:
+              type: { type: string, enum: [CNAME, A], description: "CNAME for a subdomain; A only if root domains are allowed later" }
+              host: { type: string, description: "Name as most providers want it, e.g. `app`", example: app }
+              value: { type: string, example: noor-solar.tbogrowthx.com }
+        dnsProblem:
+          type: string
+          nullable: true
+          enum: [not_found, wrong_target, multiple_records, aaaa_record, caa_blocks, cloudflare_proxied]
+          description: |
+            Why the last check failed, from Press's `check_dns`. `not_found`: no record yet; `wrong_target`: it points elsewhere;
+            `multiple_records`: more than one CNAME or A record; `aaaa_record`: an IPv6 record exists; `caa_blocks`: a CAA record
+            doesn't allow Let's Encrypt; `cloudflare_proxied`: behind Cloudflare's proxy (must be "DNS only"). Null when fine, and when `failed`.
+        message: { type: string, nullable: true, description: Safe to show the customer }
+        checkedAt: { type: string, format: date-time, nullable: true }
+        activeAt: { type: string, format: date-time, nullable: true }
     SiteDetail:
       allOf:
         - $ref: "#/components/schemas/Site"
@@ -3233,7 +3408,7 @@ components:
           example: suspend
           description: |
             Without the entity prefix, e.g. `suspend` (customer), `approve` (partner), `reschedule` (appointment),
-            `retry_provisioning` / `archive_tenant` / `open_site` (tenant)
+            `retry_provisioning` / `archive_tenant` / `open_site` / `add_custom_domain` / `remove_custom_domain` (tenant)
         entityType: { type: string, nullable: true, enum: [customer, partner, tenant, appointment, null] }
         entityId: { type: string, nullable: true }
         entityLabel: { type: string, nullable: true, description: "Company, partner, site or visitor name" }

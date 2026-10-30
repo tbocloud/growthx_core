@@ -28,6 +28,25 @@ class PressNotFound(PressError):
 	"""Press has no such site, or it isn't the GrowthX team's (Press answers the same for both)."""
 
 
+class DnsProblem(PressError):
+	"""Press refused a custom domain because of its DNS records. `problem` is one of DNS_PROBLEMS."""
+
+	def __init__(self, problem: str, detail: str = ""):
+		super().__init__(f"{problem}: {detail}" if detail else problem)
+		self.problem = problem
+
+
+DNS_PROBLEMS = (
+	"not_found",
+	"wrong_target",
+	"multiple_records",
+	"aaaa_record",
+	"caa_blocks",
+	"cloudflare_proxied",
+	"domain_taken",  # another Press site has it (Core already refuses other GrowthX sites')
+)
+
+
 @dataclass
 class PressSite:
 	id: str
@@ -80,6 +99,27 @@ class PressClient:
 	def health_check(self, site_url: str) -> bool:
 		raise NotImplementedError
 
+	# ---- custom domains (a CNAME from the customer's domain to the site's own address)
+
+	def check_dns(self, site_id: str, domain: str) -> None:
+		"""Raise DnsProblem unless `domain` points at the site."""
+		raise NotImplementedError
+
+	def add_domain(self, site_id: str, domain: str) -> None:
+		"""Add `domain` to the site; Press then gets its HTTPS certificate. Raises DnsProblem."""
+		raise NotImplementedError
+
+	def domain_status(self, site_id: str, domain: str) -> str | None:
+		"""pending (certificate on its way) | active | broken, or None if the site doesn't have it."""
+		raise NotImplementedError
+
+	def set_host_name(self, site_id: str, domain: str) -> None:
+		"""Make `domain` the site's main address (the links it sends use it)."""
+		raise NotImplementedError
+
+	def remove_domain(self, site_id: str, domain: str) -> None:
+		raise NotImplementedError
+
 
 class FakePressClient(PressClient):
 	"""Behaves like Press, instantly. Used until the real Press API is available."""
@@ -125,6 +165,26 @@ class FakePressClient(PressClient):
 	def health_check(self, site_url):
 		self._maybe_fail("health_check")
 		return True
+
+	# Tests set these to act out DNS that isn't right yet, or a certificate still on its way.
+	dns_problem: str | None = None
+	press_domain_status: str = "active"
+
+	def check_dns(self, site_id, domain):
+		if self.dns_problem:
+			raise DnsProblem(self.dns_problem)
+
+	def add_domain(self, site_id, domain):
+		self.check_dns(site_id, domain)
+
+	def domain_status(self, site_id, domain):
+		return self.press_domain_status
+
+	def set_host_name(self, site_id, domain):
+		pass
+
+	def remove_domain(self, site_id, domain):
+		pass
 
 
 SUBDOMAIN = re.compile(r"^[a-z0-9][a-z0-9-]{3,30}[a-z0-9]$")  # Press: 5-32 characters
@@ -299,6 +359,69 @@ class RealPressClient(PressClient):
 			return False
 		return r.status_code == 200 and r.json().get("message") == "pong"
 
+	# ---- custom domains. Press's own checks: the record must be a CNAME (or A) to the site, with
+	# no second CNAME/A, no AAAA, no CAA that blocks Let's Encrypt, and not behind Cloudflare's proxy.
+
+	def _domain_call(self, method: str, site_id: str, domain: str, **params):
+		self._own(site_id)
+		try:
+			return self._call(method, name=site_id, domain=domain, **params)
+		except PressNotFound:
+			raise
+		except PressError as e:
+			problem = _dns_problem(str(e))
+			if problem:
+				raise DnsProblem(problem, str(e)) from None
+			raise
+
+	def check_dns(self, site_id, domain):
+		result = self._domain_call("press.api.site.check_dns", site_id, domain) or {}
+		if result.get("matched"):
+			return
+		cname, a = result.get("CNAME") or {}, result.get("A") or {}
+		found = cname.get("exists") or a.get("exists")
+		raise DnsProblem("wrong_target" if found else "not_found")
+
+	def add_domain(self, site_id, domain):
+		self._domain_call("press.api.site.add_domain", site_id, domain)
+
+	def domain_status(self, site_id, domain):
+		self._own(site_id)
+		for row in self._call("press.api.site.domains", name=site_id) or []:
+			if (row.get("domain") or row.get("name")) == domain:
+				return PRESS_DOMAIN_STATUS.get(row.get("status"), "pending")
+		return None
+
+	def set_host_name(self, site_id, domain):
+		self._own(site_id)
+		self._call("press.api.site.set_host_name", name=site_id, domain=domain)
+
+	def remove_domain(self, site_id, domain):
+		self._own(site_id)
+		self._call("press.api.site.remove_domain", name=site_id, domain=domain)
+
+
+PRESS_DOMAIN_STATUS = {"Pending": "pending", "In Progress": "pending", "Active": "active", "Broken": "broken"}
+# Press's refusal (exception type and message) -> DnsProblem. Checked in order. To be confirmed
+# against tbocloud.in's Press on core-test (Arun): unmatched refusals stay plain PressErrors.
+_DNS_REFUSALS = (
+	("caa_blocks", ("caa",)),
+	("cloudflare_proxied", ("cloudflare", "proxied", "proxy")),
+	("aaaa_record", ("aaaa",)),
+	("multiple_records", ("multiple", "conflicting")),
+	("domain_taken", ("already", "duplicate")),
+	("not_found", ("nxdomain", "no answer", "not found", "does not exist")),
+	("wrong_target", ("dnsvalidationerror", "not pointing", "points to", "pointing to")),
+)
+
+
+def _dns_problem(text: str) -> str | None:
+	text = text.lower()
+	for problem, words in _DNS_REFUSALS:
+		if any(w in text for w in words):
+			return problem
+	return None
+
 
 def _app_name(row) -> str:
 	return row if isinstance(row, str) else (row.get("app") or row.get("name"))
@@ -442,6 +565,22 @@ class LocalPressClient(PressClient):
 		pass  # local sites stay up; the tenant's status is what blocks "Open my app"
 
 	def resume_site(self, site_id):
+		pass
+
+	# Custom domains: nothing to check locally; the domain is "active" at once.
+	def check_dns(self, site_id, domain):
+		pass
+
+	def add_domain(self, site_id, domain):
+		pass
+
+	def domain_status(self, site_id, domain):
+		return "active"
+
+	def set_host_name(self, site_id, domain):
+		pass
+
+	def remove_domain(self, site_id, domain):
 		pass
 
 	def install_app(self, site_id, app):

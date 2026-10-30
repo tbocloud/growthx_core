@@ -278,6 +278,8 @@ scheduler_events = {
 		"* * * * *": ["growthx_core.provisioning.runner.resume_pending"],
 		# "Talk to an expert" reminders, 24 h and 1 h before each call
 		"*/5 * * * *": ["growthx_core.api.v1.appointments.send_reminders"],
+		# Custom domains waiting on the customer's DNS record or on Press's HTTPS certificate
+		"*/10 * * * *": ["growthx_core.provisioning.custom_domains.check_pending"],
 	},
 	"daily": [
 		"growthx_core.tokens.delete_expired_tokens",

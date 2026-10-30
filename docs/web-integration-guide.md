@@ -553,6 +553,21 @@ From the `/r/CODE` page's server code, after skipping link previews, bots and pr
 `X-GrowthX-Client-IP` → always `202 {counted}`. One click per code and visitor IP every 30 minutes. Fire-and-forget,
 short timeout. `partner.referral_stats` then returns `clicks`.
 
+### 5.15 Custom domains (customer)
+
+One subdomain the customer owns per site (`app.noorsolar.com`; root domains later), on paid plans (`403 plan_required`
+for a trial, pending management). The shape is the website's proposal from PR #42, adopted:
+
+- `GET customer.custom_domain?id=` → `{customDomain}` (null when none).
+- `POST customer.add_custom_domain {id, domain}` → `201 CustomDomain` at `pending_dns`, with one CNAME in `records`
+  (`host` as most providers want it, `value` the site's own address). Errors: `422` (`fields.domain`: not a domain, a
+  root domain, or ours), `409 domain_exists` / `domain_taken` / `site_not_ready`, `403 plan_required`.
+- `POST customer.check_custom_domain {id}` ("Check now", 6 a minute per site) → `CustomDomain`. `pending_dns` with
+  `dnsProblem` + `message` until the record is right → `verifying` (HTTPS certificate) → `active`. Core also checks
+  every 10 minutes. `failed` (no `dnsProblem`, see `message`): certificate failed, or another Press site has the domain.
+- `POST customer.remove_custom_domain {id}` → `{ok: true}`; `404` if none, `503 hosting_unavailable` if Press is down.
+- Once `active`, "Open my app" goes to the custom domain.
+
 ## 6. Error codes
 
 | HTTP | `code` | When |
@@ -562,6 +577,8 @@ short timeout. `partner.referral_stats` then returns `clicks`.
 | 400 | `google_failed`, `google_signup_expired` | Google sign-in (§5.12) |
 | 400 | `email_code_expired` | Sign-up email code expired, never sent, or 5 wrong tries (§5.4) |
 | 403 | `email_not_verified`, `account_unavailable` | Google sign-in (§5.12) |
+| 409 | `domain_exists`, `domain_taken` | Custom domains (§5.15) |
+| 403 | `plan_required` | Custom domains on a trial (§5.15) |
 | 409 | `no_password`, `invalid_transition` | Account settings (§5.13); admin customer actions (§5.9) |
 | 422 | `wrong_password` | Change password: current password wrong (§5.13) |
 | 400 | `payment_verification_failed` | Gateway signature doesn't match |
@@ -578,6 +595,7 @@ short timeout. `partner.referral_stats` then returns `clicks`.
 | 503 | `payment_unavailable` | Gateway not configured or unreachable |
 | 503 | `google_unavailable` | Google sign-in not configured or Google unreachable |
 | 503 | `email_unavailable` | The sign-up code email couldn't be sent |
+| 503 | `hosting_unavailable` | Press couldn't be reached to remove a custom domain (§5.15) |
 
 ## 7. What the web app needs to add
 
