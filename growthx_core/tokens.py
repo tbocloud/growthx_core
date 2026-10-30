@@ -98,9 +98,13 @@ def revoke(name: str):
 	frappe.db.set_value("GX Auth Token", name, {"status": "Revoked", "revoked_at": now_datetime()})
 
 
-def revoke_all(user: str):
-	for name in frappe.get_all("GX Auth Token", {"user": user, "status": "Active"}, pluck="name"):
+def revoke_all(user: str, keep: str | None = None) -> int:
+	"""Revoke the user's active tokens, except `keep` (a token pair's name). Returns how many."""
+	names = frappe.get_all("GX Auth Token", {"user": user, "status": "Active"}, pluck="name")
+	names = [n for n in names if n != keep]
+	for name in names:
 		revoke(name)
+	return len(names)
 
 
 def delete_expired_tokens():

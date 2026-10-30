@@ -80,6 +80,8 @@ class RateLimit:
 	by_field: str | None = None
 	# Optional request header to key on instead of the IP address, e.g. a tenant key
 	by_header: str | None = None
+	# Key on the logged-in user instead of the IP address
+	by_user: bool = False
 
 
 # ---------------------------------------------------------------- responses
@@ -254,6 +256,15 @@ WEB_KEY_HEADER = "X-GrowthX-Web-Key"
 CLIENT_IP_HEADER = "X-GrowthX-Client-IP"
 
 
+def has_web_key() -> bool:
+	"""The request carries the website's shared key (server-to-server calls from the website)."""
+	if getattr(frappe.local, "request", None) is None:
+		return False
+	key = frappe.conf.get("growthx_web_key")
+	sent = frappe.get_request_header(WEB_KEY_HEADER)
+	return bool(key and sent and hmac.compare_digest(sent.encode(), str(key).encode()))
+
+
 def client_ip() -> str:
 	"""The caller's IP address, for rate limits and records: the visitor's, for website calls."""
 	return _forwarded_client_ip() or getattr(frappe.local, "request_ip", None) or "unknown"
@@ -262,9 +273,7 @@ def client_ip() -> str:
 def _forwarded_client_ip() -> str | None:
 	if getattr(frappe.local, "request", None) is None:
 		return None
-	key = frappe.conf.get("growthx_web_key")
-	sent = frappe.get_request_header(WEB_KEY_HEADER)
-	if not key or not sent or not hmac.compare_digest(sent.encode(), str(key).encode()):
+	if not has_web_key():
 		return None
 	ip = (frappe.get_request_header(CLIENT_IP_HEADER) or "").strip()
 	try:
@@ -406,6 +415,8 @@ def _check_rate_limit(name: str, limit: RateLimit):
 		value = frappe.get_request_header(limit.by_header)
 		if value and value.strip():
 			parts = [name, limit.by_header, value.strip()]
+	elif limit.by_user and frappe.session.user != "Guest":
+		parts = [name, "user", frappe.session.user]
 	key = frappe.cache.make_key("gx:rl:" + hashlib.sha256("|".join(parts).encode()).hexdigest())
 	count = frappe.cache.incrby(key, 1)
 	if count == 1:

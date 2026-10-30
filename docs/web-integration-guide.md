@@ -96,6 +96,9 @@ A slash (`{GROWTHX_API_URL}/catalogue.products`) is not a Frappe method and retu
 | POST | `auth.signup` | none | 2 | `POST /auth/signup` |
 | POST | `auth.google` | none | 2 | *new* (§5.12) |
 | POST | `auth.send_signup_code` | none | 2 | *new* (§5.4) |
+| POST | `auth.change_password` | any | 2 | *new* (§5.13) |
+| POST | `auth.logout_others` | any | 2 | *new* (§5.13) |
+| POST | `referral.record_click` | web key | 2 | *new* (§5.14) |
 | POST | `auth.refresh` | none | 1 | *new* |
 | POST | `auth.logout` | any | 1 | `POST /auth/logout` |
 | GET | `auth.me` | any | 1 | `GET /me` |
@@ -465,6 +468,16 @@ Idempotency-Key: …
   working for new sign-ups; use it to reject an application too), `reactivate` (suspended → active). Returns the
   partner's details. Wrong state → `409 not_changeable`.
 
+**Customers** (`/admin/customers/<id>`):
+- `GET admin.customer?id=` → the list row plus `contactName`, `country`, `trialEndsAt`, `sites[]`, `subscriptions[]` and
+  `history[]`.
+- `POST admin.update_customer_status {id, action, days?, reason?}`: `extend_trial` (`days` 1–30, trial only),
+  `suspend` (`reason` required; their sites go offline), `reactivate` (back to trial if it hasn't ended, else active;
+  sites come back). Wrong state → `409 invalid_transition`. Returns the detail. A new Idempotency-Key per action.
+
+**Audit log:** `GET admin.audit_log?entityType=&entityId=&actor=&from=&to=&page=&pageSize=` → newest first:
+`{id, at, actor, action, entityType, entityId, entityLabel, details}`.
+
 ### 5.10 Contact form
 
 `POST {GROWTHX_API_URL}.contact.submit` with body `{"name", "email", "company"?, "message"}` → `202 {"ok": true}`. A bad email gives `422` with `fields.email`.
@@ -523,6 +536,23 @@ Core sends Google the redirect URI from its config, so it must be exactly the on
 email-and-password account can also sign in with Google (same email); a Google-only account can set a password
 later with "Forgot password".
 
+### 5.13 Account settings (any role)
+
+- `user.hasPassword` (in `auth.me` and every session) is `false` for a Google sign-up that never set a password: show
+  "Set a password" (Forgot password) instead of "Change password".
+- `POST auth.change_password {currentPassword, newPassword}` → `200` with a new session for this device; **replace the
+  stored tokens**, because every other session (this one's old tokens included) is revoked. `newPassword`: 10–128
+  characters, a letter and a number. Errors: `422 wrong_password` (`fields.currentPassword`), `422` with
+  `fields.newPassword`, `409 no_password`, `429` after 5 tries in 15 minutes.
+- `POST auth.logout_others {}` → `{ok: true, revoked: <n>}`; this session stays.
+
+### 5.14 Referral link clicks
+
+From the `/r/CODE` page's server code, after skipping link previews, bots and prefetches:
+`POST referral.record_click {code, landingPath?}` with `X-GrowthX-Web-Key` and the visitor's IP in
+`X-GrowthX-Client-IP` → always `202 {counted}`. One click per code and visitor IP every 30 minutes. Fire-and-forget,
+short timeout. `partner.referral_stats` then returns `clicks`.
+
 ## 6. Error codes
 
 | HTTP | `code` | When |
@@ -532,6 +562,8 @@ later with "Forgot password".
 | 400 | `google_failed`, `google_signup_expired` | Google sign-in (§5.12) |
 | 400 | `email_code_expired` | Sign-up email code expired, never sent, or 5 wrong tries (§5.4) |
 | 403 | `email_not_verified`, `account_unavailable` | Google sign-in (§5.12) |
+| 409 | `no_password`, `invalid_transition` | Account settings (§5.13); admin customer actions (§5.9) |
+| 422 | `wrong_password` | Change password: current password wrong (§5.13) |
 | 400 | `payment_verification_failed` | Gateway signature doesn't match |
 | 401 | `unauthenticated` | No token, or the token expired or was revoked → refresh once, then log in |
 | 401 | `invalid_credentials` | Wrong email or password |

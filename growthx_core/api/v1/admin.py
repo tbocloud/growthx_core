@@ -1,5 +1,8 @@
+from datetime import timedelta
+
 import frappe
 from frappe.query_builder.functions import Count
+from frappe.utils import get_datetime, now_datetime
 
 from growthx_core.api.v1 import _serializers as s
 from growthx_core.api.v1 import appointments as appts
@@ -89,22 +92,192 @@ def customers():
 	plan_names = dict(frappe.get_all("GX Plan", fields=["name", "plan_name"], as_list=True))
 	partner_names = dict(frappe.get_all("GX Partner Profile", fields=["name", "partner_name"], as_list=True))
 
-	items = []
-	for r in rows:
-		sub = subs.get(r.name)
-		items.append(
-			{
-				"id": r.name,
-				"company": r.account_name,
-				"contactEmail": r.contact_email,
-				"status": r.status,
-				"plan": plan_names.get(sub.plan) if sub else None,
-				"partnerName": partner_names.get(r.referred_by) if r.referred_by else None,
-				"mrr": money(_mrr(sub) if sub and sub.status == "active" else 0),
-				"createdAt": iso(r.creation),
-			}
-		)
+	items = [_admin_customer(r, subs.get(r.name), plan_names, partner_names) for r in rows]
 	return page_meta(page, page_size, total, items)
+
+
+def _admin_customer(r, sub, plan_names, partner_names) -> dict:
+	return {
+		"id": r.name,
+		"company": r.account_name,
+		"contactEmail": r.contact_email,
+		"status": r.status,
+		"plan": plan_names.get(sub.plan) if sub else None,
+		"partnerName": partner_names.get(r.referred_by) if r.referred_by else None,
+		"mrr": money(_mrr(sub) if sub and sub.status == "active" else 0),
+		"createdAt": iso(r.creation),
+	}
+
+
+CUSTOMER_FIELDS = ["name", "account_name", "contact_email", "status", "referred_by", "creation", "user"]
+SUB_FIELDS = [
+	"name",
+	"account",
+	"plan",
+	"status",
+	"price",
+	"gst_included",
+	"gst_rate",
+	"billing_interval",
+	"trial_ends_at",
+	"current_period_end",
+]
+
+
+def _customer_detail(account_id: str) -> dict:
+	r = frappe.db.get_value("GX Account", account_id, CUSTOMER_FIELDS, as_dict=True)
+	subs = frappe.get_all("GX Subscription", {"account": account_id}, SUB_FIELDS, order_by="creation asc")
+	latest = subs[-1] if subs else None
+	plan_names = dict(frappe.get_all("GX Plan", fields=["name", "plan_name"], as_list=True))
+	partner_name = (
+		frappe.db.get_value("GX Partner Profile", r.referred_by, "partner_name") if r.referred_by else None
+	)
+	result = _admin_customer(r, latest, plan_names, {r.referred_by: partner_name} if r.referred_by else {})
+	tenants = frappe.get_all(
+		"GX Tenant",
+		{"account": account_id},
+		["name", "product", "site_url", "status", "country"],
+		order_by="creation asc",
+	)
+	trialing = [sub for sub in subs if sub.status == "trialing" and sub.trial_ends_at]
+	result.update(
+		{
+			"contactName": frappe.db.get_value("User", r.user, "full_name") if r.user else None,
+			"country": next((t.country for t in reversed(tenants) if t.country), None),
+			"trialEndsAt": iso(trialing[-1].trial_ends_at) if trialing else None,
+			"sites": [
+				{"id": t.name, "productSlug": t.product, "siteUrl": t.site_url or None, "status": t.status}
+				for t in tenants
+			],
+			"subscriptions": [
+				{
+					"id": sub.name,
+					"plan": plan_names.get(sub.plan) or sub.plan,
+					"status": sub.status,
+					"currentPeriodEnd": iso(sub.current_period_end),
+				}
+				for sub in subs
+			],
+			"history": _history("GX Account", account_id, "customer."),
+		}
+	)
+	return result
+
+
+def _history(doctype: str, name: str, prefix: str) -> list[dict]:
+	return [
+		{
+			"at": iso(r.creation),
+			"actor": r.actor,
+			"action": r.action.removeprefix(prefix),
+			"details": r.details,
+		}
+		for r in frappe.get_all(
+			"GX Audit Log",
+			filters={"reference_doctype": doctype, "reference_name": name},
+			fields=["creation", "actor", "action", "details"],
+			order_by="creation asc",
+		)
+	]
+
+
+@endpoint(methods=("GET",), roles=("admin",))
+def customer():
+	account_id = get_str(query(), "id", required=True)
+	if not frappe.db.exists("GX Account", account_id):
+		raise not_found()
+	return _customer_detail(account_id)
+
+
+CUSTOMER_ACTIONS = ("extend_trial", "suspend", "reactivate")
+MAX_TRIAL_EXTENSION = 30
+
+
+@endpoint(methods=("POST",), roles=("admin",), idempotent=True)
+def update_customer_status():
+	"""extend_trial {days 1-30} (trial only: from now or the trial end, whichever is later),
+	suspend {reason} (trial or active: their sites go offline), reactivate (suspended → trial if the
+	trial hasn't ended, else active: their sites come back). Returns the customer's details."""
+	data = body()
+	account_id = get_str(data, "id", required=True)
+	action = get_choice(data, "action", CUSTOMER_ACTIONS, required=True)
+	reason = get_str(data, "reason", required=action == "suspend", max_length=500, label="Reason")
+	days = data.get("days")
+	if action == "extend_trial" and (
+		isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= MAX_TRIAL_EXTENSION
+	):
+		raise validation_error({"days": f"Enter a whole number of days from 1 to {MAX_TRIAL_EXTENSION}."})
+	if not frappe.db.exists("GX Account", account_id):
+		raise not_found()
+
+	account = frappe.get_doc("GX Account", account_id, for_update=True)
+	allowed = {"extend_trial": ("trial",), "suspend": ("trial", "active"), "reactivate": ("suspended",)}
+	if account.status not in allowed[action]:
+		what = {
+			"extend_trial": "have their trial extended",
+			"suspend": "be suspended",
+			"reactivate": "be reactivated",
+		}
+		raise ApiError(409, "invalid_transition", f"A customer who is {account.status} can't {what[action]}.")
+
+	if action == "extend_trial":
+		details = _extend_trial(account, days)
+	elif action == "suspend":
+		details = _set_customer_status(account, "suspended", "ready", "suspended", "suspend_site")
+	else:
+		trial_left = frappe.db.exists(
+			"GX Subscription",
+			{"account": account.name, "status": "trialing", "trial_ends_at": (">", now_datetime())},
+		)
+		details = _set_customer_status(
+			account, "trial" if trial_left else "active", "suspended", "ready", "resume_site"
+		)
+	if reason:
+		details += f": {reason}"
+	audit(f"customer.{action}", "GX Account", account.name, details)
+	return _customer_detail(account.name)
+
+
+def _extend_trial(account, days: int) -> str:
+	sub = frappe.get_all(
+		"GX Subscription",
+		{"account": account.name, "status": "trialing"},
+		["name", "trial_ends_at"],
+		order_by="creation desc",
+		limit=1,
+	)
+	if not sub:
+		raise ApiError(409, "invalid_transition", "This customer has no trial subscription to extend.")
+	old = sub[0].trial_ends_at
+	new = max(now_datetime(), get_datetime(old) if old else now_datetime()) + timedelta(days=days)
+	frappe.db.set_value("GX Subscription", sub[0].name, "trial_ends_at", new)
+	return f"+{days} days: trial ends {iso(new)} (was {iso(old) if old else 'not set'})"
+
+
+def _set_customer_status(account, new_status: str, site_from: str, site_to: str, press_action: str) -> str:
+	"""Change the account's status and move its sites from `site_from` to `site_to` on Press. A site
+	Press refuses keeps its status and is named in the audit details."""
+	previous = account.status
+	account.status = new_status
+	account.save(ignore_permissions=True)
+	client = None
+	failed = []
+	for t in frappe.get_all(
+		"GX Tenant", {"account": account.name, "status": site_from}, ["name", "press_site_id"]
+	):
+		try:
+			if t.press_site_id:
+				client = client or runner.get_client()
+				getattr(client, press_action)(t.press_site_id)
+		except Exception:
+			frappe.log_error(title=f"GrowthX: {press_action} failed for {t.name}")
+			failed.append(t.name)
+			continue
+		frappe.db.set_value("GX Tenant", t.name, "status", site_to)
+	details = f"{previous} → {new_status}"
+	if failed:
+		details += f" (sites not changed, Press error: {', '.join(failed)})"
+	return details
 
 
 @endpoint(methods=("GET",), roles=("admin",))
@@ -192,6 +365,83 @@ def archive_tenant():
 		raise ApiError(409, "not_archivable", "Only a failed site can be archived.")
 	audit("archive_tenant", "GX Tenant", tenant_id)
 	return s.admin_tenant_detail(frappe.get_doc("GX Tenant", tenant_id))
+
+
+# ---------------------------------------------------------------- audit log
+
+ENTITY_DOCTYPES = {
+	"customer": "GX Account",
+	"partner": "GX Partner Profile",
+	"tenant": "GX Tenant",
+	"appointment": "GX Appointment",
+}
+ENTITY_LABELS = {
+	"GX Account": "account_name",
+	"GX Partner Profile": "partner_name",
+	"GX Tenant": "display_name",
+	"GX Appointment": "full_name",
+}
+
+
+@endpoint(methods=("GET",), roles=("admin",))
+def audit_log():
+	"""Every recorded admin and system action, newest first."""
+	data = query()
+	page, page_size = page_params(data)
+	entity_type = get_choice(data, "entityType", tuple(ENTITY_DOCTYPES))
+	entity_id = get_str(data, "entityId")
+	actor = get_str(data, "actor")
+	start, end = _day(data, "from"), _day(data, "to")
+	if start and end and start > end:
+		raise validation_error({"from": "from must be on or before to."})
+
+	filters = {}
+	if entity_type:
+		filters["reference_doctype"] = ENTITY_DOCTYPES[entity_type]
+	if entity_id:
+		filters["reference_name"] = entity_id
+	if actor:
+		filters["actor"] = actor
+	if start and end:
+		filters["creation"] = ("between", [f"{start} 00:00:00", f"{end} 23:59:59.999999"])
+	elif start:
+		filters["creation"] = (">=", f"{start} 00:00:00")
+	elif end:
+		filters["creation"] = ("<=", f"{end} 23:59:59.999999")
+
+	rows = frappe.get_all(
+		"GX Audit Log",
+		filters=filters,
+		fields=["name", "creation", "actor", "action", "reference_doctype", "reference_name", "details"],
+		order_by="creation desc",
+		limit_start=(page - 1) * page_size,
+		limit_page_length=page_size,
+	)
+	total = frappe.db.count("GX Audit Log", filters)
+	type_of = {doctype: kind for kind, doctype in ENTITY_DOCTYPES.items()}
+	labels = {}
+	for doctype, field in ENTITY_LABELS.items():
+		names = [r.reference_name for r in rows if r.reference_doctype == doctype and r.reference_name]
+		if names:
+			labels[doctype] = dict(
+				frappe.get_all(doctype, {"name": ("in", names)}, ["name", field], as_list=True)
+			)
+	items = []
+	for r in rows:
+		kind = type_of.get(r.reference_doctype)
+		items.append(
+			{
+				"id": r.name,
+				"at": iso(r.creation),
+				"actor": r.actor,
+				"action": r.action.removeprefix(f"{kind}.") if kind else r.action,
+				"entityType": kind,
+				"entityId": r.reference_name,
+				"entityLabel": labels.get(r.reference_doctype, {}).get(r.reference_name),
+				"details": r.details,
+			}
+		)
+	return page_meta(page, page_size, total, items)
 
 
 # ---------------------------------------------------------------- partners
