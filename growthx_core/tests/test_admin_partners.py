@@ -129,6 +129,18 @@ class TestAdminPartners(IntegrationTestCase):
 		status, body = _call(admin.partners, {"status": "nope"})
 		self.assertEqual(status, 422)
 
+	def test_page_with_no_partners(self):
+		# A customer with no partner must not break a page with no partners (production 500, ref 285292204)
+		accounts.create_customer_account(
+			email="gx-admin-partner-cust-direct@example.com",
+			full_name="Cust Omer",
+			company="Customer direct",
+			password=PASSWORD,
+		)
+		for data in ({"q": "no partner has this name"}, {"status": "suspended", "q": "gx-admin-partner-"}):
+			status, body = _call(admin.partners, data)
+			self.assertEqual((status, body["items"], body["total"]), (200, [], 0), body)
+
 	def test_detail_has_referred_customers(self):
 		status, body = _call(admin.partner, {"id": self.active})
 		self.assertEqual(status, 200, body)
