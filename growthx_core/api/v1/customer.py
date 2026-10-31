@@ -6,6 +6,7 @@ from frappe.utils import now_datetime
 from growthx_core.api.v1 import _serializers as s
 from growthx_core.api.v1._core import (
 	ApiError,
+	RateLimit,
 	audit,
 	body,
 	current_user,
@@ -18,7 +19,7 @@ from growthx_core.api.v1._core import (
 	page_params,
 	query,
 )
-from growthx_core.provisioning import site_login
+from growthx_core.provisioning import custom_domains, site_login
 
 SITE_FIELDS = [
 	"name",
@@ -76,9 +77,43 @@ def open_site():
 	token = site_login.issue(tenant.name, current_user())
 	audit("open_site", "GX Tenant", tenant.name)  # never log the token
 	return {
-		"url": site_login.login_url(tenant.site_url, token),
+		"url": site_login.login_url(custom_domains.public_url(tenant), token),
 		"expiresAt": iso(now_datetime() + timedelta(seconds=site_login.TTL_SECONDS)),
 	}
+
+
+@endpoint(methods=("GET",), roles=("customer",))
+def custom_domain():
+	tenant = _own_tenant(get_str(query(), "id", required=True))
+	return {"customDomain": custom_domains.serialize(tenant)}
+
+
+@endpoint(methods=("POST",), roles=("customer",), idempotent=True)
+def add_custom_domain():
+	data = body()
+	tenant = _own_tenant(get_str(data, "id", required=True), for_update=True)
+	custom_domains.add(tenant, get_str(data, "domain", required=True, max_length=253))
+	audit("add_custom_domain", "GX Tenant", tenant.name, tenant.custom_domain)
+	return 201, custom_domains.serialize(tenant)
+
+
+@endpoint(methods=("POST",), roles=("customer",), rate_limit=RateLimit(6, 60, by_field="id"))
+def check_custom_domain():
+	tenant = _own_tenant(get_str(body(), "id", required=True), for_update=True)
+	if not tenant.custom_domain:
+		raise not_found()
+	custom_domains.check(tenant)
+	return custom_domains.serialize(tenant)
+
+
+@endpoint(methods=("POST",), roles=("customer",), idempotent=True)
+def remove_custom_domain():
+	tenant = _own_tenant(get_str(body(), "id", required=True), for_update=True)
+	domain = tenant.custom_domain
+	if not custom_domains.remove(tenant):
+		raise not_found()
+	audit("remove_custom_domain", "GX Tenant", tenant.name, domain)
+	return {"ok": True}
 
 
 @endpoint(methods=("GET",), roles=("customer",))

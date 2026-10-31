@@ -22,6 +22,15 @@
   "tenant_key_hash",
   "service_api_key",
   "service_api_secret",
+  "custom_domain_section",
+  "custom_domain",
+  "custom_domain_status",
+  "custom_domain_problem",
+  "custom_domain_message",
+  "column_break_custom_domain",
+  "custom_domain_added_at",
+  "custom_domain_checked_at",
+  "custom_domain_active_at",
   "apps_section",
   "apps",
   "status_section",
@@ -141,6 +150,62 @@
    "read_only": 1
   },
   {
+   "collapsible": 1,
+   "fieldname": "custom_domain_section",
+   "fieldtype": "Section Break",
+   "label": "Custom Domain"
+  },
+  {
+   "description": "The customer's own domain, e.g. app.noorsolar.com (customer.add_custom_domain)",
+   "fieldname": "custom_domain",
+   "fieldtype": "Data",
+   "label": "Custom Domain",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "custom_domain_status",
+   "fieldtype": "Select",
+   "label": "Custom Domain Status",
+   "options": "\npending_dns\nverifying\nactive\nfailed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_domain_problem",
+   "fieldtype": "Data",
+   "label": "DNS Problem",
+   "read_only": 1
+  },
+  {
+   "description": "Customer-safe message",
+   "fieldname": "custom_domain_message",
+   "fieldtype": "Small Text",
+   "label": "Custom Domain Message",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_custom_domain",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "custom_domain_added_at",
+   "fieldtype": "Datetime",
+   "label": "Custom Domain Added At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_domain_checked_at",
+   "fieldtype": "Datetime",
+   "label": "Custom Domain Checked At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_domain_active_at",
+   "fieldtype": "Datetime",
+   "label": "Custom Domain Active At",
+   "read_only": 1
+  },
+  {
    "fieldname": "apps_section",
    "fieldtype": "Section Break",
    "label": "Apps on this site"
@@ -179,7 +244,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-10-27 18:00:00.000000",
+ "modified": "2026-10-30 16:58:58.817484",
  "modified_by": "Administrator",
  "module": "Provisioning",
  "name": "GX Tenant",
