@@ -46,15 +46,13 @@ TWO_LABEL_SUFFIXES = {
 SYSTEM_DOMAINS = ("tbogrowthx.com", "tbocloud.in", "frappe.cloud", "frappe.dev")
 
 MESSAGES = {
-	"not_found": (
-		"We can't find the CNAME record yet. Changes can take up to an hour to show; check again later."
-	),
+	"not_found": "We can't find the record yet. Changes can take up to an hour to show; check again later.",
 	"wrong_target": (
-		"Your record points to the wrong address: it should be a CNAME to {target}. If your domain has a"
-		" wildcard (*) record, add this CNAME as its own record."
+		"Your record points to the wrong address: it should be {fix}. If your domain has a wildcard (*)"
+		" record, add this one as its own record."
 	),
-	"multiple_records": "The domain has more than one CNAME or A record. Keep only the CNAME to {target}.",
-	"aaaa_record": "The domain has an AAAA (IPv6) record. Delete it, keeping only the CNAME to {target}.",
+	"multiple_records": "The domain has more than one CNAME or A record. Keep only {fix}.",
+	"aaaa_record": "The domain has an AAAA (IPv6) record. Delete it, keeping only {fix}.",
 	"caa_blocks": "A CAA record on your domain doesn't allow Let's Encrypt. Add letsencrypt.org to it, or remove it.",
 	"cloudflare_proxied": 'The record is behind Cloudflare\'s proxy. Set it to "DNS only" (grey cloud).',
 	"domain_taken": "This domain is already used by another site on our hosting. Contact support if it's yours.",
@@ -66,7 +64,8 @@ MESSAGES = {
 
 
 def normalize(domain: str) -> str:
-	"""Lower-case `domain` and check it's a subdomain the customer can use. Raises 422."""
+	"""Lower-case `domain` and check the customer can use it. Raises 422. Root domains (an A record
+	only) need `growthx_custom_domain_ip`."""
 	domain = (domain or "").strip().lower().rstrip(".")
 
 	def invalid(message):
@@ -84,9 +83,38 @@ def normalize(domain: str) -> str:
 	for system in (*SYSTEM_DOMAINS, press.tenant_domain()):
 		if domain == system or domain.endswith(f".{system}"):
 			raise invalid("Use a domain your company owns.")
-	if domain == root_of(domain):
+	if is_root(domain) and not proxy_ip():
 		raise invalid(f"Use a subdomain, like app.{domain}. Root domains aren't supported yet.")
 	return domain
+
+
+def is_root(domain: str) -> bool:
+	return domain == root_of(domain)
+
+
+def proxy_ip() -> str | None:
+	"""The proxy's fixed public IP for A records (site_config `growthx_custom_domain_ip`, Arun).
+	It stays the same when servers move, so customers' A records keep working."""
+	return (frappe.conf.get("growthx_custom_domain_ip") or "").strip() or None
+
+
+def records(tenant) -> list[dict]:
+	"""The DNS records the customer can add: a CNAME (recommended) and/or an A record to the proxy IP.
+	A root domain can't have a CNAME, so it gets the A record only."""
+	domain, ip = tenant.custom_domain, proxy_ip()
+	host = "@" if is_root(domain) else domain.removesuffix("." + root_of(domain))
+	rows = []
+	if not is_root(domain):
+		rows.append({"type": "CNAME", "host": host, "value": target_host(tenant), "recommended": True})
+	if ip:
+		rows.append({"type": "A", "host": host, "value": ip, "recommended": is_root(domain)})
+	return rows
+
+
+def _fix(tenant) -> str:
+	"""How the record should look, for the DNS problem messages."""
+	options = [f"a {r['type']} record to {r['value']}" for r in records(tenant)]
+	return " or ".join(options).replace("a A ", "an A ")
 
 
 def root_of(domain: str) -> str:
@@ -163,7 +191,7 @@ def check(tenant, client=None):
 		if e.problem == "domain_taken":
 			_set(tenant, "failed", MESSAGES["domain_taken"])
 		else:
-			_set(tenant, "pending_dns", MESSAGES[e.problem].format(target=target_host(tenant)), e.problem)
+			_set(tenant, "pending_dns", MESSAGES[e.problem].format(fix=_fix(tenant)), e.problem)
 	except press.PressError:
 		frappe.log_error(title=f"GrowthX: custom domain check failed for {tenant.name}")
 		tenant.custom_domain_message = (
@@ -250,14 +278,10 @@ def serialize(tenant) -> dict | None:
 	if not tenant.custom_domain:
 		return None
 	domain, status = tenant.custom_domain, tenant.custom_domain_status
-	records = []
-	if status != "active":
-		host = domain.removesuffix("." + root_of(domain))
-		records = [{"type": "CNAME", "host": host, "value": target_host(tenant)}]
 	return {
 		"domain": domain,
 		"status": status,
-		"records": records,
+		"records": records(tenant) if status != "active" else [],
 		"dnsProblem": tenant.custom_domain_problem or None,
 		"message": tenant.custom_domain_message or None,
 		"checkedAt": iso(tenant.custom_domain_checked_at),

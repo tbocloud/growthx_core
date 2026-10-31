@@ -90,6 +90,7 @@ class TestCustomDomains(IntegrationTestCase):
 	# ------------------------------------------------------------ rules
 
 	def test_domain_rules(self):
+		# Without growthx_custom_domain_ip: subdomains only, CNAME only
 		for domain in (
 			"noorsolar.com",
 			"noorsolar.co.in",
@@ -109,10 +110,52 @@ class TestCustomDomains(IntegrationTestCase):
 			(
 				"app.noorsolar.co.in",
 				"pending_dns",
-				[{"type": "CNAME", "host": "app", "value": "noor-domain.tbogrowthx.com"}],
+				[
+					{
+						"type": "CNAME",
+						"host": "app",
+						"value": "noor-domain.tbogrowthx.com",
+						"recommended": True,
+					}
+				],
 				None,
 			),
 		)
+
+	def test_a_records_and_root_domains_with_the_proxy_ip(self):
+		with patch.dict(frappe.local.conf, {"growthx_custom_domain_ip": "203.0.113.7"}):
+			status, body = self.add("app.noorsolar.com")
+			self.assertEqual(status, 201, body)
+			self.assertEqual(
+				body["records"],
+				[
+					{
+						"type": "CNAME",
+						"host": "app",
+						"value": "noor-domain.tbogrowthx.com",
+						"recommended": True,
+					},
+					{"type": "A", "host": "app", "value": "203.0.113.7", "recommended": False},
+				],
+			)
+			self.press.dns_problem = "wrong_target"
+			_, body = self.check()
+			self.assertIn(
+				"a CNAME record to noor-domain.tbogrowthx.com or an A record to 203.0.113.7", body["message"]
+			)
+
+			self.call(customer.remove_custom_domain, {"id": self.site.name})
+			status, body = self.add("noorsolar.co.in")
+			self.assertEqual(status, 201, body)
+			self.assertEqual(
+				body["records"], [{"type": "A", "host": "@", "value": "203.0.113.7", "recommended": True}]
+			)
+			_, body = self.check()
+			self.assertIn("should be an A record to 203.0.113.7.", body["message"])
+			self.assertNotIn("CNAME", body["message"])
+			# Our own domains stay refused, root or not
+			self.call(customer.remove_custom_domain, {"id": self.site.name})
+			self.assertEqual(self.add("tbogrowthx.com")[0], 422)
 
 	def test_one_per_site_and_no_sharing(self):
 		self.assertEqual(self.add()[0], 201)
