@@ -114,6 +114,27 @@ def run(password: str | None = None, release_group: str | None = None):
 		print("Demo users already existed; their passwords were not changed.")
 
 
+def paid_subscription(email: str):
+	"""Test sites only: make a QA customer "paid" (subscriptions trialing -> active), to test paid
+	features such as custom domains before billing exists. Changes Core's records only, not Press.
+
+	    bench --site <core-test> execute growthx_core.setup.seed.paid_subscription --kwargs "{'email': '...'}"
+	"""
+	conf = frappe.conf.get("growthx_press") or {}
+	if conf.get("mode") == "press" and not conf.get("test_sites"):
+		frappe.throw("Refused: this is production Core (no test_sites in growthx_press)")
+	user = frappe.db.get_value("User", {"email": email})
+	account = user and frappe.db.get_value("GX Account", {"user": user})
+	if not account:
+		frappe.throw(f"No customer account for {email}")
+	subs = frappe.get_all("GX Subscription", {"account": account, "status": "trialing"}, pluck="name")
+	for name in subs:
+		frappe.db.set_value("GX Subscription", name, "status", "active")
+	frappe.db.set_value("GX Account", account, "status", "active")
+	frappe.db.commit()
+	print(f"{email}: {len(subs)} subscription(s) set to active, account active.")
+
+
 def _upsert(doctype, name, values):
 	if frappe.db.exists(doctype, name):
 		doc = frappe.get_doc(doctype, name)
