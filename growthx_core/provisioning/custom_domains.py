@@ -46,8 +46,13 @@ TWO_LABEL_SUFFIXES = {
 SYSTEM_DOMAINS = ("tbogrowthx.com", "tbocloud.in", "frappe.cloud", "frappe.dev")
 
 MESSAGES = {
-	"not_found": "We can't find the CNAME record yet. Changes can take up to an hour to show; check again later.",
-	"wrong_target": "The record points somewhere else. Change it to point to {target}.",
+	"not_found": (
+		"We can't find the CNAME record yet. Changes can take up to an hour to show; check again later."
+	),
+	"wrong_target": (
+		"Your record points to the wrong address: it should be a CNAME to {target}. If your domain has a"
+		" wildcard (*) record, add this CNAME as its own record."
+	),
 	"multiple_records": "The domain has more than one CNAME or A record. Keep only the CNAME to {target}.",
 	"aaaa_record": "The domain has an AAAA (IPv6) record. Delete it, keeping only the CNAME to {target}.",
 	"caa_blocks": "A CAA record on your domain doesn't allow Let's Encrypt. Add letsencrypt.org to it, or remove it.",

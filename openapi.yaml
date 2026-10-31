@@ -2922,7 +2922,8 @@ components:
           description: |
             Why the last check failed, from Press's `check_dns`. `not_found`: no record yet; `wrong_target`: it points elsewhere;
             `multiple_records`: more than one CNAME or A record; `aaaa_record`: an IPv6 record exists; `caa_blocks`: a CAA record
-            doesn't allow Let's Encrypt; `cloudflare_proxied`: behind Cloudflare's proxy (must be "DNS only"). Null when fine, and when `failed`.
+            doesn't allow Let's Encrypt; `cloudflare_proxied`: behind Cloudflare's proxy (must be "DNS only"). Press reports a wrong target that runs a web
+            server, or a wildcard (*) record, as proxied: Core says `wrong_target` unless the server is Cloudflare's. Null when fine, and when `failed`.
         message: { type: string, nullable: true, description: Safe to show the customer }
         checkedAt: { type: string, format: date-time, nullable: true }
         activeAt: { type: string, format: date-time, nullable: true }

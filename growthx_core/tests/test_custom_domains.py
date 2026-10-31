@@ -236,11 +236,14 @@ class TestRealPressDomains(IntegrationTestCase):
 			try:
 				getattr(self.client, method)("noor.tbogrowthx.com", "app.noorsolar.com")
 			except press.DnsProblem as e:
+				self.assertNotIn("appears", str(e))  # Press's text isn't kept
 				return e.problem
-		return None
+			except press.PressError:
+				return None
+		return "matched"
 
 	def test_check_dns_answers(self):
-		self.assertIsNone(self._problem(self._reply(message={"matched": True})))
+		self.assertEqual(self._problem(self._reply(message={"matched": True})), "matched")
 		self.assertEqual(
 			self._problem(self._reply(message={"matched": False, "CNAME": {"exists": True}})), "wrong_target"
 		)
@@ -250,12 +253,19 @@ class TestRealPressDomains(IntegrationTestCase):
 
 	def test_refusals(self):
 		cases = {
-			("ConflictingCAARecord", "CAA record blocks letsencrypt"): "caa_blocks",
-			("AAAARecordExists", "Domain has an AAAA record"): "aaaa_record",
+			("DNSValidationError", "Unable to connect to the domain"): "not_found",
+			("DomainProxied", "Domain appears to be proxied (server: nginx)"): "wrong_target",
+			("DomainProxied", "Domain appears to be proxied (server: cloudflare)"): "cloudflare_proxied",
+			(
+				"ConflictingDNSRecord",
+				"correct A record, but also a CNAME to an incorrect domain",
+			): "wrong_target",
 			("MultipleARecords", "Domain has multiple A records"): "multiple_records",
-			("ConflictingDNSRecord", "Domain has a correct CNAME but also an A record"): "multiple_records",
-			("ValidationError", "Domain is proxied through Cloudflare"): "cloudflare_proxied",
+			("AAAARecordExists", "Domain has an AAAA record"): "aaaa_record",
+			("ConflictingCAARecord", "CAA record blocks letsencrypt"): "caa_blocks",
 			("DuplicateEntryError", "Site Domain app.noorsolar.com already exists"): "domain_taken",
+			# Press's text alone never decides it
+			("ValidationError", "Domain is reserved, see https://docs.frappe.io/x"): None,
 		}
 		for (exc_type, text), problem in cases.items():
 			self.assertEqual(

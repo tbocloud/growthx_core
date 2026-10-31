@@ -23,6 +23,8 @@ from frappe.utils import cint, get_bench_path
 class PressError(Exception):
 	"""Press refused or failed. The message is admin-only detail."""
 
+	exc_type: str | None = None  # Press's exception class, e.g. "DNSValidationError"
+
 
 class PressNotFound(PressError):
 	"""Press has no such site, or it isn't the GrowthX team's (Press answers the same for both)."""
@@ -243,7 +245,9 @@ class RealPressClient(PressClient):
 		detail = _error_text(r)
 		if r.status_code == 403 or "DoesNotExistError" in detail:
 			raise PressNotFound(f"{method}: {detail}")
-		raise PressError(f"{method}: HTTP {r.status_code} {detail}")
+		error = PressError(f"{method}: HTTP {r.status_code} {detail}")
+		error.exc_type = _exc_type(r)
+		raise error
 
 	def site_name(self, subdomain: str) -> str:
 		return f"{subdomain}.{self.domain}"
@@ -369,9 +373,9 @@ class RealPressClient(PressClient):
 		except PressNotFound:
 			raise
 		except PressError as e:
-			problem = _dns_problem(str(e))
+			problem = _dns_problem(e)
 			if problem:
-				raise DnsProblem(problem, str(e)) from None
+				raise DnsProblem(problem, e.exc_type or "") from None
 			raise
 
 	def check_dns(self, site_id, domain):
@@ -402,25 +406,32 @@ class RealPressClient(PressClient):
 
 
 PRESS_DOMAIN_STATUS = {"Pending": "pending", "In Progress": "pending", "Active": "active", "Broken": "broken"}
-# Press's refusal (exception type and message) -> DnsProblem. Checked in order. To be confirmed
-# against tbocloud.in's Press on core-test (Arun): unmatched refusals stay plain PressErrors.
-_DNS_REFUSALS = (
-	("caa_blocks", ("caa",)),
-	("cloudflare_proxied", ("cloudflare", "proxied", "proxy")),
-	("aaaa_record", ("aaaa",)),
-	("multiple_records", ("multiple", "conflicting")),
-	("domain_taken", ("already", "duplicate")),
-	("not_found", ("nxdomain", "no answer", "not found", "does not exist")),
-	("wrong_target", ("dnsvalidationerror", "not pointing", "points to", "pointing to")),
-)
+# Press's refusals (HTTP 417), by exception class, as Arun saw them on tbocloud.in (30 Oct 2026).
+# Press's own text never reaches the customer: it can hold a server traceback and docs links.
+_DNS_REFUSALS = {
+	"DNSValidationError": "not_found",  # "Unable to connect to the domain..."
+	"ConflictingDNSRecord": "wrong_target",  # a CNAME to an address that isn't this site's
+	"MultipleARecords": "multiple_records",
+	"MultipleCNAMERecords": "multiple_records",
+	"AAAARecordExists": "aaaa_record",
+	"ConflictingCAARecord": "caa_blocks",
+	"DuplicateEntryError": "domain_taken",
+}
 
 
-def _dns_problem(text: str) -> str | None:
-	text = text.lower()
-	for problem, words in _DNS_REFUSALS:
-		if any(w in text for w in words):
-			return problem
-	return None
+def _dns_problem(error: PressError) -> str | None:
+	if error.exc_type == "DomainProxied":
+		# Any wrong target that runs a web server ("appears to be proxied (server: ...)"), and also
+		# a wildcard record. Only Cloudflare's own server means "turn off the proxy".
+		return "cloudflare_proxied" if "server: cloudflare" in str(error).lower() else "wrong_target"
+	return _DNS_REFUSALS.get(error.exc_type)
+
+
+def _exc_type(response) -> str | None:
+	try:
+		return response.json().get("exc_type")
+	except (ValueError, AttributeError):
+		return None
 
 
 def _app_name(row) -> str:
