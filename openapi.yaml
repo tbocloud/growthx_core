@@ -1123,15 +1123,16 @@ paths:
       tags: [customer]
       summary: Add a custom domain to a site
       description: |
-        Starts as `pending_dns`, with the DNS record the customer must add at their domain provider: one CNAME
-        from the domain to the site's `<subdomain>.tbogrowthx.com` address (no TXT; Press checks the record points at the site).
-        One custom domain per site. Paid plans only: today a subscription that isn't `active` (e.g. a trial) gets
-        `403 plan_required` (management to confirm). Lower-cased. Subdomains only at launch
-        (`app.noorsolar.com`, not `noorsolar.com`): a root domain needs an A record to the proxy's IP, which would break if it changed.
+        Starts as `pending_dns`, with the DNS records the customer can add at their domain provider (`records`; no TXT,
+        Press checks the record points at the site). A subdomain (`app.noorsolar.com`) gets two options: a CNAME to the
+        site's `<subdomain>.tbogrowthx.com` address (`recommended`), or an A record to the proxy's fixed IP. A root domain
+        (`noorsolar.com`) gets the A record only. The A record and root domains need `growthx_custom_domain_ip` in Core's
+        site_config; without it, only subdomains with a CNAME. One custom domain per site. Paid plans only: today a
+        subscription that isn't `active` (e.g. a trial) gets `403 plan_required`. Lower-cased.
         `403 plan_required`: the site's subscription is on a trial or a plan without custom domains.
         `409 domain_taken`: another site uses it. `409 domain_exists`: this site already has one (remove it first).
-        `409 site_not_ready`: the site isn't `ready`. `422 validation_failed` with `fields.domain`: not a valid domain, a root
-        domain, or a system domain (tbogrowthx.com, tbocloud.in and Press's other domains).
+        `409 site_not_ready`: the site isn't `ready`. `422 validation_failed` with `fields.domain`: not a valid domain, a system
+        domain (tbogrowthx.com, tbocloud.in and Press's other domains), or a root domain when Core has no A-record IP.
       operationId: addCustomDomain
       x-phase: 2
       x-roles: [customer]
@@ -3014,14 +3015,15 @@ components:
           description: "`pending_dns`: waiting for the records; `verifying`: records found, HTTPS certificate being issued; `active`: live; `failed`: see `message` (remove the domain and add it again)"
         records:
           type: array
-          description: DNS records to add at the domain provider. Shown until the domain is active; empty once it is.
+          description: The record options (add one of them). Shown until the domain is active; empty once it is.
           items:
             type: object
-            required: [type, host, value]
+            required: [type, host, value, recommended]
             properties:
-              type: { type: string, enum: [CNAME, A], description: "CNAME for a subdomain; A only if root domains are allowed later" }
-              host: { type: string, description: "Name as most providers want it, e.g. `app`", example: app }
-              value: { type: string, example: noor-solar.tbogrowthx.com }
+              type: { type: string, enum: [CNAME, A], description: "Add one of them, not both" }
+              host: { type: string, description: "Name as most providers want it: `app` for app.noorsolar.com, `@` for the root domain", example: app }
+              value: { type: string, description: "The site's address (CNAME) or the proxy's IP (A)", example: noor-solar.tbogrowthx.com }
+              recommended: { type: boolean, description: "The CNAME for a subdomain; the A record for a root domain" }
         dnsProblem:
           type: string
           nullable: true

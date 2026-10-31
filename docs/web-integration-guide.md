@@ -555,13 +555,14 @@ short timeout. `partner.referral_stats` then returns `clicks`.
 
 ### 5.15 Custom domains (customer)
 
-One subdomain the customer owns per site (`app.noorsolar.com`; root domains later), on paid plans (`403 plan_required`
-for a trial, pending management). The shape is the website's proposal from PR #42, adopted:
+One domain the customer owns per site, on paid plans (`403 plan_required` for a trial). A subdomain
+(`app.noorsolar.com`) can use a CNAME (`recommended`) or an A record to the proxy IP; a root domain (`noorsolar.com`)
+an A record only. The A record and root domains need `growthx_custom_domain_ip` in Core's site_config. The shape is the website's proposal from PR #42, adopted:
 
 - `GET customer.custom_domain?id=` → `{customDomain}` (null when none).
-- `POST customer.add_custom_domain {id, domain}` → `201 CustomDomain` at `pending_dns`, with one CNAME in `records`
-  (`host` as most providers want it, `value` the site's own address). Errors: `422` (`fields.domain`: not a domain, a
-  root domain, or ours), `409 domain_exists` / `domain_taken` / `site_not_ready`, `403 plan_required`.
+- `POST customer.add_custom_domain {id, domain}` → `201 CustomDomain` at `pending_dns`, with the record options in
+  `records` (`host` as most providers want it, `@` for a root domain; `value` the site's address or the IP; add one).
+  Errors: `422` (`fields.domain`: not a domain, ours, or a root domain without the IP), `409 domain_exists` / `domain_taken` / `site_not_ready`, `403 plan_required`.
 - `POST customer.check_custom_domain {id}` ("Check now", 6 a minute per site) → `CustomDomain`. `pending_dns` with
   `dnsProblem` + `message` until the record is right → `verifying` (HTTPS certificate) → `active`. Core also checks
   every 10 minutes. `failed` (no `dnsProblem`, see `message`): certificate failed, or another Press site has the domain.
