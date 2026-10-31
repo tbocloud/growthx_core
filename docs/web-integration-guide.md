@@ -568,6 +568,19 @@ for a trial, pending management). The shape is the website's proposal from PR #4
 - `POST customer.remove_custom_domain {id}` → `{ok: true}`; `404` if none, `503 hosting_unavailable` if Press is down.
 - Once `active`, "Open my app" goes to the custom domain.
 
+### 5.16 "Sign in with GrowthX" on a site (sign-in only)
+
+The button on a site's login page (growthx_theme) goes to `<website>/login?site=<host>`; `host` may be the site's
+`<sub>.tbogrowthx.com` address or its active custom domain.
+
+- `GET auth.site_info?site=` (public, 60 a minute per IP) → `{siteName, siteUrl, loginUrl}`; `404 site_not_found`.
+  Show "Sign in to <siteName>" without "Start a free trial".
+- `auth.google {..., signInOnly: true}` → `404 no_account` for an email with no account (no sign-up token).
+- Signed in: show "Continue to <siteName> as <email>"; on press, `POST auth.site_login {site}` → `{redirectUrl}`.
+  Send the browser there and nowhere else. Never call it on page load.
+- Errors: `403 not_linked` (`message` + `loginUrl`, the site's own login, for staff), `409 site_unavailable`
+  (suspended), `404 site_not_found`.
+
 ## 6. Error codes
 
 | HTTP | `code` | When |
@@ -578,6 +591,9 @@ for a trial, pending management). The shape is the website's proposal from PR #4
 | 400 | `email_code_expired` | Sign-up email code expired, never sent, or 5 wrong tries (§5.4) |
 | 403 | `email_not_verified`, `account_unavailable` | Google sign-in (§5.12) |
 | 409 | `domain_exists`, `domain_taken` | Custom domains (§5.15) |
+| 403 | `not_linked` | "Sign in with GrowthX": not this site's owner; has `loginUrl` (§5.16) |
+| 404 | `site_not_found`, `no_account` | "Sign in with GrowthX" (§5.16) |
+| 409 | `site_unavailable` | "Sign in with GrowthX": the site is suspended (§5.16) |
 | 403 | `plan_required` | Custom domains on a trial (§5.15) |
 | 409 | `no_password`, `invalid_transition` | Account settings (§5.13); admin customer actions (§5.9) |
 | 422 | `wrong_password` | Change password: current password wrong (§5.13) |
