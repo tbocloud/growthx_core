@@ -417,6 +417,8 @@ paths:
         - The email belongs to an account: **200**, logged in (same body as `auth.login`).
         - A new email: **202** with a `signupToken`. Show the sign-up form with the name and email filled in (email
           read-only), and send the token to `auth.signup` as `googleSignupToken` instead of `email` and `password`.
+        - A new email with `signInOnly: true` (signing in to a site, `auth.site_login`): **404 `no_account`**; no sign-up
+          starts.
 
         Flutter will send a Google ID token instead (later). Rate-limited per IP address.
       operationId: googleSignin
@@ -433,6 +435,9 @@ paths:
                 code: { type: string, maxLength: 2048, description: "`code` from Google's redirect to the callback" }
                 codeVerifier: { type: string, maxLength: 128, description: The PKCE verifier, if the website used PKCE }
                 client: { $ref: "#/components/schemas/ClientKind" }
+                signInOnly:
+                  type: boolean
+                  description: "Sign-in-only mode (`/login?site=`): a new email gets `404 no_account` instead of a `202`"
       responses:
         "200":
           description: Logged in
@@ -464,6 +469,11 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "`no_account`: with `signInOnly`, there's no GrowthX account for this Google account"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
         "429": { $ref: "#/components/responses/RateLimited" }
         "503":
@@ -471,6 +481,91 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+
+  /growthx_core.api.v1.auth.site_info:
+    get:
+      tags: [auth]
+      summary: The site a "Sign in with GrowthX" button came from
+      description: |
+        "Sign in with GrowthX" on a customer site's login page goes to `<website>/login?site=<host>`. Call this to show
+        "Sign in to Abc Solar" in sign-in-only mode (no "Start a free trial"). `site` is the host: the site's
+        `<sub>.tbogrowthx.com` address or its custom domain once that's active (a full URL works too).
+        `404 site_not_found`: unknown, archived, failed or not finished setting up. A suspended site is found (sign-in
+        then gets `409 site_unavailable`). 60 a minute per IP address (send `X-GrowthX-Client-IP` from the server).
+      operationId: getSiteInfo
+      x-phase: 2
+      security: []
+      parameters:
+        - name: site
+          in: query
+          required: true
+          schema: { type: string, maxLength: 300, example: abc-solar.tbogrowthx.com }
+      responses:
+        "200":
+          description: The site
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SiteSignInInfo" }
+        "404":
+          description: "`site_not_found`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /growthx_core.api.v1.auth.site_login:
+    post:
+      tags: [auth]
+      summary: A one-time sign-in link to the site, for its owner
+      description: |
+        After the person signs in to GrowthX and presses "Continue to Abc Solar" (never automatically on page load).
+        Returns the same one-time link as "Open my app" (60 seconds, single use), to the site's address in Core's
+        records (its custom domain once active), landing on the site's home page. Send the browser there and nowhere
+        else. Any role can call it; only the site's owner gets a link. No Idempotency-Key: the link works once, so call
+        again for a fresh one. 20 a minute per user.
+
+        - `403 not_linked`: this GrowthX account doesn't own the site. `message` tells staff to use the site's own
+          login, and `loginUrl` is the site's login page.
+        - `409 site_unavailable`: the site is suspended.
+        - `404 site_not_found`: as in `auth.site_info`.
+      operationId: siteLogin
+      x-phase: 2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [site]
+              properties:
+                site: { type: string, maxLength: 300, example: abc-solar.tbogrowthx.com }
+      responses:
+        "200":
+          description: The one-time link
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [redirectUrl]
+                properties:
+                  redirectUrl: { type: string, format: uri }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403":
+          description: "`not_linked`, with `loginUrl`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "`site_not_found`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "`site_unavailable`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
 
   /growthx_core.api.v1.auth.send_signup_code:
     post:
@@ -2722,13 +2817,18 @@ components:
                 payment_verification_failed, payment_unavailable, site_not_ready, not_retryable,
                 slot_taken, expert_busy, not_changeable, not_started,
                 idempotency_conflict, rate_limited, bad_request, method_not_allowed, invalid_tenant_key,
-                invalid_login_token, internal_error. Proposed: duplicate_lead, invalid_otp.
+                invalid_login_token, internal_error, no_account, site_not_found, not_linked, site_unavailable.
+                Proposed: duplicate_lead, invalid_otp.
               example: email_taken
             message: { type: string, example: An account with this email already exists. }
             fields:
               type: object
               additionalProperties: { type: string }
               example: { email: An account with this email already exists. }
+            loginUrl:
+              type: string
+              format: uri
+              description: "`not_linked` only: the site's own login page"
             reference: { type: string, description: Support reference (5xx responses only) }
 
     PageMeta:
@@ -2895,6 +2995,13 @@ components:
         startedAt: { type: string, format: date-time, nullable: true }
         finishedAt: { type: string, format: date-time, nullable: true }
 
+    SiteSignInInfo:
+      type: object
+      required: [siteName, siteUrl, loginUrl]
+      properties:
+        siteName: { type: string, example: Abc Solar }
+        siteUrl: { type: string, format: uri, example: "https://abc-solar.tbogrowthx.com" }
+        loginUrl: { type: string, format: uri, description: "The site's own login page, for staff", example: "https://abc-solar.tbogrowthx.com/login" }
     CustomDomain:
       type: object
       description: A customer's own domain pointed at their site.

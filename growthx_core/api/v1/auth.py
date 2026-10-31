@@ -1,4 +1,6 @@
+import re
 from datetime import timedelta
+from urllib.parse import urlsplit
 
 import frappe
 from frappe.core.doctype.user.user import test_password_strength
@@ -10,6 +12,7 @@ from growthx_core.api.v1 import _serializers as s
 from growthx_core.api.v1._core import (
 	ApiError,
 	RateLimit,
+	audit,
 	body,
 	current_user,
 	endpoint,
@@ -18,10 +21,12 @@ from growthx_core.api.v1._core import (
 	get_str,
 	iso,
 	ok,
+	query,
 	validation_error,
 	web_url,
 )
-from growthx_core.provisioning import countries, runner
+from growthx_core.provisioning import countries, custom_domains, runner
+from growthx_core.provisioning import site_login as site_login_tokens
 
 GROWTHX_ROLES = {"GrowthX Customer", "GrowthX Partner", "GrowthX Admin"}
 MIN_PASSWORD_LENGTH = 8
@@ -87,10 +92,11 @@ def login():
 @endpoint(methods=("POST",), auth=False, rate_limit=RateLimit(20, 15 * 60))
 def google():
 	"""Sign in with Google: an existing account is logged in (200); a new email gets a sign-up
-	token for `auth.signup` (202)."""
+	token for `auth.signup` (202), or `404 no_account` with `signInOnly` (signing in to a site)."""
 	data = body()
 	code = get_str(data, "code", required=True, max_length=2048, label="Code")
 	code_verifier = get_str(data, "codeVerifier", max_length=128, label="Code verifier")
+	sign_in_only = data.get("signInOnly") is True
 	identity = google_signin.verified_identity(code, code_verifier)
 
 	user = _growthx_user(identity["email"])
@@ -100,6 +106,8 @@ def google():
 	if _email_taken(identity["email"]):
 		# A disabled account, or a staff account without a GrowthX role.
 		raise ApiError(403, "account_unavailable", "This account can't sign in here.")
+	if sign_in_only:
+		raise ApiError(404, "no_account", "There's no GrowthX account for this Google account.")
 	return 202, {
 		"signupRequired": True,
 		"signupToken": google_signin.issue_signup_token(identity),
@@ -450,3 +458,64 @@ def logout_others():
 	"""Log out every other device: revoke all the user's tokens except the one making this call."""
 	revoked = tokens.revoke_all(current_user(), keep=frappe.local.gx_token)
 	return {"ok": True, "revoked": revoked}
+
+
+# ---------------------------------------------------------------- "Sign in with GrowthX" on a site
+# The button on a site's login page goes to <website>/login?site=<host>. The website shows the
+# site's name (site_info), the person signs in to GrowthX, presses "Continue", and site_login
+# returns the same one-time link as "Open my app". Core only ever links to the site address in
+# its own records, never to one from the request.
+
+SIGN_IN_STATUSES = ("ready", "suspended")
+HOST = re.compile(r"^[a-z0-9.-]{1,253}$")
+
+
+def _site_by_host(host: str | None):
+	"""The tenant whose address (or active custom domain) is `host`, or 404 site_not_found."""
+	host = (host or "").strip().lower().rstrip(".")
+	host = urlsplit(host if "//" in host else f"//{host}").hostname or ""
+	missing = ApiError(404, "site_not_found", "We couldn't find this site.")
+	if not HOST.match(host):
+		raise missing
+	rows = frappe.get_all(
+		"GX Tenant",
+		filters={"status": ("in", SIGN_IN_STATUSES)},
+		or_filters={"site_url": ("like", f"%//{host}%"), "custom_domain": host},
+		fields=["name", "site_url", "custom_domain", "custom_domain_status"],
+	)
+	for row in rows:
+		if urlsplit(row.site_url or "").hostname == host or (
+			row.custom_domain == host and row.custom_domain_status == "active"
+		):
+			return frappe.get_doc("GX Tenant", row.name)
+	raise missing
+
+
+def _site_info(tenant) -> dict:
+	url = custom_domains.public_url(tenant)
+	name = tenant.display_name or frappe.db.get_value("GX Account", tenant.account, "account_name")
+	return {"siteName": name or urlsplit(url).hostname, "siteUrl": url, "loginUrl": f"{url}/login"}
+
+
+@endpoint(methods=("GET",), auth=False, rate_limit=RateLimit(60, 60))
+def site_info():
+	return _site_info(_site_by_host(get_str(query(), "site", required=True, max_length=300)))
+
+
+@endpoint(methods=("POST",), rate_limit=RateLimit(20, 60, by_user=True))
+def site_login():
+	tenant = _site_by_host(get_str(body(), "site", required=True, max_length=300))
+	info = _site_info(tenant)
+	if frappe.db.get_value("GX Account", tenant.account, "user") != current_user():
+		raise ApiError(
+			403,
+			"not_linked",
+			f"Your GrowthX account isn't linked to {info['siteName']}. If you work there, sign in with "
+			"the site's own login.",
+			extra={"loginUrl": info["loginUrl"]},
+		)
+	if tenant.status != "ready":
+		raise ApiError(409, "site_unavailable", f"{info['siteName']} isn't available right now.")
+	token = site_login_tokens.issue(tenant.name, current_user())
+	audit("site_login", "GX Tenant", tenant.name)  # never log the token
+	return {"redirectUrl": site_login_tokens.login_url(info["siteUrl"], token)}

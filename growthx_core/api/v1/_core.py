@@ -55,13 +55,16 @@ DEFAULT_MESSAGES = {
 class ApiError(Exception):
 	"""Raise from an endpoint to return a contract error response."""
 
-	def __init__(self, status: int, code: str, message: str, fields: dict | None = None, headers=None):
+	def __init__(
+		self, status: int, code: str, message: str, fields: dict | None = None, headers=None, extra=None
+	):
 		super().__init__(message)
 		self.status = status
 		self.code = code
 		self.message = message
 		self.fields = fields
 		self.headers = headers or {}
+		self.extra = extra or {}  # more keys for the error object, e.g. {"loginUrl": ...}
 
 
 def validation_error(fields: dict, message: str = "Please correct the highlighted fields.") -> ApiError:
@@ -99,8 +102,8 @@ def json_response(data, status: int = 200, headers: dict | None = None) -> Respo
 	return response
 
 
-def error_response(status, code, message, fields=None, reference=None, headers=None) -> Response:
-	error = {"code": code, "message": message}
+def error_response(status, code, message, fields=None, reference=None, headers=None, extra=None) -> Response:
+	error = {**(extra or {}), "code": code, "message": message}
 	if fields:
 		error["fields"] = fields
 	if reference:
@@ -151,7 +154,7 @@ def endpoint(
 
 			except ApiError as e:
 				frappe.db.rollback()
-				return error_response(e.status, e.code, e.message, e.fields, headers=e.headers)
+				return error_response(e.status, e.code, e.message, e.fields, headers=e.headers, extra=e.extra)
 			except frappe.DoesNotExistError:
 				frappe.db.rollback()
 				return error_response(404, "not_found", "Not found.")

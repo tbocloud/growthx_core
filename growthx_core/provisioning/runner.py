@@ -331,6 +331,8 @@ def tenant_settings(tenant, reset_owner_password: bool = False) -> dict:
 
 	Generates a new tenant key every time (the old one stops working), so the caller must pass
 	these settings to the site straight away."""
+	from growthx_core.api.v1._core import web_url
+
 	account = frappe.db.get_value("GX Account", tenant.account, ["account_name", "user"], as_dict=True)
 	owner = frappe.db.get_value("User", account.user, ["email", "full_name"], as_dict=True)
 	country = countries.for_tenant(tenant)
@@ -345,6 +347,7 @@ def tenant_settings(tenant, reset_owner_password: bool = False) -> dict:
 		"owner_name": owner.full_name or account.account_name,
 		"reset_owner_password": reset_owner_password,
 		"core_url": site_login.core_url(),
+		"web_url": web_url(),  # "Sign in with GrowthX" on the site's login page goes there
 		"tenant_key": site_login.new_tenant_key(tenant),
 	}
 
