@@ -2312,6 +2312,53 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
 
+  /growthx_core.api.v1.admin.record_payment:
+    post:
+      tags: [admin]
+      summary: Record a payment made directly (bank transfer) and make the customer active
+      description: |
+        For payments made to us directly while there's no payment gateway. Status `trial` or `suspended` only.
+
+        - The customer's subscription for the plan's product moves to `plan` (an active or a retired plan) and becomes
+          `active`. The trial end is cleared, and `currentPeriodEnd` is one billing period after `paidOn`.
+        - The customer becomes `active`. A suspended customer's sites come back, as with `reactivate`.
+        - The payment (amount, date, reference) is in `history` and the audit log. No invoice is created yet.
+
+        Accepts `Idempotency-Key`: a new key per payment.
+      operationId: adminRecordPayment
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, plan, amount, reference, paidOn]
+              properties:
+                id: { type: string, description: Customer id }
+                plan: { type: string, description: "Plan id (`Plan.id`) for one of the customer's products" }
+                amount: { type: integer, minimum: 1, description: Amount paid in paise, example: 15000000 }
+                reference: { type: string, maxLength: 140, description: "Bank transfer reference (UTR) or receipt number" }
+                paidOn: { type: string, format: date, description: "Date paid, YYYY-MM-DD, not in the future" }
+      responses:
+        "200":
+          description: Recorded
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminCustomerDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`invalid_transition`: the customer is already active (or churned)"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
   /growthx_core.api.v1.admin.audit_log:
     get:
       tags: [admin]

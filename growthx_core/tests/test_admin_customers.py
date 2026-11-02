@@ -1,4 +1,5 @@
-"""Admin portal customers: admin.customer, admin.update_customer_status, admin.audit_log."""
+"""Admin portal customers: admin.customer, admin.update_customer_status, admin.record_payment,
+admin.audit_log."""
 
 import json
 from datetime import timedelta
@@ -14,6 +15,8 @@ from growthx_core.provisioning import runner
 
 PRODUCT = "test-admin-customers"
 PLAN = "test-admin-customers-month"
+YEAR_PLAN = "test-admin-customers-year"
+OTHER_PRODUCT = "test-admin-customers-other"
 
 
 def _call(fn, data=None):
@@ -44,6 +47,17 @@ class TestAdminCustomers(IntegrationTestCase):
 				"billing_interval": "month",
 				"price": 1000,
 				"is_active": 1,
+			}
+		).insert()
+		frappe.get_doc(
+			{
+				"doctype": "GX Plan",
+				"plan_id": YEAR_PLAN,
+				"product": PRODUCT,
+				"plan_name": "Test Growth Yearly",
+				"billing_interval": "year",
+				"price": 10000,
+				"is_active": 0,  # retired from the catalogue; can still be recorded
 			}
 		).insert()
 		user, _ = accounts.create_customer_account(
@@ -167,6 +181,75 @@ class TestAdminCustomers(IntegrationTestCase):
 		status, body = self._action("suspend", reason="Test")
 		self.assertEqual((status, body["status"], body["sites"][0]["status"]), (200, "suspended", "ready"))
 		self.assertIn(f"sites not changed, Press error: {self.site.name}", body["history"][-1]["details"])
+
+	def _pay(self, **extra):
+		data = {"id": self.account, "plan": YEAR_PLAN, "amount": 1000000, "reference": "UTR123", **extra}
+		return _call(admin.record_payment, {"paidOn": "2026-11-01", **data})
+
+	def test_record_payment_makes_the_customer_active_on_that_plan(self):
+		status, body = self._pay()
+		self.assertEqual((status, body["status"], body["plan"]), (200, "active", "Test Growth Yearly"), body)
+		self.assertIsNone(body["trialEndsAt"])
+		self.assertEqual(body["subscriptions"][-1]["status"], "active")
+		sub = frappe.get_doc("GX Subscription", self.sub.name)
+		self.assertEqual((sub.plan, sub.billing_interval, sub.price), (YEAR_PLAN, "year", 10000))
+		self.assertEqual(
+			(get_datetime(sub.current_period_end).date().isoformat(), sub.gateway, sub.last_payment_id),
+			("2027-11-01", "manual", "UTR123"),
+		)
+		self.assertEqual(
+			body["history"][-1]["details"],
+			"trial → active: ₹ 10,000.00 for Test Growth Yearly paid on 2026-11-01, reference UTR123",
+		)
+		self.assertEqual(body["history"][-1]["action"], "record_payment")
+		status, body = self._pay(reference="UTR124")
+		self.assertEqual((status, body["error"]["code"]), (409, "invalid_transition"))
+
+	def test_record_payment_brings_a_suspended_customers_sites_back(self):
+		self._action("suspend", reason="Trial over")
+		status, body = self._pay(plan=PLAN, amount=100000)
+		self.assertEqual((status, body["status"], body["sites"][0]["status"]), (200, "active", "ready"))
+		self.press.resume_site.assert_called_once_with("noor-admin-x.example.com")
+		self.assertEqual(
+			get_datetime(frappe.db.get_value("GX Subscription", self.sub.name, "current_period_end")).date(),
+			get_datetime("2026-12-01").date(),
+		)
+
+	def test_record_payment_validation(self):
+		for extra, field in (
+			({"amount": 0}, "amount"),
+			({"amount": 99.5}, "amount"),
+			({"amount": True}, "amount"),
+			({"paidOn": "01-11-2026"}, "paidOn"),
+			({"paidOn": "2026-11-1"}, "paidOn"),
+			({"paidOn": "2999-01-01"}, "paidOn"),
+			({"reference": ""}, "reference"),
+			({"plan": "nope"}, "plan"),
+		):
+			status, body = self._pay(**extra)
+			self.assertEqual((status, list(body["error"]["fields"])), (422, [field]), extra)
+		frappe.get_doc(
+			{
+				"doctype": "GX Product",
+				"slug": OTHER_PRODUCT,
+				"product_name": "Other",
+				"availability": "available",
+			}
+		).insert()
+		frappe.get_doc(
+			{
+				"doctype": "GX Plan",
+				"plan_id": f"{OTHER_PRODUCT}-month",
+				"product": OTHER_PRODUCT,
+				"plan_name": "Other",
+				"billing_interval": "month",
+				"price": 500,
+			}
+		).insert()
+		status, body = self._pay(plan=f"{OTHER_PRODUCT}-month")
+		self.assertEqual((status, list(body["error"]["fields"])), (422, ["plan"]))
+		self.assertEqual(self._pay(id="nope")[0], 404)
+		self.assertEqual(frappe.db.get_value("GX Account", self.account, "status"), "trial")
 
 	def test_audit_log(self):
 		self._action("suspend", reason="Audit me")

@@ -474,6 +474,11 @@ Idempotency-Key: …
 - `POST admin.update_customer_status {id, action, days?, reason?}`: `extend_trial` (`days` 1–30, trial only),
   `suspend` (`reason` required; their sites go offline), `reactivate` (back to trial if it hasn't ended, else active;
   sites come back). Wrong state → `409 invalid_transition`. Returns the detail. A new Idempotency-Key per action.
+- `POST admin.record_payment {id, plan, amount, reference, paidOn}`: a payment made by bank transfer while there's no
+  payment gateway. `amount` is in paise, `paidOn` is `YYYY-MM-DD`. The customer's subscription moves to `plan` and
+  becomes active for one billing period from `paidOn`; the customer becomes active (a suspended customer's sites come
+  back). Trial or suspended only, else `409 invalid_transition`. The payment shows in `history` as `record_payment`.
+  Returns the detail. A new Idempotency-Key per payment.
 
 **Audit log:** `GET admin.audit_log?entityType=&entityId=&actor=&from=&to=&page=&pageSize=` → newest first:
 `{id, at, actor, action, entityType, entityId, entityLabel, details}`.
