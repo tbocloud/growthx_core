@@ -2,7 +2,17 @@ from datetime import date, timedelta
 
 import frappe
 from frappe.query_builder.functions import Count
-from frappe.utils import add_months, add_years, fmt_money, get_datetime, now_datetime, nowdate
+from frappe.utils import (
+	add_months,
+	add_years,
+	cint,
+	flt,
+	fmt_money,
+	get_datetime,
+	getdate,
+	now_datetime,
+	nowdate,
+)
 
 from growthx_core.api.v1 import _serializers as s
 from growthx_core.api.v1 import appointments as appts
@@ -257,9 +267,10 @@ def _extend_trial(account, days: int) -> str:
 @endpoint(methods=("POST",), roles=("admin",), idempotent=True)
 def record_payment():
 	"""A payment made to us directly (bank transfer) while there's no payment gateway: the customer's
-	subscription for the plan's product becomes active on that plan, from paidOn for one billing
-	period, and the account becomes active (a suspended customer's sites come back). Trial or
-	suspended customers only. Stored in the audit log; no invoice yet (billing isn't built)."""
+	subscription for the plan's product becomes active on that plan for one billing period, and the
+	account becomes active (a suspended customer's sites come back). The period runs from paidOn, or
+	for a renewal from the current period end if that's later. A reference already recorded on the
+	subscription is refused. Stored in the audit log; no invoice yet (billing isn't built)."""
 	data = body()
 	account_id = get_str(data, "id", required=True)
 	plan_id = get_str(data, "plan", required=True)
@@ -275,7 +286,7 @@ def record_payment():
 	plan = frappe.get_doc("GX Plan", plan_id)
 
 	account = frappe.get_doc("GX Account", account_id, for_update=True)
-	if account.status not in ("trial", "suspended"):
+	if account.status not in ("trial", "suspended", "active"):
 		raise ApiError(
 			409, "invalid_transition", f"A customer who is {account.status} can't have a payment recorded."
 		)
@@ -290,6 +301,12 @@ def record_payment():
 		raise validation_error({"plan": "This customer has no subscription for this plan's product."})
 
 	sub = frappe.get_doc("GX Subscription", subs[0], for_update=True)
+	if sub.last_payment_id == reference:
+		raise ApiError(409, "duplicate_payment", "A payment with this reference is already recorded.")
+	start = paid_on
+	if sub.status == "active" and sub.current_period_end:
+		start = max(getdate(sub.current_period_end), paid_on)
+	period_end = add_years(start, 1) if plan.billing_interval == "year" else add_months(start, 1)
 	sub.update(
 		{
 			"plan": plan.name,
@@ -299,9 +316,7 @@ def record_payment():
 			"gst_rate": plan.gst_rate,
 			"status": "active",
 			"trial_ends_at": None,
-			"current_period_end": (
-				add_years(paid_on, 1) if plan.billing_interval == "year" else add_months(paid_on, 1)
-			),
+			"current_period_end": period_end,
 			"cancel_at_period_end": 0,
 			"gateway": "manual",
 			"gateway_subscription_id": None,
@@ -309,15 +324,27 @@ def record_payment():
 		}
 	)
 	sub.save(ignore_permissions=True)
-	details = _set_customer_status(account, "active", "suspended", "ready", "resume_site")
-	paid = fmt_money(amount / 100, currency="INR")
+	if account.status == "active":
+		details = "renewal"
+	else:
+		details = _set_customer_status(account, "active", "suspended", "ready", "resume_site")
 	audit(
 		"customer.record_payment",
 		"GX Account",
 		account.name,
-		f"{details}: {paid} for {plan.plan_name} paid on {paid_on.isoformat()}, reference {reference}",
+		f"{details}: {fmt_money(amount / 100, currency='INR')} for {plan.plan_name}"
+		f" (plan price {_plan_price(plan)}) paid on {paid_on.isoformat()}, reference {reference},"
+		f" active until {period_end.isoformat()}",
 	)
 	return _customer_detail(account.name)
+
+
+def _plan_price(plan) -> str:
+	"""e.g. "₹ 1,499.00 + 18% GST", so a mistyped amount stands out in the audit line."""
+	text = fmt_money(plan.price, currency="INR")
+	if cint(plan.gst_included):
+		return f"{text} incl. GST"
+	return f"{text} + {flt(plan.gst_rate):g}% GST" if flt(plan.gst_rate) else text
 
 
 def _paid_on(value) -> date:

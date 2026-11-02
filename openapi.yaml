@@ -2317,12 +2317,16 @@ paths:
       tags: [admin]
       summary: Record a payment made directly (bank transfer) and make the customer active
       description: |
-        For payments made to us directly while there's no payment gateway. Status `trial` or `suspended` only.
+        For payments made to us directly while there's no payment gateway: a first payment (status `trial` or
+        `suspended`) or a renewal (status `active`).
 
         - The customer's subscription for the plan's product moves to `plan` (an active or a retired plan) and becomes
-          `active`. The trial end is cleared, and `currentPeriodEnd` is one billing period after `paidOn`.
+          `active`. The trial end is cleared.
+        - `currentPeriodEnd` moves one billing period on from `paidOn`, or, for a renewal paid before the current
+          period ends, from the current period end.
         - The customer becomes `active`. A suspended customer's sites come back, as with `reactivate`.
-        - The payment (amount, date, reference) is in `history` and the audit log. No invoice is created yet.
+        - The payment (amount, the plan's price, date, reference, new period end) is in `history` and the audit log.
+          No invoice is created, and the customer isn't emailed.
 
         Accepts `Idempotency-Key`: a new key per payment.
       operationId: adminRecordPayment
@@ -2353,7 +2357,7 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
-          description: "`invalid_transition`: the customer is already active (or churned)"
+          description: "`invalid_transition`: the customer is churned. `duplicate_payment`: this reference is already recorded on the subscription."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
