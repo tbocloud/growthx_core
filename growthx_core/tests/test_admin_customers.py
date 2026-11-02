@@ -199,11 +199,34 @@ class TestAdminCustomers(IntegrationTestCase):
 		)
 		self.assertEqual(
 			body["history"][-1]["details"],
-			"trial → active: ₹ 10,000.00 for Test Growth Yearly paid on 2026-11-01, reference UTR123",
+			"trial → active: ₹ 10,000.00 for Test Growth Yearly (plan price ₹ 10,000.00 + 18% GST) paid on 2026-11-01,"
+			" reference UTR123, active until 2027-11-01",
 		)
 		self.assertEqual(body["history"][-1]["action"], "record_payment")
-		status, body = self._pay(reference="UTR124")
-		self.assertEqual((status, body["error"]["code"]), (409, "invalid_transition"))
+		status, body = self._pay()
+		self.assertEqual((status, body["error"]["code"]), (409, "duplicate_payment"))
+		frappe.db.set_value("GX Account", self.account, "status", "churned")
+		self.assertEqual(self._pay(reference="UTR124")[1]["error"]["code"], "invalid_transition")
+
+	def test_record_payment_renews_an_active_customer(self):
+		frappe.db.set_value("GX Plan", PLAN, "gst_rate", 18)
+		self._pay(plan=PLAN, amount=118000, paidOn="2026-10-01")
+		# paid early: the new month starts at the current end
+		status, body = self._pay(plan=PLAN, amount=118000, reference="UTR124", paidOn="2026-10-25")
+		self.assertEqual((status, body["status"]), (200, "active"), body)
+		self.assertEqual(
+			body["history"][-1]["details"],
+			"renewal: ₹ 1,180.00 for Test Growth (plan price ₹ 1,000.00 + 18% GST) paid on 2026-10-25,"
+			" reference UTR124, active until 2026-12-01",
+		)
+		# paid late: the new month starts on the day paid
+		frappe.db.set_value("GX Subscription", self.sub.name, "current_period_end", "2026-10-15")
+		self._pay(plan=PLAN, amount=118000, reference="UTR125", paidOn="2026-10-20")
+		self.assertEqual(
+			get_datetime(frappe.db.get_value("GX Subscription", self.sub.name, "current_period_end")).date(),
+			get_datetime("2026-11-20").date(),
+		)
+		self.press.resume_site.assert_not_called()
 
 	def test_record_payment_brings_a_suspended_customers_sites_back(self):
 		self._action("suspend", reason="Trial over")
