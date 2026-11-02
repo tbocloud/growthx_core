@@ -1,8 +1,8 @@
-from datetime import timedelta
+from datetime import date, timedelta
 
 import frappe
 from frappe.query_builder.functions import Count
-from frappe.utils import get_datetime, now_datetime
+from frappe.utils import add_months, add_years, fmt_money, get_datetime, now_datetime, nowdate
 
 from growthx_core.api.v1 import _serializers as s
 from growthx_core.api.v1 import appointments as appts
@@ -252,6 +252,84 @@ def _extend_trial(account, days: int) -> str:
 	new = max(now_datetime(), get_datetime(old) if old else now_datetime()) + timedelta(days=days)
 	frappe.db.set_value("GX Subscription", sub[0].name, "trial_ends_at", new)
 	return f"+{days} days: trial ends {iso(new)} (was {iso(old) if old else 'not set'})"
+
+
+@endpoint(methods=("POST",), roles=("admin",), idempotent=True)
+def record_payment():
+	"""A payment made to us directly (bank transfer) while there's no payment gateway: the customer's
+	subscription for the plan's product becomes active on that plan, from paidOn for one billing
+	period, and the account becomes active (a suspended customer's sites come back). Trial or
+	suspended customers only. Stored in the audit log; no invoice yet (billing isn't built)."""
+	data = body()
+	account_id = get_str(data, "id", required=True)
+	plan_id = get_str(data, "plan", required=True)
+	reference = get_str(data, "reference", required=True, max_length=140, label="Reference")
+	amount = data.get("amount")
+	if isinstance(amount, bool) or not isinstance(amount, int) or amount <= 0:
+		raise validation_error({"amount": "Enter the amount paid in paise, a whole number above 0."})
+	paid_on = _paid_on(data.get("paidOn"))
+	if not frappe.db.exists("GX Account", account_id):
+		raise not_found()
+	if not frappe.db.exists("GX Plan", plan_id):
+		raise validation_error({"plan": "Unknown plan."})
+	plan = frappe.get_doc("GX Plan", plan_id)
+
+	account = frappe.get_doc("GX Account", account_id, for_update=True)
+	if account.status not in ("trial", "suspended"):
+		raise ApiError(
+			409, "invalid_transition", f"A customer who is {account.status} can't have a payment recorded."
+		)
+	subs = frappe.get_all(
+		"GX Subscription",
+		{"account": account.name, "product": plan.product},
+		pluck="name",
+		order_by="creation desc",
+		limit=1,
+	)
+	if not subs:
+		raise validation_error({"plan": "This customer has no subscription for this plan's product."})
+
+	sub = frappe.get_doc("GX Subscription", subs[0], for_update=True)
+	sub.update(
+		{
+			"plan": plan.name,
+			"billing_interval": plan.billing_interval,
+			"price": plan.price,
+			"gst_included": plan.gst_included,
+			"gst_rate": plan.gst_rate,
+			"status": "active",
+			"trial_ends_at": None,
+			"current_period_end": (
+				add_years(paid_on, 1) if plan.billing_interval == "year" else add_months(paid_on, 1)
+			),
+			"cancel_at_period_end": 0,
+			"gateway": "manual",
+			"gateway_subscription_id": None,
+			"last_payment_id": reference,
+		}
+	)
+	sub.save(ignore_permissions=True)
+	details = _set_customer_status(account, "active", "suspended", "ready", "resume_site")
+	paid = fmt_money(amount / 100, currency="INR")
+	audit(
+		"customer.record_payment",
+		"GX Account",
+		account.name,
+		f"{details}: {paid} for {plan.plan_name} paid on {paid_on.isoformat()}, reference {reference}",
+	)
+	return _customer_detail(account.name)
+
+
+def _paid_on(value) -> date:
+	try:
+		paid_on = date.fromisoformat(value) if isinstance(value, str) else None
+	except ValueError:
+		paid_on = None
+	if not paid_on or len(value) != 10:
+		raise validation_error({"paidOn": "Enter the date paid as YYYY-MM-DD."})
+	if paid_on.isoformat() > nowdate():
+		raise validation_error({"paidOn": "The date paid can't be in the future."})
+	return paid_on
 
 
 def _set_customer_status(account, new_status: str, site_from: str, site_to: str, press_action: str) -> str:
