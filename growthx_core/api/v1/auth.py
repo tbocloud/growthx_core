@@ -277,7 +277,7 @@ def _signup_plan(data):
 	"""The plan to start a trial on, or None if the customer didn't pick a product."""
 	product_slug = get_str(data, "productSlug", max_length=40)
 	plan_id = get_str(data, "planId", max_length=140)
-	interval = get_choice(data, "billingInterval", ("month", "year"))
+	interval = get_choice(data, "billingInterval", ("month", "year", "one_time"))
 	if not product_slug and not plan_id:
 		return None
 

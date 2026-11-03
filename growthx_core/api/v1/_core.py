@@ -400,6 +400,9 @@ def net_of_gst(amount, gst_included, gst_rate) -> float:
 
 
 def monthly(amount, interval) -> float:
+	"""The monthly recurring share of a price. A one-time (lifetime) payment recurs never: 0."""
+	if interval == "one_time":
+		return 0.0
 	return flt(amount) / 12 if interval == "year" else flt(amount)
 
 

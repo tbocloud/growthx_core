@@ -67,3 +67,16 @@ class TestSeed(IntegrationTestCase):
 			seed.paid_subscription("gx-seed-paid@example.com")
 		self.assertEqual(frappe.db.get_value("GX Subscription", sub.name, "status"), "active")
 		self.assertEqual(frappe.db.get_value("GX Account", account, "status"), "active")
+
+	def test_lifetime_plans_retire_the_others_and_stay_retired(self):
+		with patch.dict(frappe.local.conf, REAL_PRESS):
+			seed.run(release_group="bench-0017")
+		seed.lifetime_plans(150000, 1, "solar")
+		active = frappe.get_all("GX Plan", {"product": "solar", "is_active": 1}, ["name", "billing_interval"])
+		self.assertEqual([(p.name, p.billing_interval) for p in active], [("solar-lifetime", "one_time")])
+		self.assertGreater(frappe.db.count("GX Plan", {"product": "solar", "is_active": 0}), 0)
+		with patch.dict(frappe.local.conf, REAL_PRESS):
+			seed.run(release_group="bench-0017")  # a re-run doesn't bring the retired plans back
+		self.assertEqual(frappe.db.count("GX Plan", {"product": "solar", "is_active": 1}), 1)
+		with self.assertRaises(frappe.ValidationError):
+			seed.lifetime_plans(150000, 1, "nope")

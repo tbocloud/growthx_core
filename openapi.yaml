@@ -2323,7 +2323,9 @@ paths:
         - The customer's subscription for the plan's product moves to `plan` (an active or a retired plan) and becomes
           `active`. The trial end is cleared.
         - `currentPeriodEnd` moves one billing period on from `paidOn`, or, for a renewal paid before the current
-          period ends, from the current period end.
+          period ends, from the current period end. A `one_time` (lifetime) plan sets it to `null`: never expires.
+          Moving from a monthly or yearly plan to lifetime is allowed; a customer already on lifetime gets `409
+          invalid_transition`.
         - The customer becomes `active`. A suspended customer's sites come back, as with `reactivate`.
         - The payment (amount, the plan's price, date, reference, new period end) is in `history` and the audit log.
           No invoice is created, and the customer isn't emailed.
@@ -2908,7 +2910,11 @@ components:
 
     BillingInterval:
       type: string
-      enum: [month, year]
+      enum: [month, year, one_time]
+      description: |
+        `one_time`: paid once, never expires (the launch "Lifetime" plan). Its subscription has `currentPeriodEnd:
+        null`, never renews and counts 0 towards MRR. It's paid by bank transfer and recorded with
+        `admin.record_payment`; `billing.create_checkout` doesn't take it (online payment is month/year only).
 
     ClientKind:
       type: string
@@ -3112,7 +3118,11 @@ components:
         price: { $ref: "#/components/schemas/Price" }
         interval: { $ref: "#/components/schemas/BillingInterval" }
         trialEndsAt: { type: string, format: date-time, nullable: true }
-        currentPeriodEnd: { type: string, format: date-time, nullable: true }
+        currentPeriodEnd:
+          type: string
+          format: date-time
+          nullable: true
+          description: Null during a trial and for a `one_time` (lifetime) plan, which never expires.
         cancelAtPeriodEnd: { type: boolean, default: false }
         siteId: { type: string, nullable: true }
 
@@ -3446,7 +3456,7 @@ components:
       type: object
       required: [mrr, activeCustomers, trialCustomers, suspendedCustomers, activePartners]
       properties:
-        mrr: { $ref: "#/components/schemas/Money", description: Excludes GST }
+        mrr: { $ref: "#/components/schemas/Money", description: "Excludes GST. One-time (lifetime) payments count 0." }
         activeCustomers: { type: integer }
         trialCustomers: { type: integer }
         suspendedCustomers: { type: integer }
