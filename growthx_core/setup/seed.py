@@ -169,7 +169,7 @@ def _plans():
 					price=price,
 					gst_included=0,
 					gst_rate=18,
-					trial_days=14,
+					trial_days=7,
 					description=description,
 					features="\n".join(features),
 					highlighted=highlighted,
