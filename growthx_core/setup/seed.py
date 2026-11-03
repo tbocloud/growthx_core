@@ -17,6 +17,7 @@ business decisions D6 (pricing/GST), D7 (trial) and D8 (commission) are made.
 import secrets
 
 import frappe
+from frappe.utils import cint
 
 from growthx_core import accounts
 from growthx_core.provisioning import runner
@@ -135,11 +136,50 @@ def paid_subscription(email: str):
 	print(f"{email}: {len(subs)} subscription(s) set to active, account active.")
 
 
+def lifetime_plans(price: float, gst_included: int, products: str = "solar"):
+	"""The launch offer: one plan per product, paid once (bank transfer, admin.record_payment), never
+	expires. The monthly and yearly plans of those products are retired (unticked, not deleted:
+	subscriptions come back later). Safe to re-run, e.g. with a new price.
+
+	    bench --site <core site> execute growthx_core.setup.seed.lifetime_plans \\
+	        --kwargs "{'price': 150000, 'gst_included': 1, 'products': 'solar'}"
+	"""
+	for product in [p.strip() for p in products.split(",") if p.strip()]:
+		if not frappe.db.exists("GX Product", product):
+			frappe.throw(f"Unknown product {product}")
+		plan_id = f"{product}-lifetime"
+		values = dict(
+			plan_id=plan_id,
+			product=product,
+			plan_name="Lifetime",
+			billing_interval="one_time",
+			price=price,
+			gst_included=cint(gst_included),
+			gst_rate=18,
+			trial_days=7,
+			description="Pay once. Your app never expires: no renewals, no further charges.",
+			highlighted=1,
+			sort_order=0,
+		)
+		_upsert("GX Plan", plan_id, values)
+		frappe.db.set_value("GX Plan", plan_id, "is_active", 1)
+		retired = frappe.get_all(
+			"GX Plan",
+			{"product": product, "billing_interval": ("!=", "one_time"), "is_active": 1},
+			pluck="name",
+		)
+		for name in retired:
+			frappe.db.set_value("GX Plan", name, "is_active", 0)
+		print(f"{product}: {plan_id} active; retired {len(retired)} plan(s): {', '.join(retired) or '-'}")
+	frappe.db.commit()
+
+
 def _upsert(doctype, name, values):
 	if frappe.db.exists(doctype, name):
 		doc = frappe.get_doc(doctype, name)
-		# Apps and the release group are managed by admins after the first seed; never overwrite their edits.
-		doc.update({k: v for k, v in values.items() if k not in ("apps", "press_release_group")})
+		# Apps, the release group and whether a plan is offered are managed by admins after the first
+		# seed; never overwrite their edits (a re-run must not bring retired plans back).
+		doc.update({k: v for k, v in values.items() if k not in ("apps", "press_release_group", "is_active")})
 		doc.save(ignore_permissions=True)
 	else:
 		frappe.get_doc({"doctype": doctype, **values}).insert(ignore_permissions=True)

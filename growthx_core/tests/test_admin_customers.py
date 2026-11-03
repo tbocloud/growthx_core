@@ -16,6 +16,7 @@ from growthx_core.provisioning import runner
 PRODUCT = "test-admin-customers"
 PLAN = "test-admin-customers-month"
 YEAR_PLAN = "test-admin-customers-year"
+LIFETIME_PLAN = "test-admin-customers-lifetime"
 OTHER_PRODUCT = "test-admin-customers-other"
 
 
@@ -227,6 +228,32 @@ class TestAdminCustomers(IntegrationTestCase):
 			get_datetime("2026-11-20").date(),
 		)
 		self.press.resume_site.assert_not_called()
+
+	def test_record_payment_lifetime_never_expires(self):
+		frappe.get_doc(
+			{
+				"doctype": "GX Plan",
+				"plan_id": LIFETIME_PLAN,
+				"product": PRODUCT,
+				"plan_name": "Lifetime",
+				"billing_interval": "one_time",
+				"price": 150000,
+				"gst_included": 1,
+				"is_active": 1,
+			}
+		).insert()
+		self._pay(plan=PLAN, amount=118000, paidOn="2026-10-01")  # monthly first, then lifetime
+		status, body = self._pay(plan=LIFETIME_PLAN, amount=15000000, reference="UTR200")
+		self.assertEqual((status, body["status"], body["plan"]), (200, "active", "Lifetime"), body)
+		self.assertIsNone(body["subscriptions"][-1]["currentPeriodEnd"])
+		self.assertEqual(body["mrr"]["amount"], 0)
+		self.assertEqual(
+			body["history"][-1]["details"],
+			"renewal: ₹ 1,50,000.00 for Lifetime (plan price ₹ 1,50,000.00 incl. GST) paid on 2026-11-01,"
+			" reference UTR200, active for life",
+		)
+		status, body = self._pay(plan=PLAN, amount=118000, reference="UTR201")
+		self.assertEqual((status, body["error"]["code"]), (409, "invalid_transition"))
 
 	def test_record_payment_brings_a_suspended_customers_sites_back(self):
 		self._action("suspend", reason="Trial over")

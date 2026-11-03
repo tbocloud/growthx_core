@@ -270,7 +270,8 @@ def record_payment():
 	subscription for the plan's product becomes active on that plan for one billing period, and the
 	account becomes active (a suspended customer's sites come back). The period runs from paidOn, or
 	for a renewal from the current period end if that's later. A reference already recorded on the
-	subscription is refused. Stored in the audit log; no invoice yet (billing isn't built)."""
+	subscription is refused. A one-time (lifetime) plan has no period end and can't be paid again.
+	Stored in the audit log; no invoice yet (billing isn't built)."""
 	data = body()
 	account_id = get_str(data, "id", required=True)
 	plan_id = get_str(data, "plan", required=True)
@@ -303,10 +304,15 @@ def record_payment():
 	sub = frappe.get_doc("GX Subscription", subs[0], for_update=True)
 	if sub.last_payment_id == reference:
 		raise ApiError(409, "duplicate_payment", "A payment with this reference is already recorded.")
+	if sub.status == "active" and sub.billing_interval == "one_time":
+		raise ApiError(409, "invalid_transition", "This customer has already paid for lifetime access.")
 	start = paid_on
 	if sub.status == "active" and sub.current_period_end:
 		start = max(getdate(sub.current_period_end), paid_on)
-	period_end = add_years(start, 1) if plan.billing_interval == "year" else add_months(start, 1)
+	if plan.billing_interval == "one_time":
+		period_end = None  # lifetime: never expires or renews
+	else:
+		period_end = add_years(start, 1) if plan.billing_interval == "year" else add_months(start, 1)
 	sub.update(
 		{
 			"plan": plan.name,
@@ -334,7 +340,7 @@ def record_payment():
 		account.name,
 		f"{details}: {fmt_money(amount / 100, currency='INR')} for {plan.plan_name}"
 		f" (plan price {_plan_price(plan)}) paid on {paid_on.isoformat()}, reference {reference},"
-		f" active until {period_end.isoformat()}",
+		f" active {f'until {period_end.isoformat()}' if period_end else 'for life'}",
 	)
 	return _customer_detail(account.name)
 

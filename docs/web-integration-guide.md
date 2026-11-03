@@ -477,8 +477,10 @@ Idempotency-Key: …
 - `POST admin.record_payment {id, plan, amount, reference, paidOn}`: a payment made by bank transfer while there's no
   payment gateway, the first one or a renewal. `amount` is in paise, `paidOn` is `YYYY-MM-DD`. The customer's
   subscription moves to `plan` and is active for one more billing period, from `paidOn` or, if paid early, from the
-  current period end. The customer becomes active (a suspended customer's sites come back). Churned → `409
-  invalid_transition`; a reference already recorded → `409 duplicate_payment`. The payment shows in `history` as
+  current period end. A `one_time` (lifetime) plan has no end: `currentPeriodEnd` is `null` and nothing expires,
+  renews or suspends it (show "Paid, lifetime, never expires"). The customer becomes active (a suspended customer's
+  sites come back). Churned, or already on lifetime → `409 invalid_transition`; a reference already recorded → `409
+  duplicate_payment`. The payment shows in `history` as
   `record_payment`, with the plan's price next to the amount. No email to the customer. Returns the detail. A new
   Idempotency-Key per payment.
 

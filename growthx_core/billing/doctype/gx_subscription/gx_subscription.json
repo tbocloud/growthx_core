@@ -75,7 +75,7 @@
    "fieldname": "billing_interval",
    "fieldtype": "Select",
    "label": "Billing Interval",
-   "options": "month\nyear",
+   "options": "month\nyear\none_time",
    "read_only": 1
   },
   {
@@ -139,7 +139,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-10-12 10:00:00.000000",
+ "modified": "2026-11-03 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Billing",
  "name": "GX Subscription",
