@@ -3554,7 +3554,7 @@ components:
                 properties:
                   at: { type: string, format: date-time }
                   actor: { type: string }
-                  action: { type: string, enum: [extend_trial, suspend, reactivate] }
+                  action: { type: string, enum: [extend_trial, suspend, reactivate, record_payment] }
                   details: { type: string, example: "trial → suspended: Chargeback" }
 
     AuditLogEntry:
