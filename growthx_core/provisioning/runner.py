@@ -45,6 +45,7 @@ RESERVED_SUBDOMAINS = {
 	"growthx",
 	"growthx-core",
 	"web-origin",
+	"products-origin",
 	"autodiscover",
 	"bounce",
 	"partner",
