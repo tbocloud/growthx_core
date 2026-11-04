@@ -98,6 +98,8 @@ All 23 operations in `openapi.yaml` are implemented in `growthx_core/api/v1/` an
 | partner.summary / commission_history | Working | Commission figures use placeholder rules until D8. |
 | admin.summary / customers / tenants / tenant / retry_provisioning | Working | — |
 
-**Placeholder business data** (seed script): prices ₹699 / ₹1,499 / ₹3,999 per month, yearly = 10 × monthly, GST 18 % excluded, 7-day trial starting at sign-up (OI-2; was 14 days until Nov 2026), demo partner commission 10 %. These are for testing only (D6, D7, D8).
+**Pricing (D6, decided Nov 2026):** the launch offer is one lifetime plan per product (`<product>-lifetime`, `one_time`): ₹1,50,000 **including** 18 % GST, paid once by bank transfer and recorded with `admin.record_payment`. The monthly and yearly plans are retired (`seed.lifetime_plans`). Trial: 7 days from sign-up (was 14 until Nov 2026).
+
+**Placeholder business data** (seed script): the retired monthly and yearly prices ₹699 / ₹1,499 / ₹3,999 per month, yearly = 10 × monthly, GST 18 % excluded, and the demo partner commission of 10 %. These are for testing only (D8).
 
 **Site config keys:** `growthx_web_url` (website base URL for reset and referral links), `growthx_press` (`{"mode": "fake"}` by default), `growthx_tenant_domain`, `growthx_tenant_login_path`, `razorpay_key_id`, `razorpay_key_secret`, `growthx_default_commission_rate`.

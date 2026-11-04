@@ -169,13 +169,14 @@ def paid_subscription(email: str):
 	print(f"{email}: {len(subs)} subscription(s) set to active, account active.")
 
 
-def lifetime_plans(price: float, gst_included: int, products: str = "solar"):
+def lifetime_plans(price: float = 150000, gst_included: int = 1, products: str = "solar"):
 	"""The launch offer: one plan per product, paid once (bank transfer, admin.record_payment), never
 	expires. The monthly and yearly plans of those products are retired (unticked, not deleted:
 	subscriptions come back later). Safe to re-run, e.g. with a new price.
 
-	    bench --site <core site> execute growthx_core.setup.seed.lifetime_plans \\
-	        --kwargs "{'price': 150000, 'gst_included': 1, 'products': 'solar'}"
+	The default is the price management approved (D6, Nov 2026): ₹1,50,000 including 18% GST.
+
+	    bench --site <core site> execute growthx_core.setup.seed.lifetime_plans
 	"""
 	for product in [p.strip() for p in products.split(",") if p.strip()]:
 		if not frappe.db.exists("GX Product", product):

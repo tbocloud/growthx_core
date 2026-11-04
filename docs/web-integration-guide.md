@@ -216,7 +216,7 @@ POST {GROWTHX_API_URL}.auth.reset_password       {"key": "<key from the link>", 
 ```
 Six plans in total: `solar-{starter,growth,scale}-{month,year}`.
 
-**Each plan has one interval.** Group plans by `name` to show the monthly/yearly toggle, and send the matching plan `id`. The prices (₹699 / ₹1,499 / ₹3,999, yearly = 10 × monthly, GST excluded) are **placeholders** until the pricing decision (D6).
+**Each plan has one interval.** Group plans by `name` to show the monthly/yearly toggle, and send the matching plan `id`. At launch (D6) each product has a single `one_time` plan, Lifetime: ₹1,50,000 including GST (`price.gstIncluded: true`); the monthly and yearly plans above are retired and not returned.
 
 ### 5.4 Sign-up, then poll provisioning
 
@@ -671,4 +671,4 @@ The button on a site's login page (growthx_theme) goes to `<website>/login?site=
 | — | Appointments: video provider and the expert list | Endpoints are live. Which video service to use (the link template) and who the experts are: the Lead. Until set, the confirmation says the link follows separately. |
 | — | Caching `catalogue.products` / `catalogue.plans` for 5 minutes on the website | Web's proposal. **To confirm:** can a price change take up to 5 minutes to show? `appointments.slots` must never be cached. |
 | — | Real Press provisioning | DevOps (Press API), then me |
-| — | Business rules (prices, GST, trial, commission) | D6, D7 and D8 with the Lead. The data shown is placeholder. |
+| — | Business rules (prices, GST, trial, commission) | Price and GST decided (D6): Lifetime ₹1,50,000 including GST. Trial 7 days. Commission (D8) is still with the Lead. |
