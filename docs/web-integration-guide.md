@@ -80,7 +80,7 @@ A slash (`{GROWTHX_API_URL}/catalogue.products`) is not a Frappe method and retu
 |---|---|---|---|---|
 | GET | `health.ping` | none | 0 | — |
 | GET | `catalogue.products` | none | 1 | `GET /products` |
-| GET | `catalogue.plans?product=solar` | none | 1 | `GET /plans` |
+| GET | `catalogue.plans?product=solar` | none (price only when signed in) | 1 | `GET /plans` |
 | POST | `contact.submit` | none | 2 | `POST /contact` |
 | GET | `appointments.slots?days=28` | none | 2 | `GET /appointments/slots` |
 | POST | `appointments.book` | none | 2 | `POST /appointments` |
@@ -197,6 +197,10 @@ POST {GROWTHX_API_URL}.auth.reset_password       {"key": "<key from the link>", 
 `laundry` and `tailoring` follow, also `coming_soon`.
 
 `GET {GROWTHX_API_URL}.catalogue.plans?product=solar` (an unknown product → `422`)
+
+Prices are not public: for guests every plan has `"price": null`. Signed-in pages call the same endpoint
+with the user's bearer token and get the price, as below. (The site_config flag `growthx_public_prices`
+makes them public again.) Show "Talk to us" or nothing where the price would be.
 ```json
 {
   "items": [

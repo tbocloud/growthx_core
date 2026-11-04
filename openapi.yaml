@@ -152,6 +152,11 @@ paths:
           in: query
           description: Product slug. If omitted, returns plans for all products.
           schema: { type: string, example: solar }
+      description: |
+        Public, but `price` is `null` unless the caller is signed in (sends a GrowthX bearer token):
+        management doesn't want prices public. Signed-in pages call this same endpoint with the user's
+        token to get prices. The site_config flag `growthx_public_prices` makes prices public again
+        (no deploy).
       responses:
         "200":
           description: Active plans
@@ -3005,7 +3010,11 @@ components:
         productSlug: { type: string, example: solar }
         name: { type: string, example: Growth }
         description: { type: string }
-        price: { $ref: "#/components/schemas/Price" }
+        price:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/Price"
+          description: "`null` for guests in `catalogue.plans` (prices go only to signed-in callers)."
         interval: { $ref: "#/components/schemas/BillingInterval" }
         trialDays: { type: integer, example: 14 }
         features:
