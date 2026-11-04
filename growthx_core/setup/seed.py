@@ -36,26 +36,59 @@ PRODUCTS = [
 		press_release_group="solar",  # development placeholder; real Press needs its group ID
 		sort_order=1,
 	),
+	# The product websites (printagx, willpex, billax, stayvex) are live; their apps aren't sold yet.
+	dict(
+		slug="stayvex",
+		product_name="StayVex",
+		category="Hotels & homestays",
+		summary="Rooms, bookings, check-in and billing for hotels.",
+		availability="coming_soon",
+		sort_order=2,
+	),
+	dict(
+		slug="printagx",
+		product_name="PrintagX",
+		category="Print shops",
+		summary="Print jobs from quote to delivery, with stock and billing.",
+		availability="coming_soon",
+		sort_order=3,
+	),
+	dict(
+		slug="willpex",
+		product_name="WilpeX",
+		category="Van sales & delivery",
+		summary="Routes, van stock, orders and collections on the road.",
+		availability="coming_soon",
+		sort_order=4,
+	),
+	dict(
+		slug="billax",
+		product_name="BillaX",
+		category="Billing & GST",
+		summary="GST invoices, payments and accounts for small businesses.",
+		availability="coming_soon",
+		sort_order=5,
+	),
 	dict(
 		slug="salon",
 		product_name="GrowthX Salon",
 		category="Salons & spas",
 		summary="Bookings, stylists and client history in one calendar.",
-		sort_order=2,
+		sort_order=6,
 	),
 	dict(
 		slug="laundry",
 		product_name="GrowthX Laundry",
 		category="Laundry & dry cleaning",
 		summary="Track every order from pickup to delivery.",
-		sort_order=3,
+		sort_order=7,
 	),
 	dict(
 		slug="tailoring",
 		product_name="GrowthX Tailoring",
 		category="Tailors & boutiques",
 		summary="Measurements, orders and fittings, without the paper notebook.",
-		sort_order=4,
+		sort_order=8,
 	),
 ]
 
@@ -177,9 +210,11 @@ def lifetime_plans(price: float, gst_included: int, products: str = "solar"):
 def _upsert(doctype, name, values):
 	if frappe.db.exists(doctype, name):
 		doc = frappe.get_doc(doctype, name)
-		# Apps, the release group and whether a plan is offered are managed by admins after the first
-		# seed; never overwrite their edits (a re-run must not bring retired plans back).
-		doc.update({k: v for k, v in values.items() if k not in ("apps", "press_release_group", "is_active")})
+		# Apps, the release group, whether a plan is offered and whether a product is on sale are managed
+		# by admins after the first seed; never overwrite their edits (a re-run must not bring retired
+		# plans back, or put a launched product back to coming soon).
+		admin_managed = ("apps", "press_release_group", "is_active", "availability")
+		doc.update({k: v for k, v in values.items() if k not in admin_managed})
 		doc.save(ignore_permissions=True)
 	else:
 		frappe.get_doc({"doctype": doctype, **values}).insert(ignore_permissions=True)
