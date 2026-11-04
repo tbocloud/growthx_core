@@ -39,7 +39,7 @@ PRODUCTS = [
 	# The product websites (printagx, willpex, billax, stayvex) are live; their apps aren't sold yet.
 	dict(
 		slug="stayvex",
-		product_name="StayVex",
+		product_name="Stayvex",
 		category="Hotels & homestays",
 		summary="Rooms, bookings, check-in and billing for hotels.",
 		availability="coming_soon",
@@ -55,7 +55,7 @@ PRODUCTS = [
 	),
 	dict(
 		slug="willpex",
-		product_name="WilpeX",
+		product_name="WillpeX",
 		category="Van sales & delivery",
 		summary="Routes, van stock, orders and collections on the road.",
 		availability="coming_soon",
