@@ -249,7 +249,8 @@ class TestAdminCustomers(IntegrationTestCase):
 		self.assertEqual(body["mrr"]["amount"], 0)
 		self.assertEqual(
 			body["history"][-1]["details"],
-			"renewal: ₹ 1,50,000.00 for Lifetime (plan price ₹ 1,50,000.00 incl. GST) paid on 2026-11-01,"
+			"plan change, Test Growth → Lifetime: ₹ 1,50,000.00 for Lifetime (plan price ₹ 1,50,000.00"
+			" incl. GST) paid on 2026-11-01,"
 			" reference UTR200, active for life",
 		)
 		status, body = self._pay(plan=PLAN, amount=118000, reference="UTR201")

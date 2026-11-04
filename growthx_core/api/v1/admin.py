@@ -302,6 +302,7 @@ def record_payment():
 		raise validation_error({"plan": "This customer has no subscription for this plan's product."})
 
 	sub = frappe.get_doc("GX Subscription", subs[0], for_update=True)
+	previous_plan = sub.plan
 	if sub.last_payment_id == reference:
 		raise ApiError(409, "duplicate_payment", "A payment with this reference is already recorded.")
 	if sub.status == "active" and sub.billing_interval == "one_time":
@@ -330,7 +331,10 @@ def record_payment():
 		}
 	)
 	sub.save(ignore_permissions=True)
-	if account.status == "active":
+	if account.status == "active" and previous_plan != plan.name:
+		old_name = frappe.db.get_value("GX Plan", previous_plan, "plan_name") or previous_plan
+		details = f"plan change, {old_name} → {plan.plan_name}"
+	elif account.status == "active":
 		details = "renewal"
 	else:
 		details = _set_customer_status(account, "active", "suspended", "ready", "resume_site")
