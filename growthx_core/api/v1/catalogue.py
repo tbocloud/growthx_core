@@ -14,8 +14,15 @@ def products():
 	return {"items": [s.product(r) for r in rows]}
 
 
+def _show_prices() -> bool:
+	"""Prices go only to signed-in callers (a GrowthX bearer token), unless the site_config flag
+	growthx_public_prices makes them public again. Management doesn't want them public."""
+	return bool(frappe.conf.get("growthx_public_prices") or getattr(frappe.local, "gx_token", None))
+
+
 @endpoint(methods=("GET",), auth=False)
 def plans():
+	"""Public. For guests `price` is null (see _show_prices)."""
 	product = get_str(query(), "product")
 	filters = {"is_active": 1}
 	if product:
@@ -39,4 +46,5 @@ def plans():
 		],
 		order_by="product asc, sort_order asc, price asc",
 	)
-	return {"items": [s.plan(r) for r in rows]}
+	show_price = _show_prices()
+	return {"items": [s.plan(r, show_price) for r in rows]}

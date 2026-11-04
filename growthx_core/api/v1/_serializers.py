@@ -74,13 +74,13 @@ def product(p) -> dict:
 	}
 
 
-def plan(p) -> dict:
+def plan(p, show_price=True) -> dict:
 	return {
 		"id": p.name,
 		"productSlug": p.product,
 		"name": p.plan_name,
 		"description": p.description or "",
-		"price": price(p.price, p.gst_included),
+		"price": price(p.price, p.gst_included) if show_price else None,
 		"interval": p.billing_interval,
 		"trialDays": cint(p.trial_days),
 		"features": [line.strip() for line in (p.features or "").splitlines() if line.strip()],
