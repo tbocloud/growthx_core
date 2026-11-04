@@ -80,3 +80,13 @@ class TestSeed(IntegrationTestCase):
 		self.assertEqual(frappe.db.count("GX Plan", {"product": "solar", "is_active": 1}), 1)
 		with self.assertRaises(frappe.ValidationError):
 			seed.lifetime_plans(150000, 1, "nope")
+
+	def test_product_sites_are_coming_soon_and_stay_as_an_admin_sets_them(self):
+		with patch.dict(frappe.local.conf, REAL_PRESS):
+			seed.run(release_group="bench-0017")
+		for slug in ("stayvex", "printagx", "willpex", "billax"):
+			self.assertEqual(frappe.db.get_value("GX Product", slug, "availability"), "coming_soon", slug)
+		frappe.db.set_value("GX Product", "stayvex", "availability", "available")
+		with patch.dict(frappe.local.conf, REAL_PRESS):
+			seed.run(release_group="bench-0017")
+		self.assertEqual(frappe.db.get_value("GX Product", "stayvex", "availability"), "available")
