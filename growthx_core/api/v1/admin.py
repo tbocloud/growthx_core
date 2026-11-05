@@ -809,6 +809,58 @@ def _day(data: dict, key: str):
 		raise validation_error({key: "Use a date like 2026-10-14."})
 
 
+CONTACT_SOURCES = ("contact", "support")
+
+
+@endpoint(methods=("GET",), roles=("admin",))
+def contact_requests():
+	"""Admin → Messages: Contact and Support form messages, newest first. Read-only; replies and
+	"handled" live in the support mailbox."""
+	data = query()
+	page, page_size = page_params(data)
+	source = get_choice(data, "source", CONTACT_SOURCES)
+	q = get_str(data, "q", max_length=100)
+	start, end = _day(data, "from"), _day(data, "to")
+	if start and end and start > end:
+		raise validation_error({"from": "from must be on or before to."})
+
+	filters = {}
+	if source:
+		filters["source"] = source
+	if start and end:
+		filters["creation"] = ("between", [f"{start} 00:00:00", f"{end} 23:59:59.999999"])
+	elif start:
+		filters["creation"] = (">=", f"{start} 00:00:00")
+	elif end:
+		filters["creation"] = ("<=", f"{end} 23:59:59.999999")
+	or_filters = (
+		{field: ("like", f"%{q}%") for field in ("full_name", "email", "company", "message")} if q else None
+	)
+	rows = frappe.get_all(
+		"GX Contact Request",
+		filters=filters,
+		or_filters=or_filters,
+		fields=["name", "full_name", "email", "company", "message", "source", "customer", "creation"],
+		order_by="creation desc",
+		limit_start=(page - 1) * page_size,
+		limit_page_length=page_size,
+	)
+	items = [
+		{
+			"id": r.name,
+			"name": r.full_name,
+			"email": r.email,
+			"company": r.company or None,
+			"message": r.message,
+			"source": r.source or "contact",
+			"customerId": r.customer or None,
+			"createdAt": iso(r.creation),
+		}
+		for r in rows
+	]
+	return page_meta(page, page_size, _count("GX Contact Request", filters, or_filters), items)
+
+
 @endpoint(methods=("GET",), roles=("admin",))
 def appointments():
 	"""Bookings, filtered by status, expert, date range (site timezone, inclusive) and search."""

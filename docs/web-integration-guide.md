@@ -115,6 +115,7 @@ A slash (`{GROWTHX_API_URL}/catalogue.products`) is not a Frappe method and retu
 | GET | `partner.commission_history` | partner | 3 | `GET /partner/commission-history` |
 | GET | `admin.summary` | admin | 3 | `GET /admin/summary` |
 | GET | `admin.customers?q&status&sort` | admin | 2 | `GET /admin/customers` |
+| GET | `admin.contact_requests?q&source&from&to` | admin | 2 | *new* (Admin → Messages) |
 | GET | `admin.tenants?q&status&sort` | admin | 2 | `GET /admin/tenants` |
 | GET | `admin.tenant?id=` | admin | 2 | `GET /admin/tenants/{id}` |
 | POST | `admin.retry_provisioning` | admin | 2 | `POST /admin/tenants/{id}/retry` |
@@ -493,7 +494,7 @@ Idempotency-Key: …
 
 ### 5.10 Contact form
 
-`POST {GROWTHX_API_URL}.contact.submit` with body `{"name", "email", "company"?, "message"}` → `202 {"ok": true}`. A bad email gives `422` with `fields.email`. The website's Contact form and the customer Support form both use it. Core saves a **GX Contact Request** and emails it to `support@tbogrowthx.com` (site_config `growthx_support_email` changes the address), with the sender as Reply-To. If the email fails, the request is still saved and `202` is returned.
+`POST {GROWTHX_API_URL}.contact.submit` with body `{"name", "email", "company"?, "message"}` → `202 {"ok": true}`. A bad email gives `422` with `fields.email`. The website's Contact form and the customer Support form both use it. The Support form sends `"source": "support"` with the customer's bearer token; Core takes the customer from the token (never from the body). Admins read the messages with `admin.contact_requests` (newest first, `q` over name/email/company/message, `source`, `from`/`to`); it's read-only, replies and "handled" stay in the mailbox. Core saves a **GX Contact Request** and emails it to `support@tbogrowthx.com` (site_config `growthx_support_email` changes the address), with the sender as Reply-To. If the email fails, the request is still saved and `202` is returned.
 
 ### 5.11 Talk to an expert (appointments)
 

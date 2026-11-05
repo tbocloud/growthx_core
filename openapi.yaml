@@ -199,9 +199,9 @@ paths:
                   allOf:
                     - $ref: "#/components/schemas/ContactRequestSource"
                   description: |
-                    [PROPOSED] Default `contact`. The Support page sends `support` together with the customer's bearer
-                    token; Core then stores the customer (`customerId` in `admin.contact_requests`). Without a customer
-                    token, `support` is stored as sent and `customerId` stays null.
+                    Default `contact`. The Support page sends `support` together with the customer's bearer token;
+                    Core takes the customer from the token (`customerId` in `admin.contact_requests`), never from the
+                    body. Without a customer token, `customerId` stays null.
       responses:
         "202": { $ref: "#/components/responses/Ok" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
@@ -2154,14 +2154,13 @@ paths:
   /growthx_core.api.v1.admin.contact_requests:
     get:
       tags: [admin]
-      summary: "[PROPOSED] Contact and Support form messages"
+      summary: Contact and Support form messages
       description: |
         Admin → Messages: what visitors send from the website's Contact form and customers from the Support page
-        (`contact.submit`, stored as GX Contact Request). Newest first. Existing requests with the old desk
-        statuses map as Replied/Closed → `handled`, New → `new`. `from`/`to` work like `admin.audit_log`: either
-        may be left out; `from` after `to` gives `422` with `fields.from`.
+        (`contact.submit`, stored as GX Contact Request). Newest first. Read-only: replies and "handled" live in
+        the support@tbogrowthx.com mailbox. `from`/`to` work like `admin.audit_log`: either may be left out;
+        `from` after `to` gives `422` with `fields.from`.
       operationId: adminListContactRequests
-      x-status: proposed
       x-phase: 2
       x-roles: [admin]
       parameters:
@@ -2169,9 +2168,6 @@ paths:
           in: query
           description: Searches name, email, company and message
           schema: { type: string }
-        - name: status
-          in: query
-          schema: { $ref: "#/components/schemas/ContactRequestStatus" }
         - name: source
           in: query
           schema: { $ref: "#/components/schemas/ContactRequestSource" }
@@ -2201,39 +2197,6 @@ paths:
                         items: { $ref: "#/components/schemas/AdminContactRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "422": { $ref: "#/components/responses/ValidationFailed" }
-
-  /growthx_core.api.v1.admin.update_contact_request:
-    post:
-      tags: [admin]
-      summary: "[PROPOSED] Mark a message handled or new"
-      description: |
-        `handled` sets `handledAt` (now) and `handledBy` (the admin's email); `new` clears both. Each change is
-        written to the audit log (`update_contact_request`, with the old and new status). Setting the status it
-        already has changes nothing and isn't logged. No email is sent to the customer.
-      operationId: adminUpdateContactRequest
-      x-status: proposed
-      x-phase: 2
-      x-roles: [admin]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [id, status]
-              properties:
-                id: { type: string }
-                status: { $ref: "#/components/schemas/ContactRequestStatus" }
-      responses:
-        "200":
-          description: The updated message
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/AdminContactRequest" }
-        "401": { $ref: "#/components/responses/Unauthenticated" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
 
   /growthx_core.api.v1.admin.partners:
@@ -3622,10 +3585,6 @@ components:
                   action: { type: string, enum: [approve, suspend, reactivate] }
                   details: { type: string, example: "active → suspended: Spam referrals" }
 
-    ContactRequestStatus:
-      type: string
-      enum: [new, handled]
-
     ContactRequestSource:
       type: string
       enum: [contact, support]
@@ -3633,22 +3592,19 @@ components:
 
     AdminContactRequest:
       type: object
-      required: [id, name, email, company, message, status, source, customerId, createdAt, handledAt, handledBy]
+      required: [id, name, email, company, message, source, customerId, createdAt]
       properties:
         id: { type: string }
         name: { type: string }
         email: { type: string, format: email }
         company: { type: string, nullable: true }
         message: { type: string, description: Plain text; may contain line breaks. Render as text, not HTML. }
-        status: { $ref: "#/components/schemas/ContactRequestStatus" }
         source: { $ref: "#/components/schemas/ContactRequestSource" }
         customerId:
           type: string
           nullable: true
           description: The customer (GX Account) when the message came from the signed-in Support page.
         createdAt: { type: string, format: date-time }
-        handledAt: { type: string, format: date-time, nullable: true }
-        handledBy: { type: string, format: email, nullable: true, description: The admin who marked it handled }
 
     AdminCustomer:
       type: object
