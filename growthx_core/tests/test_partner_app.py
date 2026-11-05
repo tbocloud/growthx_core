@@ -118,6 +118,9 @@ class TestPartnerApp(IntegrationTestCase):
 	def _cleanup(cls):
 		accounts = frappe.get_all("GX Account", {"contact_email": ("like", f"{PREFIX}%")}, pluck="name")
 		if accounts:
+			tenants = frappe.get_all("GX Tenant", {"account": ("in", accounts)}, pluck="name")
+			if tenants:
+				frappe.db.delete("GX Product App", {"parenttype": "GX Tenant", "parent": ("in", tenants)})
 			frappe.db.delete("GX Tenant", {"account": ("in", accounts)})
 			frappe.db.delete("GX Subscription", {"account": ("in", accounts)})
 			frappe.db.delete("GX Account", {"name": ("in", accounts)})
@@ -129,6 +132,7 @@ class TestPartnerApp(IntegrationTestCase):
 		for user in users:
 			frappe.delete_doc("User", user, force=True, ignore_permissions=True)
 		frappe.db.delete("GX Plan", {"name": PLAN})
+		frappe.db.delete("GX Product App", {"parenttype": "GX Product", "parent": PRODUCT})
 		frappe.db.delete("GX Product", {"name": PRODUCT})
 		frappe.db.commit()
 
@@ -173,6 +177,16 @@ class TestPartnerApp(IntegrationTestCase):
 		first = body["items"][0]
 		self.assertEqual(first["plan"]["price"], {"amount": 149900, "currency": "INR", "gstIncluded": False})
 		self.assertNotIn("_sub", first)
+		self._assert_no_contact_details(body["items"])
+
+	def _assert_no_contact_details(self, customers):
+		"""Partners never get a customer's email or phone (decided 29 Oct 2026)."""
+		self.assertTrue(customers)
+		for c in customers:
+			self.assertNotIn("email", c)
+			self.assertNotIn("phone", c)
+			self.assertNotIn("+919800000000", json.dumps(c))
+			self.assertNotIn("@example.com", json.dumps(c))
 
 	def test_customer_filters_search_sort_and_paging(self):
 		self.assertEqual(
@@ -192,11 +206,12 @@ class TestPartnerApp(IntegrationTestCase):
 		self.assertEqual(body["timeline"][0]["event"], "signed_up")
 		self.assertIn("site_ready", [e["event"] for e in body["timeline"]])
 		self.assertEqual(body["commissions"], [])
+		self._assert_no_contact_details([body])
 		self.assertEqual(self.call("customer", {"id": self.other.name})[0], 404)
 
 	def test_referral_stats(self):
 		body = self.call("referral_stats")[1]
-		self.assertEqual((body["signups"], body["conversions"], body["clicks"]), (2, 0, None))
+		self.assertEqual((body["signups"], body["conversions"], body["clicks"]), (2, 0, 0))
 		wide = self.call("referral_stats", {"from": "2000-01-01", "to": "2100-01-01"})[1]
 		self.assertEqual((wide["signups"], wide["conversions"], wide["conversionRate"]), (3, 1, 0.3333))
 		self.assertEqual(self.call("referral_stats", {"from": "2026-12-01", "to": "2026-01-01"})[0], 422)
@@ -207,6 +222,7 @@ class TestPartnerApp(IntegrationTestCase):
 		self.assertEqual(body["referredSignups"], 3)
 		self.assertEqual(body["trialsEndingNext7Days"], 1)
 		self.assertEqual(len(body["recentCustomers"]), 2)
+		self._assert_no_contact_details(body["recentCustomers"])
 		self.assertEqual(body["earnings"]["thisMonth"], {"amount": 0, "currency": "INR"})
 		self.assertEqual(self.call("earnings")[1]["approved"], {"amount": 0, "currency": "INR"})
 
@@ -306,18 +322,47 @@ class TestPartnerApp(IntegrationTestCase):
 		)  # no customer names on the lock screen
 		self.assertEqual(message["data"]["notificationId"], name)
 
-	def test_uninstalled_app_token_is_removed(self):
-		self.call("register_device", {"token": "fcm-3", "platform": "ios"})
+	def _push_with_fcm_response(self, token, status_code, error_body):
+		self.call("register_device", {"token": token, "platform": "ios"})
 		frappe.db.commit()
 		name = self._notify(self.a.user)
+		response = MagicMock(status_code=status_code)
+		if isinstance(error_body, Exception):
+			response.json.side_effect = error_body
+		else:
+			response.json.return_value = error_body
 		conf = {"growthx_fcm": {"project_id": "p", "service_account": {"x": 1}}}
 		with (
 			patch.dict(frappe.local.conf, conf),
 			patch.object(notif, "_fcm_access_token", return_value="at"),
-			patch("requests.post", return_value=MagicMock(status_code=404, text="UNREGISTERED")),
+			patch("requests.post", return_value=response),
 		):
 			notif.send_push(name)
-		self.assertEqual(frappe.db.count("GX Device", {"user": self.a.user}), 0)
+		return frappe.db.count("GX Device", {"user": self.a.user})
+
+	def test_uninstalled_app_token_is_removed(self):
+		# FCM v1 says the token is dead with errorCode UNREGISTERED (sent as 404 or 400).
+		for status in (404, 400):
+			body = {
+				"error": {
+					"code": status,
+					"status": "NOT_FOUND",
+					"details": [
+						{
+							"@type": "type.googleapis.com/google.firebase.fcm.v1.FcmError",
+							"errorCode": "UNREGISTERED",
+						}
+					],
+				}
+			}
+			self.assertEqual(self._push_with_fcm_response(f"fcm-dead-{status}", status, body), 0, status)
+
+	def test_config_error_never_deletes_devices(self):
+		# A wrong project_id also returns 404, but without UNREGISTERED: every device must survive.
+		body = {"error": {"code": 404, "message": "Requested entity was not found.", "status": "NOT_FOUND"}}
+		self.assertEqual(self._push_with_fcm_response("fcm-keep-1", 404, body), 1)
+		# Unparseable bodies are treated the same way.
+		self.assertEqual(self._push_with_fcm_response("fcm-keep-2", 500, ValueError()), 2)
 
 	# ------------------------------------------------------------ profile and preferences
 
@@ -332,6 +377,9 @@ class TestPartnerApp(IntegrationTestCase):
 		)
 		self.assertEqual((status, body["name"], body["city"]), (200, "Anil Kumar", "Kochi"))
 		self.assertEqual(frappe.db.get_value("User", self.a.user, "first_name"), "Anil")
+		self.assertEqual(
+			frappe.db.get_value("User", self.a.user, "full_name"), "Anil Kumar"
+		)  # what auth.me shows
 
 		self.assertEqual(self.call("update_profile", {"referralCode": "MINE"})[0], 422)
 		self.assertEqual(self.call("update_profile", {"phone": "call me"})[0], 422)

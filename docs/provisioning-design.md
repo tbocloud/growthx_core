@@ -20,7 +20,7 @@ The task's names map onto the tenant's `status` (what Web, Flutter and admins se
 |---|---|---|---|
 | **Queued** | `requested` | — | Sign-up created the tenant and queued the job (background queue `long`) |
 | **Creating** | `provisioning` | `create_site`, `wait_for_site` | Ask Press for the site, then wait until Press reports it active |
-| **Installing** | `provisioning` | `install_apps` | Check ERPNext, `growthx_theme` and the vertical app (e.g. `solar_operations`) are on the site |
+| **Installing** | `provisioning` | `install_apps` | Check every app in the site's Apps list (e.g. Solar: `growthx_theme`, `solar`) is on the site |
 | **Configuring** | `provisioning` | `configure`, `health_check` | Setup wizard (company, country, currency, timezone), the customer's user, single sign-on, then check the site answers |
 | **Active** | `ready` | — | Customer can open it ("Open my app"); "site ready" email sent |
 | **Failed** | `failed` | the step that failed | Customer sees a friendly message; admin sees the error and retries |
@@ -87,7 +87,7 @@ Picture: [`provisioning-state-diagram.png`](provisioning-state-diagram.png). Tex
 |---|---|---|---|---|
 | 1 | `create_site` | Create `<subdomain>` in the product's release group with its apps. **Skipped if the tenant already has a Press site id** | Press returns a site id; it is saved at once | Press refuses (name taken, quota, auth) |
 | 2 | `wait_for_site` | Site status | Press says `active` | Press says `broken`, or 30 min pass |
-| 3 | `install_apps` | Installed apps | `erpnext`, `growthx_theme` and the vertical app are installed | Any is missing |
+| 3 | `install_apps` | Installed apps | `erpnext` and every app in the site's Apps list are installed | Any is missing |
 | 4 | `configure` | Run set-up on the site + write two site_config keys | Wizard done, owner user exists, `growthx_core_url` and `growthx_tenant_key` written, "Login with Email Link" on | Set-up errors |
 | 5 | `health_check` | — (calls the site) | The site answers | No answer |
 
@@ -95,6 +95,20 @@ What `configure` sends (from `runner.tenant_settings`): company name, country `I
 `Asia/Kolkata`, owner email and name, the Core URL, and a new per-tenant key (only its hash is kept in Core).
 The owner user gets a random password nobody knows; customers sign in through GrowthX ("Open my app").
 The Solar-specific set-up method is being agreed with Nahala and will be added to this step.
+
+### Which apps a site gets
+
+Admins manage this in the desk; no code change is needed.
+
+- **GX Product → Apps:** the default apps for every new site of that product. Solar: `growthx_theme`
+  (`tbocloud/growthx_theme`) and `solar` (`tbocloud/solar_operations`). Add or remove rows to change what
+  new sites get.
+- **GX Tenant → Apps:** copied from the product when the customer signs up. Change it to give one
+  customer different apps, before the site is created or before a retry.
+- `frappe` and `erpnext` are always installed first and aren't listed. `growthx_theme` can't be removed:
+  it carries the "Open my app" sign-in. The app's **name** goes in the list (`solar`), not the repository
+  name (`solar_operations`).
+- Every listed app must also be in the product's Press release group (DevOps adds it from the repository URL).
 
 ## 4. Guarantees
 

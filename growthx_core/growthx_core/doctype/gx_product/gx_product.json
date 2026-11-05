@@ -12,8 +12,9 @@
   "category",
   "sort_order",
   "column_break_1",
-  "vertical_app",
   "press_release_group",
+  "apps_section",
+  "apps",
   "section_break_1",
   "summary"
  ],
@@ -60,15 +61,22 @@
    "label": "Column Break 1"
   },
   {
-   "description": "Frappe app installed on the tenant, e.g. solar_operations",
-   "fieldname": "vertical_app",
-   "fieldtype": "Data",
-   "label": "Vertical App"
-  },
-  {
+   "description": "Press release group (bench group id) new sites of this product are created in",
    "fieldname": "press_release_group",
    "fieldtype": "Data",
    "label": "Press Release Group"
+  },
+  {
+   "fieldname": "apps_section",
+   "fieldtype": "Section Break",
+   "label": "Apps on customer sites"
+  },
+  {
+   "description": "Default apps for every new site of this product, installed in this order after frappe and erpnext (always installed first). Add or remove rows to change what new sites get; existing sites keep theirs. growthx_theme is required (\"Open my app\" sign-in). Every app must also be in the product's Press release group.",
+   "fieldname": "apps",
+   "fieldtype": "Table",
+   "label": "Apps",
+   "options": "GX Product App"
   },
   {
    "fieldname": "section_break_1",
@@ -83,7 +91,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-10-12 10:00:00.000000",
+ "modified": "2026-10-24 10:00:00.000000",
  "modified_by": "Administrator",
  "module": "GrowthX Core",
  "name": "GX Product",

@@ -11,6 +11,8 @@
   "product",
   "subscription",
   "status",
+  "country",
+  "chart_of_accounts",
   "column_break_1",
   "subdomain",
   "site_url",
@@ -18,6 +20,19 @@
   "attempts",
   "ready_at",
   "tenant_key_hash",
+  "service_api_key",
+  "service_api_secret",
+  "custom_domain_section",
+  "custom_domain",
+  "custom_domain_status",
+  "custom_domain_problem",
+  "custom_domain_message",
+  "column_break_custom_domain",
+  "custom_domain_added_at",
+  "custom_domain_checked_at",
+  "custom_domain_active_at",
+  "apps_section",
+  "apps",
   "status_section",
   "status_message",
   "last_error",
@@ -61,6 +76,19 @@
    "in_standard_filter": 1,
    "label": "Status",
    "options": "requested\nprovisioning\nready\nfailed\nsuspended\narchived"
+  },
+  {
+   "description": "Chosen at sign-up. Sets the site's currency, timezone and fiscal year. Empty: India.",
+   "fieldname": "country",
+   "fieldtype": "Link",
+   "label": "Country",
+   "options": "Country"
+  },
+  {
+   "description": "ERPNext chart of accounts for the site's company. Empty: the country's default.",
+   "fieldname": "chart_of_accounts",
+   "fieldtype": "Data",
+   "label": "Chart of Accounts"
   },
   {
    "fieldname": "column_break_1",
@@ -107,6 +135,89 @@
    "unique": 1
   },
   {
+   "description": "API key of the GrowthX service user on the tenant site, created during set-up. Core uses it for calls after provisioning.",
+   "fieldname": "service_api_key",
+   "fieldtype": "Data",
+   "label": "Service API Key",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "service_api_secret",
+   "fieldtype": "Password",
+   "label": "Service API Secret",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "custom_domain_section",
+   "fieldtype": "Section Break",
+   "label": "Custom Domain"
+  },
+  {
+   "description": "The customer's own domain, e.g. app.noorsolar.com (customer.add_custom_domain)",
+   "fieldname": "custom_domain",
+   "fieldtype": "Data",
+   "label": "Custom Domain",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "custom_domain_status",
+   "fieldtype": "Select",
+   "label": "Custom Domain Status",
+   "options": "\npending_dns\nverifying\nactive\nfailed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_domain_problem",
+   "fieldtype": "Data",
+   "label": "DNS Problem",
+   "read_only": 1
+  },
+  {
+   "description": "Customer-safe message",
+   "fieldname": "custom_domain_message",
+   "fieldtype": "Small Text",
+   "label": "Custom Domain Message",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_custom_domain",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "custom_domain_added_at",
+   "fieldtype": "Datetime",
+   "label": "Custom Domain Added At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_domain_checked_at",
+   "fieldtype": "Datetime",
+   "label": "Custom Domain Checked At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_domain_active_at",
+   "fieldtype": "Datetime",
+   "label": "Custom Domain Active At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "apps_section",
+   "fieldtype": "Section Break",
+   "label": "Apps on this site"
+  },
+  {
+   "description": "Copied from the product when the site is requested. To give this customer different apps, change the list before the site is created or before a retry; a site that is already ready doesn't change. frappe and erpnext are always installed; growthx_theme is required.",
+   "fieldname": "apps",
+   "fieldtype": "Table",
+   "label": "Apps",
+   "options": "GX Product App"
+  },
+  {
    "fieldname": "status_section",
    "fieldtype": "Section Break",
    "label": "Status"
@@ -133,7 +244,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-10-13 12:00:00.000000",
+ "modified": "2026-10-30 16:58:58.817484",
  "modified_by": "Administrator",
  "module": "Provisioning",
  "name": "GX Tenant",

@@ -2,15 +2,22 @@
 
     bench --site <site> execute growthx_core.setup.seed.run
     bench --site <site> execute growthx_core.setup.seed.run --kwargs "{'password': '...'}"
+    bench --site <site> execute growthx_core.setup.seed.run --kwargs "{'release_group': 'bench-0017'}"
 
 Safe to run more than once. Demo passwords are never stored in the repo: pass one, or a random
-one is generated and printed. Prices, trial length and commission are PLACEHOLDERS until the
+one is generated and printed.
+
+On a site that provisions on real Press (growthx_press mode "press"), pass the Solar release group
+(Press's group ID, e.g. bench-0017). Demo users are skipped there: the demo customer would create
+a real site. A release group already set on a product (by an admin, or an earlier seed) is only
+changed when one is passed. Prices, trial length and commission are PLACEHOLDERS until the
 business decisions D6 (pricing/GST), D7 (trial) and D8 (commission) are made.
 """
 
 import secrets
 
 import frappe
+from frappe.utils import cint
 
 from growthx_core import accounts
 from growthx_core.provisioning import runner
@@ -22,30 +29,66 @@ PRODUCTS = [
 		category="Solar installers & distributors",
 		summary="Site surveys, projects, installation and service for solar businesses.",
 		availability="available",
-		vertical_app="solar_operations",
-		press_release_group="solar",
+		apps=[
+			{"app_name": "growthx_theme", "repository": "https://github.com/tbocloud/growthx_theme.git"},
+			{"app_name": "solar", "repository": "https://github.com/tbocloud/solar_operations.git"},
+		],
+		press_release_group="solar",  # development placeholder; real Press needs its group ID
 		sort_order=1,
+	),
+	# The product websites (printagx, willpex, billax, stayvex) are live; their apps aren't sold yet.
+	dict(
+		slug="stayvex",
+		product_name="Stayvex",
+		category="Hotels & homestays",
+		summary="Rooms, bookings, check-in and billing for hotels.",
+		availability="coming_soon",
+		sort_order=2,
+	),
+	dict(
+		slug="printagx",
+		product_name="PrintagX",
+		category="Print shops",
+		summary="Print jobs from quote to delivery, with stock and billing.",
+		availability="coming_soon",
+		sort_order=3,
+	),
+	dict(
+		slug="willpex",
+		product_name="WillpeX",
+		category="Van sales & delivery",
+		summary="Routes, van stock, orders and collections on the road.",
+		availability="coming_soon",
+		sort_order=4,
+	),
+	dict(
+		slug="billax",
+		product_name="BillaX",
+		category="Billing & GST",
+		summary="GST invoices, payments and accounts for small businesses.",
+		availability="coming_soon",
+		sort_order=5,
 	),
 	dict(
 		slug="salon",
 		product_name="GrowthX Salon",
 		category="Salons & spas",
 		summary="Bookings, stylists and client history in one calendar.",
-		sort_order=2,
+		sort_order=6,
 	),
 	dict(
 		slug="laundry",
 		product_name="GrowthX Laundry",
 		category="Laundry & dry cleaning",
 		summary="Track every order from pickup to delivery.",
-		sort_order=3,
+		sort_order=7,
 	),
 	dict(
 		slug="tailoring",
 		product_name="GrowthX Tailoring",
 		category="Tailors & boutiques",
 		summary="Measurements, orders and fittings, without the paper notebook.",
-		sort_order=4,
+		sort_order=8,
 	),
 ]
 
@@ -83,9 +126,16 @@ TIERS = [
 ]
 
 
-def run(password: str | None = None):
-	_products()
+def run(password: str | None = None, release_group: str | None = None):
+	real_press = (frappe.conf.get("growthx_press") or {}).get("mode") == "press"
+	if real_press and not release_group:
+		frappe.throw("This site uses real Press: pass release_group (the Solar group ID, e.g. bench-0017)")
+	_products(release_group)
 	_plans()
+	if real_press:
+		frappe.db.commit()
+		print("GrowthX products and plans are in place. Demo users skipped: this site uses real Press.")
+		return
 	password = password or secrets.token_urlsafe(12)
 	created = _demo_users(password)
 	frappe.db.commit()
@@ -98,18 +148,86 @@ def run(password: str | None = None):
 		print("Demo users already existed; their passwords were not changed.")
 
 
+def paid_subscription(email: str):
+	"""Test sites only: make a QA customer "paid" (subscriptions trialing -> active), to test paid
+	features such as custom domains before billing exists. Changes Core's records only, not Press.
+
+	    bench --site <core-test> execute growthx_core.setup.seed.paid_subscription --kwargs "{'email': '...'}"
+	"""
+	conf = frappe.conf.get("growthx_press") or {}
+	if conf.get("mode") == "press" and not conf.get("test_sites"):
+		frappe.throw("Refused: this is production Core (no test_sites in growthx_press)")
+	user = frappe.db.get_value("User", {"email": email})
+	account = user and frappe.db.get_value("GX Account", {"user": user})
+	if not account:
+		frappe.throw(f"No customer account for {email}")
+	subs = frappe.get_all("GX Subscription", {"account": account, "status": "trialing"}, pluck="name")
+	for name in subs:
+		frappe.db.set_value("GX Subscription", name, "status", "active")
+	frappe.db.set_value("GX Account", account, "status", "active")
+	frappe.db.commit()
+	print(f"{email}: {len(subs)} subscription(s) set to active, account active.")
+
+
+def lifetime_plans(price: float = 150000, gst_included: int = 1, products: str = "solar"):
+	"""The launch offer: one plan per product, paid once (bank transfer, admin.record_payment), never
+	expires. The monthly and yearly plans of those products are retired (unticked, not deleted:
+	subscriptions come back later). Safe to re-run, e.g. with a new price.
+
+	The default is the price management approved (D6, Nov 2026): ₹1,50,000 including 18% GST.
+
+	    bench --site <core site> execute growthx_core.setup.seed.lifetime_plans
+	"""
+	for product in [p.strip() for p in products.split(",") if p.strip()]:
+		if not frappe.db.exists("GX Product", product):
+			frappe.throw(f"Unknown product {product}")
+		plan_id = f"{product}-lifetime"
+		values = dict(
+			plan_id=plan_id,
+			product=product,
+			plan_name="Lifetime",
+			billing_interval="one_time",
+			price=price,
+			gst_included=cint(gst_included),
+			gst_rate=18,
+			trial_days=7,
+			description="Pay once. Your app never expires: no renewals, no further charges.",
+			highlighted=1,
+			sort_order=0,
+		)
+		_upsert("GX Plan", plan_id, values)
+		frappe.db.set_value("GX Plan", plan_id, "is_active", 1)
+		retired = frappe.get_all(
+			"GX Plan",
+			{"product": product, "billing_interval": ("!=", "one_time"), "is_active": 1},
+			pluck="name",
+		)
+		for name in retired:
+			frappe.db.set_value("GX Plan", name, "is_active", 0)
+		print(f"{product}: {plan_id} active; retired {len(retired)} plan(s): {', '.join(retired) or '-'}")
+	frappe.db.commit()
+
+
 def _upsert(doctype, name, values):
 	if frappe.db.exists(doctype, name):
 		doc = frappe.get_doc(doctype, name)
-		doc.update(values)
+		# Apps, the release group, whether a plan is offered and whether a product is on sale are managed
+		# by admins after the first seed; never overwrite their edits (a re-run must not bring retired
+		# plans back, or put a launched product back to coming soon).
+		admin_managed = ("apps", "press_release_group", "is_active", "availability")
+		doc.update({k: v for k, v in values.items() if k not in admin_managed})
 		doc.save(ignore_permissions=True)
 	else:
 		frappe.get_doc({"doctype": doctype, **values}).insert(ignore_permissions=True)
 
 
-def _products():
+def _products(release_group: str | None = None):
 	for p in PRODUCTS:
+		if release_group and p.get("press_release_group"):
+			p = {**p, "press_release_group": release_group}
 		_upsert("GX Product", p["slug"], p)
+		if release_group and p.get("press_release_group"):
+			frappe.db.set_value("GX Product", p["slug"], "press_release_group", release_group)
 
 
 def _plans():
@@ -127,7 +245,7 @@ def _plans():
 					price=price,
 					gst_included=0,
 					gst_rate=18,
-					trial_days=14,
+					trial_days=7,
 					description=description,
 					features="\n".join(features),
 					highlighted=highlighted,

@@ -35,6 +35,9 @@ info:
     - **IDs:** opaque strings (Frappe document names). Clients must not parse them.
     - **Idempotency:** `auth.signup`, `billing.create_checkout` and `admin.retry_provisioning` accept an
       `Idempotency-Key` header (a UUID). A repeat with the same key within 24 h returns the original result.
+    - **Visitor IP (website server only):** per-IP rate limits count the caller's IP. The website calls Core from
+      its server, so it sends the visitor's IP in `X-GrowthX-Client-IP` with the shared secret in
+      `X-GrowthX-Web-Key` (Core's `growthx_web_key`). Without the right key the header is ignored.
     - **Versioning:** additive changes stay in `v1`. Breaking changes go into a new `growthx_core.api.v2` module,
       and both run in parallel during migration.
     - **Phase:** `x-phase` on each operation is the delivery phase (1 Foundation, 2 Self sign-up,
@@ -59,6 +62,8 @@ tags:
   - name: catalogue
   - name: appointments
   - name: auth
+  - name: signup
+    description: What the sign-up form offers, and the live subdomain check (docs 09 sign-up v2).
   - name: customer
   - name: billing
   - name: partner
@@ -86,6 +91,37 @@ paths:
                 properties:
                   status: { type: string, enum: [ok] }
                   version: { type: string, example: 0.0.1 }
+
+  /growthx_core.api.v1.health.provisioning:
+    get:
+      tags: [health]
+      summary: Site-creation health, for the uptime alert
+      description: |
+        For DevOps monitoring: alert on any status other than 200. Counts only, no tenant or user data.
+        Rate-limited to 60 per minute per IP address.
+
+        `problems` (503):
+        - `failed_sites`: sites in `failed` status; an admin retries or archives them.
+        - `stuck_sites`: sites not ready 45 minutes after their current attempt started (a retry starts a new one).
+        - `no_workers`: no worker on the `long` queue, so no site creation runs.
+        - `queue_unreachable`: Core can't reach Redis.
+        - `scheduler_not_running`: the scheduler is disabled or paused, or `resume_pending` (every minute) hasn't
+          run for 5 minutes, so sites waiting on Press never move on.
+      operationId: healthProvisioning
+      x-phase: 2
+      security: []
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProvisioningHealth" }
+        "503":
+          description: At least one problem
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProvisioningHealth" }
+        "429": { $ref: "#/components/responses/RateLimited" }
 
   # ---------------------------------------------------------------- catalogue (public)
   /growthx_core.api.v1.catalogue.products:
@@ -121,6 +157,11 @@ paths:
           in: query
           description: Product slug. If omitted, returns plans for all products.
           schema: { type: string, example: solar }
+      description: |
+        Public, but `price` is `null` unless the caller is signed in (sends a GrowthX bearer token):
+        management doesn't want prices public. Signed-in pages call this same endpoint with the user's
+        token to get prices. The site_config flag `growthx_public_prices` makes prices public again
+        (no deploy).
       responses:
         "200":
           description: Active plans
@@ -143,6 +184,10 @@ paths:
       operationId: submitContact
       x-phase: 2
       security: []
+      description: |
+        The website's Contact form and the customer Support form. Saved as a GX Contact Request and emailed
+        to support@tbogrowthx.com (site_config `growthx_support_email` overrides it), Reply-To the sender.
+        A failed email is logged; the request is still saved and `202` returned.
       requestBody:
         required: true
         content:
@@ -155,6 +200,13 @@ paths:
                 email: { type: string, format: email }
                 company: { type: string, maxLength: 140 }
                 message: { type: string, maxLength: 5000 }
+                source:
+                  allOf:
+                    - $ref: "#/components/schemas/ContactRequestSource"
+                  description: |
+                    Default `contact`. The Support page sends `support` together with the customer's bearer token;
+                    Core takes the customer from the token (`customerId` in `admin.contact_requests`), never from the
+                    body. Without a customer token, `customerId` stays null.
       responses:
         "202": { $ref: "#/components/responses/Ok" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
@@ -372,6 +424,221 @@ paths:
         "422": { $ref: "#/components/responses/ValidationFailed" }
         "429": { $ref: "#/components/responses/RateLimited" }
 
+  /growthx_core.api.v1.auth.google:
+    post:
+      tags: [auth]
+      summary: Sign in with Google (web)
+      description: |
+        The Next.js server sends the user to Google (authorization-code flow, scope `openid email profile`, PKCE
+        recommended), receives `code` at its callback, and posts it here **server-to-server**. Core exchanges it with
+        Google using the same redirect URI: `<website>/api/auth/google/callback` (production
+        `https://tbogrowthx.com/api/auth/google/callback`; core-test `http://localhost:3000/api/auth/google/callback`).
+        A code works once.
+
+        - The email belongs to an account: **200**, logged in (same body as `auth.login`).
+        - A new email: **202** with a `signupToken`. Show the sign-up form with the name and email filled in (email
+          read-only), and send the token to `auth.signup` as `googleSignupToken` instead of `email` and `password`.
+        - A new email with `signInOnly: true` (signing in to a site, `auth.site_login`): **404 `no_account`**; no sign-up
+          starts.
+
+        Flutter will send a Google ID token instead (later). Rate-limited per IP address.
+      operationId: googleSignin
+      x-phase: 2
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, maxLength: 2048, description: "`code` from Google's redirect to the callback" }
+                codeVerifier: { type: string, maxLength: 128, description: The PKCE verifier, if the website used PKCE }
+                client: { $ref: "#/components/schemas/ClientKind" }
+                signInOnly:
+                  type: boolean
+                  description: "Sign-in-only mode (`/login?site=`): a new email gets `404 no_account` instead of a `202`"
+      responses:
+        "200":
+          description: Logged in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthSession" }
+        "202":
+          description: No account with this email yet
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [signupRequired, signupToken, expiresAt, email, name]
+                properties:
+                  signupRequired: { type: boolean, enum: [true] }
+                  signupToken: { type: string, example: gxg_..., description: "For `auth.signup`; works for one account" }
+                  expiresAt: { type: string, format: date-time, description: 30 minutes from now }
+                  email: { type: string, format: email, description: Verified by Google }
+                  name: { type: string, description: "The Google account's name; may be empty" }
+        "400":
+          description: "`google_failed`: the code is invalid, used or expired, or the redirect URI doesn't match"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: |
+            `email_not_verified`: Google hasn't verified the email. `account_unavailable`: the account is disabled, or
+            is a staff account.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "`no_account`: with `signInOnly`, there's no GrowthX account for this Google account"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503":
+          description: "`google_unavailable`: Google sign-in isn't configured on this Core, or Google can't be reached"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /growthx_core.api.v1.auth.site_info:
+    get:
+      tags: [auth]
+      summary: The site a "Sign in with GrowthX" button came from
+      description: |
+        "Sign in with GrowthX" on a customer site's login page goes to `<website>/login?site=<host>`. Call this to show
+        "Sign in to Abc Solar" in sign-in-only mode (no "Start a free trial"). `site` is the host: the site's
+        `<sub>.tbogrowthx.com` address or its custom domain once that's active (a full URL works too).
+        `404 site_not_found`: unknown, archived, failed or not finished setting up. A suspended site is found (sign-in
+        then gets `409 site_unavailable`). 60 a minute per IP address (send `X-GrowthX-Client-IP` from the server).
+      operationId: getSiteInfo
+      x-phase: 2
+      security: []
+      parameters:
+        - name: site
+          in: query
+          required: true
+          schema: { type: string, maxLength: 300, example: abc-solar.tbogrowthx.com }
+      responses:
+        "200":
+          description: The site
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SiteSignInInfo" }
+        "404":
+          description: "`site_not_found`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /growthx_core.api.v1.auth.site_login:
+    post:
+      tags: [auth]
+      summary: A one-time sign-in link to the site, for its owner
+      description: |
+        After the person signs in to GrowthX and presses "Continue to Abc Solar" (never automatically on page load).
+        Returns the same one-time link as "Open my app" (60 seconds, single use), to the site's address in Core's
+        records (its custom domain once active), landing on the site's home page. Send the browser there and nowhere
+        else. Any role can call it; only the site's owner gets a link. No Idempotency-Key: the link works once, so call
+        again for a fresh one. 20 a minute per user.
+
+        - `403 not_linked`: this GrowthX account doesn't own the site. `message` tells staff to use the site's own
+          login, and `loginUrl` is the site's login page.
+        - `409 site_unavailable`: the site is suspended.
+        - `404 site_not_found`: as in `auth.site_info`.
+      operationId: siteLogin
+      x-phase: 2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [site]
+              properties:
+                site: { type: string, maxLength: 300, example: abc-solar.tbogrowthx.com }
+      responses:
+        "200":
+          description: The one-time link
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [redirectUrl]
+                properties:
+                  redirectUrl: { type: string, format: uri }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403":
+          description: "`not_linked`, with `loginUrl`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "`site_not_found`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "`site_unavailable`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /growthx_core.api.v1.auth.send_signup_code:
+    post:
+      tags: [auth]
+      summary: Email a sign-up verification code
+      description: |
+        Step before `auth.signup` (not needed with `googleSignupToken`). Emails a 6-digit code that lasts 10 minutes
+        and allows 5 wrong tries. A new code replaces the previous one; it can be asked for again from `resendAfter`
+        (60 seconds). Rate-limited to 10 per hour per IP address and 5 per hour per email.
+      operationId: sendSignupCode
+      x-phase: 2
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+                client: { $ref: "#/components/schemas/ClientKind" }
+      responses:
+        "202":
+          description: Code sent
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [expiresAt, resendAfter]
+                properties:
+                  expiresAt: { type: string, format: date-time }
+                  resendAfter: { type: string, format: date-time, description: Show the resend countdown until then }
+        "409":
+          description: "`email_taken` (with `fields.email`)"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429":
+          description: |
+            `rate_limited`: asked again before `resendAfter`, or too many requests. `Retry-After` gives the seconds to
+            wait.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "`email_unavailable`: the email couldn't be sent; try again shortly"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /growthx_core.api.v1.auth.signup:
     post:
       tags: [auth]
@@ -398,18 +665,38 @@ paths:
           application/json:
             schema:
               type: object
-              required: [accountType, name, email, password]
+              required: [accountType]
+              description: |
+                Either `email`, `password`, `name` and `emailCode` (from `auth.send_signup_code`), or `googleSignupToken`
+                (from `auth.google`), with which `name` defaults to the Google name.
               properties:
                 accountType: { type: string, enum: [customer, partner] }
+                googleSignupToken:
+                  type: string
+                  description: |
+                    The `signupToken` from `auth.google` (202). The account gets the email Google verified; any `email`
+                    sent is ignored. Without `password` the account has none; the user can set one with "Forgot
+                    password". Unknown, expired or used: 400 `google_signup_expired` (go through Google again). A
+                    form error (422, 409) keeps the token, so the user can fix the form and resubmit.
                 name: { type: string, maxLength: 140 }
                 company: { type: string, maxLength: 140, description: Required when accountType is customer }
-                email: { type: string, format: email }
+                email: { type: string, format: email, description: Required without googleSignupToken }
+                emailCode:
+                  type: string
+                  pattern: "^\\d{6}$"
+                  description: |
+                    Required without `googleSignupToken`. The code `auth.send_signup_code` emailed. Wrong: 422 with
+                    `fields.emailCode` (it says how many tries are left). Expired, never sent, or 5 wrong tries: 400
+                    `email_code_expired`. It stays valid after other form errors, and is used up when the account is
+                    created.
                 phone: { type: string, example: "+919876543210" }
                 password:
                   type: string
                   format: password
                   minLength: 8
-                  description: The site's password-strength policy also applies; a weak password returns 422 with `fields.password`.
+                  description: |
+                    Required without `googleSignupToken`. The site's password-strength policy also applies; a weak
+                    password returns 422 with `fields.password`.
                 productSlug: { type: string, example: solar }
                 planId:
                   type: string
@@ -419,6 +706,26 @@ paths:
                     `solar-growth-year`). If omitted, the product's highlighted plan for `billingInterval` is used.
                 billingInterval: { $ref: "#/components/schemas/BillingInterval" }
                 referralCode: { type: string, example: OKAFOR-7Q2 }
+                subdomain:
+                  type: string
+                  example: noor-solar
+                  description: |
+                    Customer only, optional. The site's address, `<subdomain>.<tenantDomain>`: 5-32 of a-z, 0-9 and
+                    `-`, starting and ending with a letter or digit (`^[a-z0-9][a-z0-9-]{3,30}[a-z0-9]$`); at most 27
+                    on the Core test site, which creates `test-<subdomain>`. Upper case is lowered. Not reserved, not
+                    taken (check with `tenant.check_subdomain`). Without it, one is made from `company`. Ignored when
+                    no product is chosen (no site is created).
+                country:
+                  type: string
+                  enum: [IN, AE]
+                  default: IN
+                  description: |
+                    Customer only. A `code` from `signup.options`. Sets the site's currency, timezone and fiscal year;
+                    those are never sent.
+                chartOfAccounts:
+                  type: string
+                  example: India - Chart of Accounts
+                  description: Customer only. One of the country's `charts` from `signup.options`; default its `defaultChart`.
                 client: { $ref: "#/components/schemas/ClientKind" }
       responses:
         "201":
@@ -432,11 +739,106 @@ paths:
                     properties:
                       site:
                         $ref: "#/components/schemas/SiteRef"
-        "409":
-          description: "`email_taken` (with `fields.email`), or `idempotency_conflict` (same key, different body)"
+        "400":
+          description: |
+            `email_code_expired`: the email code expired, was never sent, or had 5 wrong tries (ask for a new one).
+            `google_signup_expired`: the Google sign-up token is unknown, expired or used (continue with Google again).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: |
+            `email_taken` (with `fields.email`); `subdomain_taken` (with `fields.subdomain`): the chosen subdomain was
+            taken since the form checked it (in Core or on Press); or `idempotency_conflict` (same key, different body).
+            An invalid or reserved `subdomain`, an unknown `country` or a `chartOfAccounts` not offered for the country
+            is 422 with the field in `fields`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /growthx_core.api.v1.signup.options:
+    get:
+      tags: [signup]
+      summary: Countries and charts of accounts for the sign-up form
+      description: |
+        Countries a customer can choose (India and UAE at launch), with the currency, timezone and fiscal-year start
+        Core sets from each, and ERPNext's charts of accounts for it. Load the form from this, so adding a country
+        needs no website change. Changes rarely: the website may keep it for the page's lifetime.
+      operationId: signupOptions
+      x-phase: 2
+      security: []
+      responses:
+        "200":
+          description: The sign-up options
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tenantDomain, countries, defaultCountry]
+                properties:
+                  tenantDomain: { type: string, example: tbogrowthx.com }
+                  defaultCountry: { type: string, example: IN }
+                  countries:
+                    type: array
+                    items:
+                      type: object
+                      required: [code, name, currency, timezone, fiscalYearStart, charts, defaultChart]
+                      properties:
+                        code: { type: string, example: IN }
+                        name: { type: string, example: India }
+                        currency: { type: string, example: INR }
+                        timezone: { type: string, example: Asia/Kolkata }
+                        fiscalYearStart: { type: string, pattern: "^\\d{2}-\\d{2}$", example: "04-01", description: "MM-DD" }
+                        charts:
+                          type: array
+                          items: { type: string }
+                          example: [India - Chart of Accounts, Standard, Standard with Numbers]
+                        defaultChart: { type: string, example: India - Chart of Accounts }
+        "5XX": { $ref: "#/components/responses/ServerError" }
+
+  /growthx_core.api.v1.tenant.check_subdomain:
+    get:
+      tags: [signup]
+      summary: Is this subdomain free?
+      description: |
+        For the sign-up form, as the customer types (at least 400 ms after the last keystroke). Checked within Core
+        only (pattern, reserved names, existing sites), never on Press, so `auth.signup` can still return
+        `409 subdomain_taken`. Upper case is lowered. Rate-limited to 120 per minute per IP address.
+      operationId: checkSubdomain
+      x-phase: 2
+      security: []
+      parameters:
+        - name: subdomain
+          in: query
+          required: true
+          schema: { type: string, maxLength: 64 }
+      responses:
+        "200":
+          description: The answer (also when the name is invalid)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [subdomain, address, available, reason, suggestion]
+                properties:
+                  subdomain: { type: string, example: noor-solar }
+                  address:
+                    type: string
+                    example: noor-solar.tbogrowthx.com
+                    description: The full address the site would get (`test-...` on the Core test site)
+                  available: { type: boolean }
+                  reason:
+                    type: string
+                    nullable: true
+                    enum: [invalid, reserved, taken, null]
+                    description: Why it isn't available; null when it is
+                  suggestion:
+                    type: string
+                    nullable: true
+                    example: noor-solar-2
+                    description: A free name close to a taken or reserved one; null otherwise
         "422": { $ref: "#/components/responses/ValidationFailed" }
         "429": { $ref: "#/components/responses/RateLimited" }
 
@@ -477,6 +879,76 @@ paths:
       x-phase: 1
       responses:
         "200": { $ref: "#/components/responses/Ok" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /growthx_core.api.v1.auth.change_password:
+    post:
+      tags: [auth]
+      summary: Change the logged-in user's password
+      description: |
+        Every other session of the user is logged out (all their tokens are revoked), and this device gets new tokens
+        in the response: replace the stored session with them. Google-only accounts (`user.hasPassword: false`) get
+        `409 no_password`: point them to Forgot password to set one. Rate-limited to 5 per 15 minutes per user.
+      operationId: changePassword
+      x-phase: 2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string, format: password }
+                newPassword:
+                  type: string
+                  format: password
+                  minLength: 10
+                  maxLength: 128
+                  description: |
+                    At least one letter and one number; must differ from the current one. The site's password-strength
+                    policy also applies. Problems: 422 with `fields.newPassword`.
+      responses:
+        "200":
+          description: Changed; new tokens for this device
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthSession" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "409":
+          description: "`no_password`: the account signs in with Google and has no password yet"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: "`wrong_password` (with `fields.currentPassword`), or `validation_failed` (`fields.newPassword`)"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /growthx_core.api.v1.auth.logout_others:
+    post:
+      tags: [auth]
+      summary: Log out every other device
+      description: Revokes all the user's tokens except the access and refresh token making this call.
+      operationId: logoutOthers
+      x-phase: 2
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: Done
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, revoked]
+                properties:
+                  ok: { type: boolean, enum: [true] }
+                  revoked: { type: integer, description: How many sessions were logged out }
         "401": { $ref: "#/components/responses/Unauthenticated" }
 
   /growthx_core.api.v1.auth.me:
@@ -635,6 +1107,151 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: "`site_not_ready`: the site's status is not `ready`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /growthx_core.api.v1.customer.custom_domain:
+    get:
+      tags: [customer]
+      summary: The site's custom domain, if it has one
+      description: |
+        A customer can point one domain they own (e.g. `app.noorsolar.com`)
+        at their site, besides its `<subdomain>.tbogrowthx.com` address. `customDomain` is null when there is none.
+      operationId: getCustomDomain
+      x-phase: 2
+      x-roles: [customer]
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: The custom domain, or null
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [customDomain]
+                properties:
+                  customDomain:
+                    nullable: true
+                    allOf:
+                      - $ref: "#/components/schemas/CustomDomain"
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /growthx_core.api.v1.customer.add_custom_domain:
+    post:
+      tags: [customer]
+      summary: Add a custom domain to a site
+      description: |
+        Starts as `pending_dns`, with the DNS records the customer can add at their domain provider (`records`; no TXT,
+        Press checks the record points at the site). A subdomain (`app.noorsolar.com`) gets two options: a CNAME to the
+        site's `<subdomain>.tbogrowthx.com` address (`recommended`), or an A record to the proxy's fixed IP. A root domain
+        (`noorsolar.com`) gets the A record only. The A record and root domains need `growthx_custom_domain_ip` in Core's
+        site_config; without it, only subdomains with a CNAME. One custom domain per site. Paid plans only: today a
+        subscription that isn't `active` (e.g. a trial) gets `403 plan_required`. Lower-cased.
+        `403 plan_required`: the site's subscription is on a trial or a plan without custom domains.
+        `409 domain_taken`: another site uses it. `409 domain_exists`: this site already has one (remove it first).
+        `409 site_not_ready`: the site isn't `ready`. `422 validation_failed` with `fields.domain`: not a valid domain, a system
+        domain (tbogrowthx.com, tbocloud.in and Press's other domains), or a root domain when Core has no A-record IP.
+      operationId: addCustomDomain
+      x-phase: 2
+      x-roles: [customer]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, domain]
+              properties:
+                id: { type: string, description: The site's id }
+                domain: { type: string, example: app.noorsolar.com }
+      responses:
+        "201":
+          description: Added; waiting for DNS
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CustomDomain" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403":
+          description: "`plan_required`: custom domains need a paid plan"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`domain_taken`, `domain_exists` or `site_not_ready`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.customer.check_custom_domain:
+    post:
+      tags: [customer]
+      summary: Check the DNS records now
+      description: |
+        Core also checks on its own schedule; this is the customer's "Check now". Core runs Press's
+        `site.check_dns`; when the record is right it calls `site.add_domain` and the status moves to `verifying` (Press is
+        getting the Let's Encrypt certificate), then `active` once `site.domains` says so, at which point Core makes it the
+        primary host (`site.set_host_name`) and "Open my app" uses it. When the record isn't right yet the status stays
+        `pending_dns` with a `dnsProblem` saying why, and `message` says how to fix it. A domain another site on Press
+        already has ends as `failed` with a `message` (no `dnsProblem`): remove it and contact support. If Press can't be
+        reached the status doesn't change and `message` says to try again. Scheduled checks: every 10 minutes, for 3 days
+        after adding while `pending_dns`, and until done while `verifying`. 6 checks a minute per site (`429`). `404` when
+        the site has no custom domain.
+      operationId: checkCustomDomain
+      x-phase: 2
+      x-roles: [customer]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string, description: The site's id }
+      responses:
+        "200":
+          description: The domain after the check
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CustomDomain" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /growthx_core.api.v1.customer.remove_custom_domain:
+    post:
+      tags: [customer]
+      summary: Remove the site's custom domain
+      description: |
+        The site keeps working at its tbogrowthx.com address (Core makes that the primary host again first). `404` when the
+        site has no custom domain. `503 hosting_unavailable` when Press can't be reached: nothing changed, try again.
+      operationId: removeCustomDomain
+      x-phase: 2
+      x-roles: [customer]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string, description: The site's id }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503":
+          description: "`hosting_unavailable`: Press can't be reached; try again shortly"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1539,6 +2156,369 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /growthx_core.api.v1.admin.contact_requests:
+    get:
+      tags: [admin]
+      summary: Contact and Support form messages
+      description: |
+        Admin → Messages: what visitors send from the website's Contact form and customers from the Support page
+        (`contact.submit`, stored as GX Contact Request). Newest first. Read-only: replies and "handled" live in
+        the support@tbogrowthx.com mailbox. `from`/`to` work like `admin.audit_log`: either may be left out;
+        `from` after `to` gives `422` with `fields.from`.
+      operationId: adminListContactRequests
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - name: q
+          in: query
+          description: Searches name, email, company and message
+          schema: { type: string }
+        - name: source
+          in: query
+          schema: { $ref: "#/components/schemas/ContactRequestSource" }
+        - name: from
+          in: query
+          description: Received on or after this date (site timezone, Asia/Kolkata)
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          description: Received on or before this date, inclusive
+          schema: { type: string, format: date }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Messages, newest first
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/AdminContactRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.partners:
+    get:
+      tags: [admin]
+      summary: Partners (all statuses)
+      operationId: adminListPartners
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - name: q
+          in: query
+          description: Searches name, company, referral code and email
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/PartnerStatus" }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [joinedAt, -joinedAt, name, -name]
+            default: -joinedAt
+      responses:
+        "200":
+          description: Partners
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/AdminPartner" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.partner:
+    get:
+      tags: [admin]
+      summary: One partner, with their referred customers and history
+      operationId: adminGetPartner
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The partner
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminPartnerDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /growthx_core.api.v1.admin.update_partner_status:
+    post:
+      tags: [admin]
+      summary: Approve, suspend or reactivate a partner
+      description: |
+        - `approve`: `pending_approval` → `active`. Creates the partner's ERPNext Sales Partner (commission) and emails
+          them that they're approved, with their referral code.
+        - `suspend` (`reason` required): `pending_approval` or `active` → `suspended`. Their referral code stops
+          working for new sign-ups (customers already referred stay theirs). Use it to reject an application too.
+        - `reactivate`: `suspended` → `active`.
+
+        Every action is in the audit log (`history` in the response). Accepts `Idempotency-Key`.
+      operationId: adminUpdatePartnerStatus
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, action]
+              properties:
+                id: { type: string, description: Partner id }
+                action: { type: string, enum: [approve, suspend, reactivate] }
+                reason: { type: string, maxLength: 500, description: Required for suspend; optional otherwise }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminPartnerDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`not_changeable`: the action doesn't apply to the partner's status (e.g. approving an active partner)"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.customer:
+    get:
+      tags: [admin]
+      summary: One customer, with sites, subscriptions and history
+      operationId: adminGetCustomer
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The customer
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminCustomerDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /growthx_core.api.v1.admin.update_customer_status:
+    post:
+      tags: [admin]
+      summary: Extend a trial, suspend or reactivate a customer
+      description: |
+        - `extend_trial` (`days` 1-30, a whole number): status `trial` only. Adds the days to whichever is later, now or
+          the trial end.
+        - `suspend` (`reason` required): `trial` or `active` → `suspended`. Their ready sites are taken offline (Press
+          keeps the data).
+        - `reactivate`: `suspended` → `trial` if the trial hasn't ended, otherwise `active`. Their suspended sites come
+          back.
+
+        Subscriptions are not changed (billing will own them). If Press refuses a site, the action still completes,
+        that site keeps its status, and the history entry names it. Every action is in `history` and the audit log.
+        Accepts `Idempotency-Key`: a new key per intended action.
+      operationId: adminUpdateCustomerStatus
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, action]
+              properties:
+                id: { type: string, description: Customer id }
+                action: { type: string, enum: [extend_trial, suspend, reactivate] }
+                days: { type: integer, minimum: 1, maximum: 30, description: Required for extend_trial }
+                reason: { type: string, maxLength: 500, description: Required for suspend; optional otherwise }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminCustomerDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`invalid_transition`: the action doesn't apply to the customer's status (or there's no trial to extend)"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.record_payment:
+    post:
+      tags: [admin]
+      summary: Record a payment made directly (bank transfer) and make the customer active
+      description: |
+        For payments made to us directly while there's no payment gateway: a first payment (status `trial` or
+        `suspended`) or a renewal (status `active`).
+
+        - The customer's subscription for the plan's product moves to `plan` (an active or a retired plan) and becomes
+          `active`. The trial end is cleared.
+        - `currentPeriodEnd` moves one billing period on from `paidOn`, or, for a renewal paid before the current
+          period ends, from the current period end. A `one_time` (lifetime) plan sets it to `null`: never expires.
+          Moving from a monthly or yearly plan to lifetime is allowed; a customer already on lifetime gets `409
+          invalid_transition`.
+        - The customer becomes `active`. A suspended customer's sites come back, as with `reactivate`.
+        - The payment (amount, the plan's price, date, reference, new period end) is in `history` and the audit log.
+          No invoice is created, and the customer isn't emailed.
+
+        Accepts `Idempotency-Key`: a new key per payment.
+      operationId: adminRecordPayment
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, plan, amount, reference, paidOn]
+              properties:
+                id: { type: string, description: Customer id }
+                plan: { type: string, description: "Plan id (`Plan.id`) for one of the customer's products" }
+                amount: { type: integer, minimum: 1, description: Amount paid in paise, example: 15000000 }
+                reference: { type: string, maxLength: 140, description: "Bank transfer reference (UTR) or receipt number" }
+                paidOn: { type: string, format: date, description: "Date paid, YYYY-MM-DD, not in the future" }
+      responses:
+        "200":
+          description: Recorded
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminCustomerDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`invalid_transition`: the customer is churned. `duplicate_payment`: this reference is already recorded on the subscription."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.audit_log:
+    get:
+      tags: [admin]
+      summary: Audit log, newest first
+      operationId: adminAuditLog
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - name: entityType
+          in: query
+          schema: { type: string, enum: [customer, partner, tenant, appointment] }
+        - name: entityId
+          in: query
+          schema: { type: string }
+        - name: actor
+          in: query
+          description: The user's email (exact)
+          schema: { type: string }
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          description: Inclusive
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: Entries
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/AuditLogEntry" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.referral.record_click:
+    post:
+      tags: [partner]
+      summary: Record a visit to a referral link (website server only)
+      description: |
+        Called by the website's server when `/r/CODE` loads, after it has skipped link previews, bots and prefetches.
+        No user token: it needs `X-GrowthX-Web-Key` (403 without a valid one), and the visitor's IP in
+        `X-GrowthX-Client-IP`. Counts at most one click per code and visitor IP every 30 minutes; only a hash of the IP
+        is kept. Always `202` with `counted`, also for an unknown or inactive code, so it can't be used to find codes.
+        Make the call fire-and-forget with a short timeout.
+      operationId: recordReferralClick
+      x-phase: 2
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, maxLength: 40, example: OKAFOR-7GB }
+                landingPath: { type: string, maxLength: 200, example: /r/OKAFOR-7GB }
+      responses:
+        "202":
+          description: Recorded, or not counted (duplicate, unknown or inactive code)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [counted]
+                properties:
+                  counted: { type: boolean }
+        "403":
+          description: "`forbidden`: missing or wrong web key"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
   /growthx_core.api.v1.admin.tenants:
     get:
       tags: [admin]
@@ -1628,6 +2608,43 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: "`not_retryable`: the tenant is not in `failed` status"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /growthx_core.api.v1.admin.archive_tenant:
+    post:
+      tags: [admin]
+      summary: Archive a failed site
+      description: |
+        For a site whose creation failed (e.g. a test sign-up): its Press site, if one was created, is backed up and
+        deleted, and the tenant becomes `archived`, so it no longer counts in `health.provisioning`. Ready, suspended
+        and in-progress sites can't be archived here. Also a button on the GX Tenant form in Core's desk.
+      operationId: adminArchiveTenant
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string, description: Tenant id }
+      responses:
+        "200":
+          description: Archived
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminTenantDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`not_archivable`: the tenant is not in `failed` status"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1923,13 +2940,18 @@ components:
                 payment_verification_failed, payment_unavailable, site_not_ready, not_retryable,
                 slot_taken, expert_busy, not_changeable, not_started,
                 idempotency_conflict, rate_limited, bad_request, method_not_allowed, invalid_tenant_key,
-                invalid_login_token, internal_error. Proposed: duplicate_lead, invalid_otp.
+                invalid_login_token, internal_error, no_account, site_not_found, not_linked, site_unavailable.
+                Proposed: duplicate_lead, invalid_otp.
               example: email_taken
             message: { type: string, example: An account with this email already exists. }
             fields:
               type: object
               additionalProperties: { type: string }
               example: { email: An account with this email already exists. }
+            loginUrl:
+              type: string
+              format: uri
+              description: "`not_linked` only: the site's own login page"
             reference: { type: string, description: Support reference (5xx responses only) }
 
     PageMeta:
@@ -1957,7 +2979,11 @@ components:
 
     BillingInterval:
       type: string
-      enum: [month, year]
+      enum: [month, year, one_time]
+      description: |
+        `one_time`: paid once, never expires (the launch "Lifetime" plan). Its subscription has `currentPeriodEnd:
+        null`, never renews and counts 0 towards MRR. It's paid by bank transfer and recorded with
+        `admin.record_payment`; `billing.create_checkout` doesn't take it (online payment is month/year only).
 
     ClientKind:
       type: string
@@ -1983,6 +3009,41 @@ components:
           enum: [pending_approval, active, suspended]
           nullable: true
           description: Set only for partners
+        hasPassword:
+          type: boolean
+          description: |
+            False for a Google sign-up that never set a password: show "Set a password" (Forgot password) instead of
+            "Change password".
+
+    ProvisioningHealth:
+      type: object
+      required: [status, problems, sites, jobs, scheduler, checkedAt]
+      properties:
+        status: { type: string, enum: [ok, alert] }
+        problems:
+          type: array
+          items: { type: string, enum: [failed_sites, stuck_sites, no_workers, queue_unreachable, scheduler_not_running] }
+        sites:
+          type: object
+          required: [failed, stuck]
+          properties:
+            failed: { type: integer }
+            stuck: { type: integer }
+        jobs:
+          type: object
+          nullable: true
+          description: "Core's site-creation jobs on the `long` queue; null if Redis can't be reached"
+          properties:
+            queued: { type: integer }
+            running: { type: integer }
+            failedLast24h: { type: integer, description: "Jobs that crashed (e.g. timed out); the site then shows as stuck" }
+            workers: { type: integer, description: Workers on the long queue }
+        scheduler:
+          type: object
+          properties:
+            active: { type: boolean }
+            lastRun: { type: string, format: date-time, nullable: true, description: "Last run of resume_pending" }
+        checkedAt: { type: string, format: date-time }
 
     AuthSession:
       type: object
@@ -2013,7 +3074,11 @@ components:
         productSlug: { type: string, example: solar }
         name: { type: string, example: Growth }
         description: { type: string }
-        price: { $ref: "#/components/schemas/Price" }
+        price:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/Price"
+          description: "`null` for guests in `catalogue.plans` (prices go only to signed-in callers)."
         interval: { $ref: "#/components/schemas/BillingInterval" }
         trialDays: { type: integer, example: 14 }
         features:
@@ -2061,6 +3126,46 @@ components:
         startedAt: { type: string, format: date-time, nullable: true }
         finishedAt: { type: string, format: date-time, nullable: true }
 
+    SiteSignInInfo:
+      type: object
+      required: [siteName, siteUrl, loginUrl]
+      properties:
+        siteName: { type: string, example: Abc Solar }
+        siteUrl: { type: string, format: uri, example: "https://abc-solar.tbogrowthx.com" }
+        loginUrl: { type: string, format: uri, description: "The site's own login page, for staff", example: "https://abc-solar.tbogrowthx.com/login" }
+    CustomDomain:
+      type: object
+      description: A customer's own domain pointed at their site.
+      required: [domain, status, records]
+      properties:
+        domain: { type: string, example: app.noorsolar.com }
+        status:
+          type: string
+          enum: [pending_dns, verifying, active, failed]
+          description: "`pending_dns`: waiting for the records; `verifying`: records found, HTTPS certificate being issued; `active`: live; `failed`: see `message` (remove the domain and add it again)"
+        records:
+          type: array
+          description: The record options (add one of them). Shown until the domain is active; empty once it is.
+          items:
+            type: object
+            required: [type, host, value, recommended]
+            properties:
+              type: { type: string, enum: [CNAME, A], description: "Add one of them, not both" }
+              host: { type: string, description: "Name as most providers want it: `app` for app.noorsolar.com, `@` for the root domain", example: app }
+              value: { type: string, description: "The site's address (CNAME) or the proxy's IP (A)", example: noor-solar.tbogrowthx.com }
+              recommended: { type: boolean, description: "The CNAME for a subdomain; the A record for a root domain" }
+        dnsProblem:
+          type: string
+          nullable: true
+          enum: [not_found, wrong_target, multiple_records, aaaa_record, caa_blocks, cloudflare_proxied]
+          description: |
+            Why the last check failed, from Press's `check_dns`. `not_found`: no record yet; `wrong_target`: it points elsewhere;
+            `multiple_records`: more than one CNAME or A record; `aaaa_record`: an IPv6 record exists; `caa_blocks`: a CAA record
+            doesn't allow Let's Encrypt; `cloudflare_proxied`: behind Cloudflare's proxy (must be "DNS only"). Press reports a wrong target that runs a web
+            server, or a wildcard (*) record, as proxied: Core says `wrong_target` unless the server is Cloudflare's. Null when fine, and when `failed`.
+        message: { type: string, nullable: true, description: Safe to show the customer }
+        checkedAt: { type: string, format: date-time, nullable: true }
+        activeAt: { type: string, format: date-time, nullable: true }
     SiteDetail:
       allOf:
         - $ref: "#/components/schemas/Site"
@@ -2086,7 +3191,11 @@ components:
         price: { $ref: "#/components/schemas/Price" }
         interval: { $ref: "#/components/schemas/BillingInterval" }
         trialEndsAt: { type: string, format: date-time, nullable: true }
-        currentPeriodEnd: { type: string, format: date-time, nullable: true }
+        currentPeriodEnd:
+          type: string
+          format: date-time
+          nullable: true
+          description: Null during a trial and for a `one_time` (lifetime) plan, which never expires.
         cancelAtPeriodEnd: { type: boolean, default: false }
         siteId: { type: string, nullable: true }
 
@@ -2175,8 +3284,6 @@ components:
         id: { type: string }
         businessName: { type: string, example: Noor Solar }
         contactName: { type: string, nullable: true, example: Amina Noor }
-        phone: { type: string, nullable: true, description: "Shown so the partner can follow up. Confirm with Sammish (privacy)." }
-        email: { type: string, format: email, nullable: true }
         city: { type: string, nullable: true }
         productSlug: { type: string, nullable: true, example: solar }
         plan:
@@ -2226,7 +3333,7 @@ components:
       properties:
         from: { type: string, format: date }
         to: { type: string, format: date }
-        clicks: { type: integer, nullable: true, description: Null until the website tracks link visits }
+        clicks: { type: integer, nullable: true, description: "Referral link visits in the range, as recorded by `referral.record_click`" }
         signups: { type: integer }
         conversions: { type: integer }
         conversionRate: { type: number, nullable: true, description: conversions / signups (0 to 1). Null when signups is 0. }
@@ -2422,7 +3529,7 @@ components:
       type: object
       required: [mrr, activeCustomers, trialCustomers, suspendedCustomers, activePartners]
       properties:
-        mrr: { $ref: "#/components/schemas/Money", description: Excludes GST }
+        mrr: { $ref: "#/components/schemas/Money", description: "Excludes GST. One-time (lifetime) payments count 0." }
         activeCustomers: { type: integer }
         trialCustomers: { type: integer }
         suspendedCustomers: { type: integer }
@@ -2431,6 +3538,78 @@ components:
     CustomerStatus:
       type: string
       enum: [trial, active, suspended, churned]
+
+    PartnerStatus:
+      type: string
+      enum: [pending_approval, active, suspended]
+
+    AdminPartner:
+      type: object
+      required: [id, name, email, referralCode, status, joinedAt, referredCustomers, payingCustomers, mrr]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        email: { type: string, format: email, nullable: true }
+        company: { type: string, nullable: true }
+        referralCode: { type: string, example: OKAFOR-7GB }
+        status: { $ref: "#/components/schemas/PartnerStatus" }
+        tier: { type: string, nullable: true }
+        joinedAt: { type: string, format: date-time }
+        referredCustomers: { type: integer, description: All customers who signed up with their code }
+        payingCustomers: { type: integer, description: Referred customers with status active (not trial) }
+        mrr: { $ref: "#/components/schemas/Money", description: "Referred customers' active subscriptions, monthly, excluding GST" }
+
+    AdminPartnerDetail:
+      allOf:
+        - $ref: "#/components/schemas/AdminPartner"
+        - type: object
+          required: [customers, history]
+          properties:
+            phone: { type: string, nullable: true }
+            city: { type: string, nullable: true }
+            gstin: { type: string, nullable: true }
+            customers:
+              type: array
+              items:
+                type: object
+                properties:
+                  id: { type: string }
+                  company: { type: string }
+                  contactEmail: { type: string }
+                  status: { $ref: "#/components/schemas/CustomerStatus" }
+                  plan: { type: string, nullable: true }
+                  mrr: { $ref: "#/components/schemas/Money" }
+                  createdAt: { type: string, format: date-time }
+            history:
+              type: array
+              items:
+                type: object
+                properties:
+                  at: { type: string, format: date-time }
+                  actor: { type: string }
+                  action: { type: string, enum: [approve, suspend, reactivate] }
+                  details: { type: string, example: "active → suspended: Spam referrals" }
+
+    ContactRequestSource:
+      type: string
+      enum: [contact, support]
+      description: "`contact`: the public Contact form. `support`: the signed-in customer Support page."
+
+    AdminContactRequest:
+      type: object
+      required: [id, name, email, company, message, source, customerId, createdAt]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        email: { type: string, format: email }
+        company: { type: string, nullable: true }
+        message: { type: string, description: Plain text; may contain line breaks. Render as text, not HTML. }
+        source: { $ref: "#/components/schemas/ContactRequestSource" }
+        customerId:
+          type: string
+          nullable: true
+          description: The customer (GX Account) when the message came from the signed-in Support page.
+        createdAt: { type: string, format: date-time }
 
     AdminCustomer:
       type: object
@@ -2444,6 +3623,61 @@ components:
         partnerName: { type: string, nullable: true }
         mrr: { $ref: "#/components/schemas/Money" }
         createdAt: { type: string, format: date-time }
+
+    AdminCustomerDetail:
+      allOf:
+        - $ref: "#/components/schemas/AdminCustomer"
+        - type: object
+          required: [sites, subscriptions, history]
+          properties:
+            contactName: { type: string, nullable: true }
+            country: { type: string, nullable: true, example: India }
+            trialEndsAt: { type: string, format: date-time, nullable: true }
+            sites:
+              type: array
+              items:
+                type: object
+                properties:
+                  id: { type: string }
+                  productSlug: { type: string }
+                  siteUrl: { type: string, nullable: true }
+                  status: { $ref: "#/components/schemas/SiteStatus" }
+            subscriptions:
+              type: array
+              items:
+                type: object
+                properties:
+                  id: { type: string }
+                  plan: { type: string }
+                  status: { $ref: "#/components/schemas/SubscriptionStatus" }
+                  currentPeriodEnd: { type: string, format: date-time, nullable: true }
+            history:
+              type: array
+              items:
+                type: object
+                properties:
+                  at: { type: string, format: date-time }
+                  actor: { type: string }
+                  action: { type: string, enum: [extend_trial, suspend, reactivate, record_payment] }
+                  details: { type: string, example: "trial → suspended: Chargeback" }
+
+    AuditLogEntry:
+      type: object
+      required: [id, at, action]
+      properties:
+        id: { type: string }
+        at: { type: string, format: date-time }
+        actor: { type: string, nullable: true, description: The user's email }
+        action:
+          type: string
+          example: suspend
+          description: |
+            Without the entity prefix, e.g. `suspend` (customer), `approve` (partner), `reschedule` (appointment),
+            `retry_provisioning` / `archive_tenant` / `open_site` / `add_custom_domain` / `remove_custom_domain` (tenant)
+        entityType: { type: string, nullable: true, enum: [customer, partner, tenant, appointment, null] }
+        entityId: { type: string, nullable: true }
+        entityLabel: { type: string, nullable: true, description: "Company, partner, site or visitor name" }
+        details: { type: string, nullable: true }
 
     AdminTenant:
       type: object

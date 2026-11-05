@@ -30,6 +30,8 @@ INVOICE_STATUS = {
 
 
 def user(name: str) -> dict:
+	from growthx_core import accounts  # accounts → runner → this module
+
 	u = frappe.db.get_value("User", name, ["name", "full_name", "email"], as_dict=True)
 	role = get_role(name)
 	company = None
@@ -47,6 +49,7 @@ def user(name: str) -> dict:
 		"role": role,
 		"company": company,
 		"partnerStatus": partner_status,
+		"hasPassword": accounts.has_password(name),
 	}
 
 
@@ -71,13 +74,13 @@ def product(p) -> dict:
 	}
 
 
-def plan(p) -> dict:
+def plan(p, show_price=True) -> dict:
 	return {
 		"id": p.name,
 		"productSlug": p.product,
 		"name": p.plan_name,
 		"description": p.description or "",
-		"price": price(p.price, p.gst_included),
+		"price": price(p.price, p.gst_included) if show_price else None,
 		"interval": p.billing_interval,
 		"trialDays": cint(p.trial_days),
 		"features": [line.strip() for line in (p.features or "").splitlines() if line.strip()],
@@ -166,7 +169,12 @@ def invoice(i) -> dict:
 	}
 
 
-APPOINTMENT_STATUS = {"Confirmed": "confirmed", "Completed": "completed", "Cancelled": "cancelled", "No Show": "no_show"}
+APPOINTMENT_STATUS = {
+	"Confirmed": "confirmed",
+	"Completed": "completed",
+	"Cancelled": "cancelled",
+	"No Show": "no_show",
+}
 
 
 def admin_appointment(row) -> dict:

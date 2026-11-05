@@ -1,0 +1,76 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-10-30 10:00:00.000000",
+ "description": "A visit to a partner's referral link (/r/CODE), recorded by the website. Counted once per code and visitor every 30 minutes; link previews and bots are filtered by the website.",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "partner",
+  "referral_code",
+  "visitor_hash",
+  "landing_path"
+ ],
+ "fields": [
+  {
+   "fieldname": "partner",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Partner",
+   "options": "GX Partner Profile",
+   "read_only": 1,
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "referral_code",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Referral Code",
+   "read_only": 1
+  },
+  {
+   "description": "SHA-256 of the visitor's IP address and the code; the IP itself is never stored",
+   "fieldname": "visitor_hash",
+   "fieldtype": "Data",
+   "label": "Visitor Hash",
+   "read_only": 1
+  },
+  {
+   "fieldname": "landing_path",
+   "fieldtype": "Data",
+   "label": "Landing Path",
+   "read_only": 1
+  }
+ ],
+ "in_create": 1,
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-10-30 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Partners",
+ "name": "GX Referral Click",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager"
+  },
+  {
+   "export": 1,
+   "read": 1,
+   "report": 1,
+   "role": "GrowthX Admin"
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

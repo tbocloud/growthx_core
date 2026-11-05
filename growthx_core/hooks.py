@@ -268,12 +268,18 @@ auth_hooks = ["growthx_core.tokens.authenticate_request"]
 # including errors that Frappe raises before our code runs (e.g. an expired token).
 after_request = ["growthx_core.api.v1._core.after_request"]
 
+# Site settings Core needs (email footer); see setup/install.py
+after_install = "growthx_core.setup.install.after_install"
+after_migrate = ["growthx_core.setup.install.after_migrate"]
+
 scheduler_events = {
 	"cron": {
 		# Resume provisioning jobs that are waiting on Press, or whose worker died
 		"* * * * *": ["growthx_core.provisioning.runner.resume_pending"],
 		# "Talk to an expert" reminders, 24 h and 1 h before each call
 		"*/5 * * * *": ["growthx_core.api.v1.appointments.send_reminders"],
+		# Custom domains waiting on the customer's DNS record or on Press's HTTPS certificate
+		"*/10 * * * *": ["growthx_core.provisioning.custom_domains.check_pending"],
 	},
 	"daily": [
 		"growthx_core.tokens.delete_expired_tokens",

@@ -148,7 +148,8 @@ TRIAL_SOON_DAYS = 7
 
 
 def _partner_customers(partner) -> list[dict]:
-	"""Every customer attributed to `partner`, newest first, as PartnerCustomer dicts.
+	"""Every customer attributed to `partner`, newest first, as PartnerCustomer dicts. Never the
+	customer's email or phone: partners don't get customers' contact details (decided 29 Oct 2026).
 
 	Each dict also carries "_sub" (the latest subscription row) for detail views. Partners have a
 	few hundred customers at most, so filtering and paging happen in Python."""
@@ -159,8 +160,6 @@ def _partner_customers(partner) -> list[dict]:
 			"name",
 			"account_name",
 			"user",
-			"contact_email",
-			"phone",
 			"status",
 			"referred_at",
 			"creation",
@@ -213,8 +212,6 @@ def _partner_customers(partner) -> list[dict]:
 				"id": a.name,
 				"businessName": a.account_name,
 				"contactName": users.get(a.user) or None,
-				"phone": a.phone or None,
-				"email": a.contact_email or None,
 				"city": None,
 				"productSlug": sub.product if sub else None,
 				"plan": {
@@ -324,13 +321,18 @@ def referral_stats():
 	if start > end:
 		raise validation_error({"from": "from must be on or before to."})
 
-	rows = [r for r in _partner_customers(current_partner()) if start <= r["_joined"].date() <= end]
+	partner = current_partner()
+	rows = [r for r in _partner_customers(partner) if start <= r["_joined"].date() <= end]
+	clicks = frappe.db.count(
+		"GX Referral Click",
+		{"partner": partner.name, "creation": ("between", [f"{start} 00:00:00", f"{end} 23:59:59.999999"])},
+	)
 	signups = len(rows)
 	conversions = sum(1 for r in rows if r["subscriptionStatus"] in ("active", "past_due"))
 	return {
 		"from": start.isoformat(),
 		"to": end.isoformat(),
-		"clicks": None,  # until the website records link visits
+		"clicks": clicks,  # recorded by the website through referral.record_click
 		"signups": signups,
 		"conversions": conversions,
 		"conversionRate": round(conversions / signups, 4) if signups else None,
@@ -588,8 +590,11 @@ def update_profile():
 	doc.update(updates)
 	doc.save(ignore_permissions=True)
 	if "partner_name" in updates:
+		# Save the User doc (not db.set_value) so Frappe also rebuilds full_name, used by auth.me.
 		first, _, last = updates["partner_name"].partition(" ")
-		frappe.db.set_value("User", partner.user, {"first_name": first, "last_name": last or None})
+		user = frappe.get_doc("User", partner.user)
+		user.first_name, user.middle_name, user.last_name = first, None, last or None
+		user.save(ignore_permissions=True)
 	return _profile(partner.name)
 
 

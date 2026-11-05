@@ -80,7 +80,7 @@ A slash (`{GROWTHX_API_URL}/catalogue.products`) is not a Frappe method and retu
 |---|---|---|---|---|
 | GET | `health.ping` | none | 0 | — |
 | GET | `catalogue.products` | none | 1 | `GET /products` |
-| GET | `catalogue.plans?product=solar` | none | 1 | `GET /plans` |
+| GET | `catalogue.plans?product=solar` | none (price only when signed in) | 1 | `GET /plans` |
 | POST | `contact.submit` | none | 2 | `POST /contact` |
 | GET | `appointments.slots?days=28` | none | 2 | `GET /appointments/slots` |
 | POST | `appointments.book` | none | 2 | `POST /appointments` |
@@ -94,6 +94,11 @@ A slash (`{GROWTHX_API_URL}/catalogue.products`) is not a Frappe method and retu
 | GET | `admin.appointment_experts` | admin | 2 | *new* |
 | POST | `auth.login` | none | 1 | `POST /auth/login` |
 | POST | `auth.signup` | none | 2 | `POST /auth/signup` |
+| POST | `auth.google` | none | 2 | *new* (§5.12) |
+| POST | `auth.send_signup_code` | none | 2 | *new* (§5.4) |
+| POST | `auth.change_password` | any | 2 | *new* (§5.13) |
+| POST | `auth.logout_others` | any | 2 | *new* (§5.13) |
+| POST | `referral.record_click` | web key | 2 | *new* (§5.14) |
 | POST | `auth.refresh` | none | 1 | *new* |
 | POST | `auth.logout` | any | 1 | `POST /auth/logout` |
 | GET | `auth.me` | any | 1 | `GET /me` |
@@ -110,6 +115,7 @@ A slash (`{GROWTHX_API_URL}/catalogue.products`) is not a Frappe method and retu
 | GET | `partner.commission_history` | partner | 3 | `GET /partner/commission-history` |
 | GET | `admin.summary` | admin | 3 | `GET /admin/summary` |
 | GET | `admin.customers?q&status&sort` | admin | 2 | `GET /admin/customers` |
+| GET | `admin.contact_requests?q&source&from&to` | admin | 2 | *new* (Admin → Messages) |
 | GET | `admin.tenants?q&status&sort` | admin | 2 | `GET /admin/tenants` |
 | GET | `admin.tenant?id=` | admin | 2 | `GET /admin/tenants/{id}` |
 | POST | `admin.retry_provisioning` | admin | 2 | `POST /admin/tenants/{id}/retry` |
@@ -192,6 +198,10 @@ POST {GROWTHX_API_URL}.auth.reset_password       {"key": "<key from the link>", 
 `laundry` and `tailoring` follow, also `coming_soon`.
 
 `GET {GROWTHX_API_URL}.catalogue.plans?product=solar` (an unknown product → `422`)
+
+Prices are not public: for guests every plan has `"price": null`. Signed-in pages call the same endpoint
+with the user's bearer token and get the price, as below. (The site_config flag `growthx_public_prices`
+makes them public again.) Show "Talk to us" or nothing where the price would be.
 ```json
 {
   "items": [
@@ -211,9 +221,20 @@ POST {GROWTHX_API_URL}.auth.reset_password       {"key": "<key from the link>", 
 ```
 Six plans in total: `solar-{starter,growth,scale}-{month,year}`.
 
-**Each plan has one interval.** Group plans by `name` to show the monthly/yearly toggle, and send the matching plan `id`. The prices (₹699 / ₹1,499 / ₹3,999, yearly = 10 × monthly, GST excluded) are **placeholders** until the pricing decision (D6).
+**Each plan has one interval.** Group plans by `name` to show the monthly/yearly toggle, and send the matching plan `id`. At launch (D6) each product has a single `one_time` plan, Lifetime: ₹1,50,000 including GST (`price.gstIncluded: true`); the monthly and yearly plans above are retired and not returned.
 
 ### 5.4 Sign-up, then poll provisioning
+
+**First, verify the email** (not needed for a Google sign-up, §5.12):
+
+```http
+POST {GROWTHX_API_URL}.auth.send_signup_code     {"email": "customer@growthx.test", "client": "web"}
+```
+→ `202 {"expiresAt", "resendAfter"}`. The 6-digit code lasts 10 minutes; show the resend countdown until
+`resendAfter` (60 s). Asking sooner → `429` with `Retry-After`. `409 email_taken` (with `fields.email`),
+`503 email_unavailable` (couldn't send; try again). Then send the code as `emailCode` with the sign-up below.
+A wrong code → `422` with `fields.emailCode` (it says how many tries are left); expired or 5 wrong tries →
+`400 email_code_expired` (ask for a new code). Other form errors don't use the code up.
 
 ```http
 POST {GROWTHX_API_URL}.auth.signup
@@ -441,9 +462,39 @@ Idempotency-Key: …
 - If a job is already running, you get `202` with its current state, and no new job starts.
 - If the tenant isn't `failed` → `409 {"error": {"code": "not_retryable", "message": "Only a failed site can be retried."}}`.
 
+**Partners** (`/admin/partners`):
+- `GET admin.partners?q=&status=&page=&pageSize=&sort=` → every partner (not only those with referrals): `id`, `name`,
+  `email`, `company`, `referralCode`, `status` (`pending_approval` / `active` / `suspended`), `tier`, `joinedAt`,
+  `referredCustomers`, `payingCustomers`, `mrr`. `q` searches name, company, referral code and email.
+- `GET admin.partner?id=` → the same plus `phone`, `city`, `gstin`, `customers` (each referred customer with status,
+  plan and MRR) and `history` (who approved or suspended them, when, and why).
+- `POST admin.update_partner_status {id, action, reason?}`: `approve` (pending → active; creates their commission
+  record in ERPNext and emails them), `suspend` (`reason` required; pending or active → suspended; their code stops
+  working for new sign-ups; use it to reject an application too), `reactivate` (suspended → active). Returns the
+  partner's details. Wrong state → `409 not_changeable`.
+
+**Customers** (`/admin/customers/<id>`):
+- `GET admin.customer?id=` → the list row plus `contactName`, `country`, `trialEndsAt`, `sites[]`, `subscriptions[]` and
+  `history[]`.
+- `POST admin.update_customer_status {id, action, days?, reason?}`: `extend_trial` (`days` 1–30, trial only),
+  `suspend` (`reason` required; their sites go offline), `reactivate` (back to trial if it hasn't ended, else active;
+  sites come back). Wrong state → `409 invalid_transition`. Returns the detail. A new Idempotency-Key per action.
+- `POST admin.record_payment {id, plan, amount, reference, paidOn}`: a payment made by bank transfer while there's no
+  payment gateway, the first one or a renewal. `amount` is in paise, `paidOn` is `YYYY-MM-DD`. The customer's
+  subscription moves to `plan` and is active for one more billing period, from `paidOn` or, if paid early, from the
+  current period end. A `one_time` (lifetime) plan has no end: `currentPeriodEnd` is `null` and nothing expires,
+  renews or suspends it (show "Paid, lifetime, never expires"). The customer becomes active (a suspended customer's
+  sites come back). Churned, or already on lifetime → `409 invalid_transition`; a reference already recorded → `409
+  duplicate_payment`. The payment shows in `history` as
+  `record_payment`, with the plan's price next to the amount. No email to the customer. Returns the detail. A new
+  Idempotency-Key per payment.
+
+**Audit log:** `GET admin.audit_log?entityType=&entityId=&actor=&from=&to=&page=&pageSize=` → newest first:
+`{id, at, actor, action, entityType, entityId, entityLabel, details}`.
+
 ### 5.10 Contact form
 
-`POST {GROWTHX_API_URL}.contact.submit` with body `{"name", "email", "company"?, "message"}` → `202 {"ok": true}`. A bad email gives `422` with `fields.email`.
+`POST {GROWTHX_API_URL}.contact.submit` with body `{"name", "email", "company"?, "message"}` → `202 {"ok": true}`. A bad email gives `422` with `fields.email`. The website's Contact form and the customer Support form both use it. The Support form sends `"source": "support"` with the customer's bearer token; Core takes the customer from the token (never from the body). Admins read the messages with `admin.contact_requests` (newest first, `q` over name/email/company/message, `source`, `from`/`to`); it's read-only, replies and "handled" stay in the mailbox. Core saves a **GX Contact Request** and emails it to `support@tbogrowthx.com` (site_config `growthx_support_email` changes the address), with the sender as Reply-To. If the email fails, the request is still saved and `202` is returned.
 
 ### 5.11 Talk to an expert (appointments)
 
@@ -469,12 +520,98 @@ Idempotency-Key: …
 - **Emails:** every change emails the visitor (copy to the expert) with an updated calendar invite (`.ics` with the same UID, so calendars move or cancel the event). Reminders go out 24 h and 1 h before the call (scheduler, every 5 minutes; a call booked less than 24 h ahead gets only the 1-hour one).
 - **ERPNext:** the Event moves or is cancelled with the booking.
 
+### 5.12 Sign in with Google (web)
+
+The website runs the Google redirect; Core does the code exchange (it holds the client secret).
+
+1. **"Continue with Google"** → redirect to `https://accounts.google.com/o/oauth2/v2/auth` with `client_id`,
+   `redirect_uri={website}/api/auth/google/callback`, `response_type=code`, `scope=openid email profile`, a random
+   `state` (keep it in a short-lived httpOnly cookie) and, recommended, PKCE (`code_challenge`, `S256`).
+   - Client ID: production `942801595002-v2nb2bdu6vl3t4dfun707sqkco3f7je9.apps.googleusercontent.com`; core-test
+     (your local site on port 3000) `942801595002-he8h4q519jkgesln920aq39d14pinu5p.apps.googleusercontent.com`.
+     The client ID is public; the secret is only on Core.
+2. **`GET /api/auth/google/callback`** (Next.js route): check `state`, then server-to-server:
+
+```http
+POST {GROWTHX_API_URL}.auth.google     {"code": "<code>", "codeVerifier": "<if PKCE>"}
+```
+
+- `200` → the same session as `auth.login`: store it and go to the dashboard.
+- `202 {"signupRequired": true, "signupToken": "gxg_…", "expiresAt", "email", "name"}` → no account yet. Show the
+  sign-up form with name and email filled in (email read-only, no password fields), then send
+  `auth.signup` with `"googleSignupToken": "<signupToken>"` instead of `email` and `password` (everything else as
+  usual: `accountType`, `company`, plan, site choices). The token lasts 30 minutes; after a 422 or 409 it still
+  works, so the user can fix the form. `400 google_signup_expired` → start again from step 1.
+- `400 google_failed` (code used, expired, or redirect URI mismatch), `403 email_not_verified`,
+  `403 account_unavailable` (disabled or staff account), `503 google_unavailable` → back to the login page with a
+  message.
+
+Core sends Google the redirect URI from its config, so it must be exactly the one in step 1. An existing
+email-and-password account can also sign in with Google (same email); a Google-only account can set a password
+later with "Forgot password".
+
+### 5.13 Account settings (any role)
+
+- `user.hasPassword` (in `auth.me` and every session) is `false` for a Google sign-up that never set a password: show
+  "Set a password" (Forgot password) instead of "Change password".
+- `POST auth.change_password {currentPassword, newPassword}` → `200` with a new session for this device; **replace the
+  stored tokens**, because every other session (this one's old tokens included) is revoked. `newPassword`: 10–128
+  characters, a letter and a number. Errors: `422 wrong_password` (`fields.currentPassword`), `422` with
+  `fields.newPassword`, `409 no_password`, `429` after 5 tries in 15 minutes.
+- `POST auth.logout_others {}` → `{ok: true, revoked: <n>}`; this session stays.
+
+### 5.14 Referral link clicks
+
+From the `/r/CODE` page's server code, after skipping link previews, bots and prefetches:
+`POST referral.record_click {code, landingPath?}` with `X-GrowthX-Web-Key` and the visitor's IP in
+`X-GrowthX-Client-IP` → always `202 {counted}`. One click per code and visitor IP every 30 minutes. Fire-and-forget,
+short timeout. `partner.referral_stats` then returns `clicks`.
+
+### 5.15 Custom domains (customer)
+
+One domain the customer owns per site, on paid plans (`403 plan_required` for a trial). A subdomain
+(`app.noorsolar.com`) can use a CNAME (`recommended`) or an A record to the proxy IP; a root domain (`noorsolar.com`)
+an A record only. The A record and root domains need `growthx_custom_domain_ip` in Core's site_config. The shape is the website's proposal from PR #42, adopted:
+
+- `GET customer.custom_domain?id=` → `{customDomain}` (null when none).
+- `POST customer.add_custom_domain {id, domain}` → `201 CustomDomain` at `pending_dns`, with the record options in
+  `records` (`host` as most providers want it, `@` for a root domain; `value` the site's address or the IP; add one).
+  Errors: `422` (`fields.domain`: not a domain, ours, or a root domain without the IP), `409 domain_exists` / `domain_taken` / `site_not_ready`, `403 plan_required`.
+- `POST customer.check_custom_domain {id}` ("Check now", 6 a minute per site) → `CustomDomain`. `pending_dns` with
+  `dnsProblem` + `message` until the record is right → `verifying` (HTTPS certificate) → `active`. Core also checks
+  every 10 minutes. `failed` (no `dnsProblem`, see `message`): certificate failed, or another Press site has the domain.
+- `POST customer.remove_custom_domain {id}` → `{ok: true}`; `404` if none, `503 hosting_unavailable` if Press is down.
+- Once `active`, "Open my app" goes to the custom domain.
+
+### 5.16 "Sign in with GrowthX" on a site (sign-in only)
+
+The button on a site's login page (growthx_theme) goes to `<website>/login?site=<host>`; `host` may be the site's
+`<sub>.tbogrowthx.com` address or its active custom domain.
+
+- `GET auth.site_info?site=` (public, 60 a minute per IP) → `{siteName, siteUrl, loginUrl}`; `404 site_not_found`.
+  Show "Sign in to <siteName>" without "Start a free trial".
+- `auth.google {..., signInOnly: true}` → `404 no_account` for an email with no account (no sign-up token).
+- Signed in: show "Continue to <siteName> as <email>"; on press, `POST auth.site_login {site}` → `{redirectUrl}`.
+  Send the browser there and nowhere else. Never call it on page load.
+- Errors: `403 not_linked` (`message` + `loginUrl`, the site's own login, for staff), `409 site_unavailable`
+  (suspended), `404 site_not_found`.
+
 ## 6. Error codes
 
 | HTTP | `code` | When |
 |---|---|---|
 | 400 | `bad_request` | Body isn't a JSON object |
 | 400 | `invalid_reset_key` | Reset key unknown, used or expired |
+| 400 | `google_failed`, `google_signup_expired` | Google sign-in (§5.12) |
+| 400 | `email_code_expired` | Sign-up email code expired, never sent, or 5 wrong tries (§5.4) |
+| 403 | `email_not_verified`, `account_unavailable` | Google sign-in (§5.12) |
+| 409 | `domain_exists`, `domain_taken` | Custom domains (§5.15) |
+| 403 | `not_linked` | "Sign in with GrowthX": not this site's owner; has `loginUrl` (§5.16) |
+| 404 | `site_not_found`, `no_account` | "Sign in with GrowthX" (§5.16) |
+| 409 | `site_unavailable` | "Sign in with GrowthX": the site is suspended (§5.16) |
+| 403 | `plan_required` | Custom domains on a trial (§5.15) |
+| 409 | `no_password`, `invalid_transition` | Account settings (§5.13); admin customer actions (§5.9) |
+| 422 | `wrong_password` | Change password: current password wrong (§5.13) |
 | 400 | `payment_verification_failed` | Gateway signature doesn't match |
 | 401 | `unauthenticated` | No token, or the token expired or was revoked → refresh once, then log in |
 | 401 | `invalid_credentials` | Wrong email or password |
@@ -487,6 +624,9 @@ Idempotency-Key: …
 | 429 | `rate_limited` | Wait `Retry-After` seconds |
 | 500 | `internal_error` | Show a friendly message with `reference` |
 | 503 | `payment_unavailable` | Gateway not configured or unreachable |
+| 503 | `google_unavailable` | Google sign-in not configured or Google unreachable |
+| 503 | `email_unavailable` | The sign-up code email couldn't be sent |
+| 503 | `hosting_unavailable` | Press couldn't be reached to remove a custom domain (§5.15) |
 
 ## 7. What the web app needs to add
 
@@ -507,7 +647,8 @@ Idempotency-Key: …
 7. **New pages:**
    - `/reset-password?key=…` (from the reset email),
    - `/r/CODE` (referral welcome page: "<partner> invited you"; also accepts `/signup?ref=CODE`),
-   - `/dashboard` (linked from the "site is ready" email).
+   - `/login` and `/forgot-password` (linked from the welcome email when a site is ready; it then says to click
+     "Open app").
 
    Tell me if your paths differ; they're one setting (`growthx_web_url`) plus these paths.
 8. **Mock:** regenerate it from `openapi.yaml`.
@@ -535,4 +676,4 @@ Idempotency-Key: …
 | — | Appointments: video provider and the expert list | Endpoints are live. Which video service to use (the link template) and who the experts are: the Lead. Until set, the confirmation says the link follows separately. |
 | — | Caching `catalogue.products` / `catalogue.plans` for 5 minutes on the website | Web's proposal. **To confirm:** can a price change take up to 5 minutes to show? `appointments.slots` must never be cached. |
 | — | Real Press provisioning | DevOps (Press API), then me |
-| — | Business rules (prices, GST, trial, commission) | D6, D7 and D8 with the Lead. The data shown is placeholder. |
+| — | Business rules (prices, GST, trial, commission) | Price and GST decided (D6): Lifetime ₹1,50,000 including GST. Trial 7 days. Commission (D8) is still with the Lead. |

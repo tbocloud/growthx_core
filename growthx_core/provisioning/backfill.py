@@ -3,8 +3,8 @@
     bench --site <core-site> execute growthx_core.provisioning.backfill.enable_sso
     bench --site <core-site> execute growthx_core.provisioning.backfill.enable_sso --kwargs "{'tenant': 'GXT-00004'}"
 
-For each ready tenant: install growthx_theme, write a new tenant key and the Core URL into the
-tenant's site_config, replace the owner's (shared) password with a random one nobody knows,
+For each ready tenant: install growthx_theme, store a new tenant key and the Core URL on the
+tenant, replace the owner's (shared) password with a random one nobody knows,
 and enable "Login with Email Link". Then remove `growthx_tenant_login_path` from this site's
 config, so "Open my app" uses growthx_theme's sso.login again. Safe to run more than once.
 """
@@ -27,7 +27,7 @@ def enable_sso(tenant: str | None = None):
 		doc = frappe.get_doc("GX Tenant", name)
 		try:
 			client.install_app(doc.press_site_id, "growthx_theme")
-			client.configure_site(doc.press_site_id, runner.tenant_settings(doc, reset_owner_password=True))
+			runner.configure(doc, client, reset_owner_password=True)
 			frappe.db.commit()
 			done.append(f"{name} ({doc.press_site_id})")
 		except (PressError, NotImplementedError) as e:

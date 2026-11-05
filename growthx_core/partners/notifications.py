@@ -166,10 +166,26 @@ def _send_one(url, access_token, device, title, body, data):
 	except requests.RequestException as e:
 		frappe.log_error(title="GrowthX push: FCM unreachable", message=type(e).__name__)
 		return
-	if response.status_code == 404 or (response.status_code == 400 and "UNREGISTERED" in response.text):
-		frappe.delete_doc("GX Device", device.name, ignore_permissions=True, force=True)  # app uninstalled
-	elif response.status_code >= 300:
+	if response.status_code < 300:
+		return
+	if _fcm_error_code(response) == "UNREGISTERED":
+		# The app was uninstalled or the token expired: this token will never work again.
+		frappe.delete_doc("GX Device", device.name, ignore_permissions=True, force=True)
+	else:
+		# Anything else (e.g. 404 for a wrong project_id) is our problem, not the device's: keep it.
 		frappe.log_error(title="GrowthX push: FCM refused", message=f"HTTP {response.status_code}")
+
+
+def _fcm_error_code(response) -> str | None:
+	"""The FCM v1 error code (e.g. UNREGISTERED) from error.details[].errorCode, or None."""
+	try:
+		details = (response.json().get("error") or {}).get("details") or []
+	except (ValueError, AttributeError):
+		return None
+	for detail in details:
+		if isinstance(detail, dict) and detail.get("errorCode"):
+			return detail["errorCode"]
+	return None
 
 
 def _fcm_access_token(service_account: dict) -> str:
