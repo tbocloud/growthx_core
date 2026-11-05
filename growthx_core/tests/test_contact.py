@@ -49,6 +49,17 @@ class TestContactSubmit(IntegrationTestCase):
 		self.assertIn("Asha &lt;b&gt;Rao&lt;/b&gt;", kwargs["message"])  # escaped
 		self.assertNotIn("<b>Rao</b>", kwargs["message"])
 
+	def test_subject_is_one_line(self):
+		_, sendmail = self.submit(name="Asha\r\nBcc: x@example.com", company="Sun\n  Co")
+		subject = sendmail.call_args.kwargs["subject"]
+		self.assertEqual(subject, "Contact request from Asha Bcc: x@example.com (Sun Co)")
+		self.assertNotIn("\n", subject)
+		self.assertNotIn("\r", subject)
+
+	def test_core_link_says_it_needs_a_login(self):
+		_, sendmail = self.submit()
+		self.assertIn("(needs a Core login)", sendmail.call_args.kwargs["message"])
+
 	def test_site_config_overrides_the_address(self):
 		with patch.dict(frappe.conf, {"growthx_support_email": "help@example.com"}):
 			_, sendmail = self.submit()
