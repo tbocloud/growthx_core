@@ -179,6 +179,10 @@ paths:
       operationId: submitContact
       x-phase: 2
       security: []
+      description: |
+        The website's Contact form and the customer Support form. Saved as a GX Contact Request and emailed
+        to support@tbogrowthx.com (site_config `growthx_support_email` overrides it), Reply-To the sender.
+        A failed email is logged; the request is still saved and `202` returned.
       requestBody:
         required: true
         content:

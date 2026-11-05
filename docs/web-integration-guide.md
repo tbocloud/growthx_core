@@ -493,7 +493,7 @@ Idempotency-Key: …
 
 ### 5.10 Contact form
 
-`POST {GROWTHX_API_URL}.contact.submit` with body `{"name", "email", "company"?, "message"}` → `202 {"ok": true}`. A bad email gives `422` with `fields.email`.
+`POST {GROWTHX_API_URL}.contact.submit` with body `{"name", "email", "company"?, "message"}` → `202 {"ok": true}`. A bad email gives `422` with `fields.email`. The website's Contact form and the customer Support form both use it. Core saves a **GX Contact Request** and emails it to `support@tbogrowthx.com` (site_config `growthx_support_email` changes the address), with the sender as Reply-To. If the email fails, the request is still saved and `202` is returned.
 
 ### 5.11 Talk to an expert (appointments)
 
