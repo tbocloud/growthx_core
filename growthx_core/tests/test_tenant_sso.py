@@ -207,7 +207,7 @@ class TestRedeemLogin(TenantSSOTestCase):
 		self.assertEqual(self.call(site_login.issue(tenant.name, "Administrator"), key)[0], 404)
 
 	def test_rate_limited_per_tenant(self):
-		tenant, key = self.setup_tenant()
+		_tenant, key = self.setup_tenant()
 		frappe.flags.gx_enforce_rate_limits = True
 		try:
 			statuses = [self.call("unknown-token", key)[0] for _ in range(31)]

@@ -1,0 +1,114 @@
+# CI for growthx_core: lint, then install on a fresh bench and run every test.
+# Based on the workflow `bench new-app` generates for Frappe v16, with Frappe and ERPNext pinned
+# to the versions GrowthX runs (keep in step with the Press release group).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FRAPPE_VERSION: v16.35.0
+  ERPNEXT_VERSION: v16.35.0
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - name: Ruff
+        run: |
+          pip install ruff==0.6.9
+          ruff check .
+          ruff format --check .
+
+  tests:
+    name: Install on a fresh bench + tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    services:
+      redis-cache:
+        image: redis:alpine
+        ports:
+          - 13000:6379
+      redis-queue:
+        image: redis:alpine
+        ports:
+          - 11000:6379
+      mariadb:
+        image: mariadb:11.8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: --health-cmd="mariadb-admin ping" --health-interval=5s --health-timeout=2s --health-retries=10
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ env.FRAPPE_VERSION }}-${{ hashFiles('**/pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-${{ env.FRAPPE_VERSION }}-
+
+      - name: Install MariaDB client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mariadb-client
+
+      - name: Create bench (Frappe ${{ env.FRAPPE_VERSION }})
+        run: |
+          pip install frappe-bench
+          bench init --skip-redis-config-generation --skip-assets \
+            --frappe-branch "$FRAPPE_VERSION" --python "$(which python)" ~/frappe-bench
+
+      - name: Get ERPNext ${{ env.ERPNEXT_VERSION }} and growthx_core
+        working-directory: /home/runner/frappe-bench
+        run: |
+          bench get-app --branch "$ERPNEXT_VERSION" --skip-assets erpnext
+          bench get-app --skip-assets growthx_core "$GITHUB_WORKSPACE"
+          bench setup requirements --dev
+        env:
+          CI: 'Yes'
+
+      - name: Install on a fresh site
+        working-directory: /home/runner/frappe-bench
+        run: |
+          bench new-site --db-root-password root --admin-password admin test_site
+          bench --site test_site install-app erpnext
+          bench --site test_site install-app growthx_core
+          bench --site test_site list-apps
+        env:
+          CI: 'Yes'
+
+      - name: Run tests
+        working-directory: /home/runner/frappe-bench
+        run: |
+          bench --site test_site set-config allow_tests true
+          bench --site test_site run-tests --app growthx_core
+        env:
+          TYPE: server
