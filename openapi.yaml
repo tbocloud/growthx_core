@@ -65,6 +65,36 @@ tags:
   - name: admin
   - name: tenant
     description: Server-to-server calls from tenant sites (growthx_theme). Not for Web or Flutter.
+  - name: content
+    description: |
+      **[PROPOSED]** Blog and SEO for the six marketing sites. Public `content.*` calls are for the sites'
+      servers and return live content only. `admin.*content*` calls are for /admin → Website content and take the
+      `admin` or `content_editor` role. A `content_editor` sees these endpoints and nothing else in /admin: no
+      customers, partners, payments, revenue, audit log or messages (`403 forbidden` there).
+
+      Every admin write is audit-logged (`entityType: content`).
+
+      **Delivery phases** (`x-content-phase` on each operation):
+
+      - **Phase 1, blog posts:** `content.posts`, `content.post` and `content.sitemap`, with the shapes below.
+        Editors write posts in Core desk (doctype **GX Website Post**, desk role **GrowthX Content Editor**,
+        which can open only that doctype: no customers, partners, payments or revenue). Posts are text-only:
+        `coverImage`, `coverAlt` and `seo.ogImage` are always `null`, and Core refuses images in the body
+        (`![…](…)`) until S3 arrives. The link rules, slug/tag formats, statuses and scheduling are as in phase 2.
+        No revalidate call: the sites' 5-minute cache picks changes up. Every site's blog is on, and sites keep
+        their built-in SEO defaults (no `content.site` yet).
+      - **Phase 2, everything else:** `content.site` (SEO defaults, page SEO, redirects, verification,
+        `blogEnabled`, `analyticsId`), every `admin.*content*` endpoint and the /admin → Website content editor,
+        the `content_editor` API role, S3 images (`admin.upload_content_image`) and the signed revalidate call.
+        Phase 1 posts carry over unchanged; the response shapes don't change.
+
+      **Revalidate (Core → site, phase 2).** After a change, Core calls the affected site in the background:
+      `POST <baseUrl>/api/revalidate` with body `{"site", "paths": ["/blog", "/blog/<slug>", …], "version"}`
+      and headers `X-GrowthX-Timestamp` (Unix seconds) and `X-GrowthX-Signature: sha256=<hex>`, the HMAC-SHA256 of
+      `<timestamp>.<raw body>` with that site's own secret (Core site_config `growthx_revalidate_secrets.<site>`,
+      `GROWTHX_REVALIDATE_SECRET` on the site). The site rejects a bad signature or a timestamp more than 5 minutes
+      off, then revalidates the paths. One try, 5-second timeout. If it fails or the site has no secret, the
+      5-minute cache still picks the change up. A scheduled post going live sends the same call.
 
 paths:
   # ---------------------------------------------------------------- health
@@ -449,7 +479,7 @@ paths:
               required: [code]
               properties:
                 code: { type: string, maxLength: 2048, description: "`code` from Google's redirect to the callback" }
-                codeVerifier: { type: string, maxLength: 128, description: The PKCE verifier, if the website used PKCE }
+                codeVerifier: { type: string, maxLength: 128, description: "The PKCE verifier, if the website used PKCE" }
                 client: { $ref: "#/components/schemas/ClientKind" }
                 signInOnly:
                   type: boolean
@@ -2441,7 +2471,7 @@ paths:
         - $ref: "#/components/parameters/PageSize"
         - name: entityType
           in: query
-          schema: { type: string, enum: [customer, partner, tenant, appointment] }
+          schema: { type: string, enum: [customer, partner, tenant, appointment, content] }
         - name: entityId
           in: query
           schema: { type: string }
@@ -2830,6 +2860,544 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
         "429": { $ref: "#/components/responses/RateLimited" }
+  # ---------------------------------------------------------------- website content (proposed; phase 1 = posts, sitemap)
+  # Blog and SEO for the six marketing sites (growthx, printagx, willpex, billax, phoebix, stayvex).
+  # Public content.* calls come from the sites' servers; admin.*content* calls from /admin → Website content.
+  /growthx_core.api.v1.content.site:
+    get:
+      tags: [content]
+      summary: "[PROPOSED · phase 2] A site's SEO defaults, page SEO and redirects"
+      description: |
+        Everything a site needs besides posts, in one call: defaults, every Page SEO row and the enabled
+        redirects. Cache it (5 minutes, or until a revalidate call) and keep serving the last copy if Core is
+        unreachable. `version` changes whenever anything for the site changes, including a scheduled post going
+        live. `analyticsId` is `null` until management turns tracking on (a Core setting, not the editor).
+      operationId: contentSite
+      x-status: proposed
+      x-content-phase: 2
+      x-phase: 4
+      security: [{}, { webKey: [] }]
+      parameters:
+        - $ref: "#/components/parameters/ContentSiteSlug"
+      responses:
+        "200":
+          description: The site's content settings
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContentSite" }
+        "404":
+          description: "`site_not_found`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /growthx_core.api.v1.content.posts:
+    get:
+      tags: [content]
+      summary: "[PROPOSED · phase 1] Published posts, newest first"
+      description: |
+        Only live posts (`published`, or `scheduled` whose `publishedAt` has passed), 12 per page, newest
+        `publishedAt` first. Empty when the site's blog is switched off (phase 2). `tag` filters on one tag.
+        Phase 1: `coverImage` and `coverAlt` are always `null`. A missing `site` or a bad `tag` is `422`.
+      operationId: contentPosts
+      x-status: proposed
+      x-content-phase: 1
+      x-phase: 4
+      security: [{}, { webKey: [] }]
+      parameters:
+        - $ref: "#/components/parameters/ContentSiteSlug"
+        - $ref: "#/components/parameters/Page"
+        - name: tag
+          in: query
+          schema: { $ref: "#/components/schemas/ContentTag" }
+      responses:
+        "200":
+          description: Posts (pageSize is always 12)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/ContentPostSummary" }
+        "404":
+          description: "`site_not_found`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /growthx_core.api.v1.content.post:
+    get:
+      tags: [content]
+      summary: "[PROPOSED · phase 1] One live post in full"
+      description: |
+        `body` is Markdown: render it with raw HTML switched off. Phase 1: `coverImage`, `coverAlt` and
+        `seo.ogImage` are always `null`, and the body has no images. `excerpt` is the editor's, or the start of
+        the body as plain text when they left it empty.
+      operationId: contentPost
+      x-status: proposed
+      x-content-phase: 1
+      x-phase: 4
+      security: [{}, { webKey: [] }]
+      parameters:
+        - $ref: "#/components/parameters/ContentSiteSlug"
+        - name: slug
+          in: query
+          required: true
+          schema: { $ref: "#/components/schemas/ContentSlug" }
+      responses:
+        "200":
+          description: The post
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContentPost" }
+        "404":
+          description: "`site_not_found`, or `not_found` for an unknown, draft or not-yet-live post, or a switched-off blog (phase 2)"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /growthx_core.api.v1.content.sitemap:
+    get:
+      tags: [content]
+      summary: "[PROPOSED · phase 1] Live, indexable posts for sitemap.xml"
+      description: Every live post without `noindex` and without a `canonicalUrl`. Not paged.
+      operationId: contentSitemap
+      x-status: proposed
+      x-content-phase: 1
+      x-phase: 4
+      security: [{}, { webKey: [] }]
+      parameters:
+        - $ref: "#/components/parameters/ContentSiteSlug"
+      responses:
+        "200":
+          description: Post paths
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [slug, updatedAt]
+                      properties:
+                        slug: { $ref: "#/components/schemas/ContentSlug" }
+                        updatedAt: { type: string, format: date-time }
+        "404":
+          description: "`site_not_found`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /growthx_core.api.v1.admin.content_sites:
+    get:
+      tags: [content]
+      summary: "[PROPOSED · phase 2] The six sites with their settings and post counts"
+      operationId: adminContentSites
+      x-status: proposed
+      x-content-phase: 2
+      x-phase: 4
+      x-roles: [admin, content_editor]
+      responses:
+        "200":
+          description: All sites, in a fixed order (growthx first)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/AdminContentSite" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /growthx_core.api.v1.admin.update_content_site:
+    post:
+      tags: [content]
+      summary: "[PROPOSED · phase 2] Save a site's SEO defaults"
+      description: |
+        Send only the fields to change; `null` clears an optional field. Sites themselves (slug, base URL) are
+        set up by Core, not created here. Audit-logged.
+      operationId: adminUpdateContentSite
+      x-status: proposed
+      x-content-phase: 2
+      x-phase: 4
+      x-roles: [admin, content_editor]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ContentSiteInput" }
+      responses:
+        "200":
+          description: The updated site
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminContentSite" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.content_posts:
+    get:
+      tags: [content]
+      summary: "[PROPOSED · phase 2] A site's posts, drafts included"
+      description: Newest `updatedAt` first. `q` searches title, slug and excerpt. Items have no `body`.
+      operationId: adminContentPosts
+      x-status: proposed
+      x-content-phase: 2
+      x-phase: 4
+      x-roles: [admin, content_editor]
+      parameters:
+        - $ref: "#/components/parameters/ContentSiteSlug"
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/ContentPostStatus" }
+        - name: tag
+          in: query
+          schema: { $ref: "#/components/schemas/ContentTag" }
+        - name: q
+          in: query
+          schema: { type: string, maxLength: 100 }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Posts
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/AdminContentPostSummary" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.content_post:
+    get:
+      tags: [content]
+      summary: "[PROPOSED · phase 2] One post in full, any status"
+      operationId: adminContentPost
+      x-status: proposed
+      x-content-phase: 2
+      x-phase: 4
+      x-roles: [admin, content_editor]
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: The post
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminContentPost" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /growthx_core.api.v1.admin.save_content_post:
+    post:
+      tags: [content]
+      summary: "[PROPOSED · phase 2] Create or update a post"
+      description: |
+        Without `id` it creates a post; with `id` it replaces that post's fields (send the whole post).
+
+        - `status`: `draft` (not public), `published` (`publishedAt` defaults to now; a past date is kept, e.g. for
+          an imported post), or `scheduled` (`publishedAt` required and in the future; it goes live by itself).
+        - `body` is Markdown and is checked: link and image targets must be `http(s)://`, `mailto:` or a relative
+          path (`/…`, `#…`), so `javascript:` and `data:` are refused (`422 fields.body`). Images in the body and
+          `coverImage`/`ogImage` must be on the media host (from `admin.upload_content_image`). Raw HTML is
+          stored as typed but the sites render Markdown with HTML switched off, so it shows as text.
+        - `expectedUpdatedAt` (optional, the `updatedAt` the editor loaded): if the post changed since, `409
+          edit_conflict` instead of overwriting someone else's edit.
+        - `409 slug_taken` if another post on the site has the slug. Changing a published post's slug doesn't add a
+          redirect by itself; add one with `admin.save_content_redirect`.
+
+        Audit-logged. Triggers a revalidate of `/blog` and the post's path when the post is or was live.
+      operationId: adminSaveContentPost
+      x-status: proposed
+      x-content-phase: 2
+      x-phase: 4
+      x-roles: [admin, content_editor]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ContentPostInput" }
+      responses:
+        "200":
+          description: The saved post
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminContentPost" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`slug_taken` or `edit_conflict`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.delete_content_post:
+    post:
+      tags: [content]
+      summary: "[PROPOSED · phase 2] Delete a post"
+      description: Permanent. Audit-logged with the title and slug. Uploaded images are kept.
+      operationId: adminDeleteContentPost
+      x-status: proposed
+      x-content-phase: 2
+      x-phase: 4
+      x-roles: [admin, content_editor]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /growthx_core.api.v1.admin.content_pages:
+    get:
+      tags: [content]
+      summary: "[PROPOSED · phase 2] A site's page SEO rows"
+      description: Sorted by path. Not paged (a site has a few dozen pages at most).
+      operationId: adminContentPages
+      x-status: proposed
+      x-content-phase: 2
+      x-phase: 4
+      x-roles: [admin, content_editor]
+      parameters:
+        - $ref: "#/components/parameters/ContentSiteSlug"
+      responses:
+        "200":
+          description: Page SEO rows
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/AdminContentPage" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.save_content_page:
+    post:
+      tags: [content]
+      summary: "[PROPOSED · phase 2] Create or update a page's SEO"
+      description: |
+        Keyed by `site` + `path`: saving an existing path updates that row. `path` starts with `/`, has no query
+        or fragment, and isn't under `/blog/` (posts carry their own SEO). Audit-logged; revalidates `path`.
+      operationId: adminSaveContentPage
+      x-status: proposed
+      x-content-phase: 2
+      x-phase: 4
+      x-roles: [admin, content_editor]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ContentPageInput" }
+      responses:
+        "200":
+          description: The saved row
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminContentPage" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.delete_content_page:
+    post:
+      tags: [content]
+      summary: "[PROPOSED · phase 2] Delete a page's SEO row (the page falls back to the site defaults)"
+      operationId: adminDeleteContentPage
+      x-status: proposed
+      x-content-phase: 2
+      x-phase: 4
+      x-roles: [admin, content_editor]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /growthx_core.api.v1.admin.content_redirects:
+    get:
+      tags: [content]
+      summary: "[PROPOSED · phase 2] A site's redirects"
+      description: Sorted by `fromPath`. Not paged.
+      operationId: adminContentRedirects
+      x-status: proposed
+      x-content-phase: 2
+      x-phase: 4
+      x-roles: [admin, content_editor]
+      parameters:
+        - $ref: "#/components/parameters/ContentSiteSlug"
+      responses:
+        "200":
+          description: Redirects
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/ContentRedirect" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.save_content_redirect:
+    post:
+      tags: [content]
+      summary: "[PROPOSED · phase 2] Create or update a redirect"
+      description: |
+        Keyed by `site` + `fromPath`. Rules (each a `422` with the code in `error.code` and the field in `fields`):
+
+        - `fromPath`: starts with `/` (not `//`), no fragment, at most 500 characters, not `/` itself.
+        - `toPath`: a path on the same site (`/…`, not `//…`), or an `https://` URL whose host is one of
+          tbogrowthx.com, printagx.in, willpex.in, billax.in, phoebix.in, stayvex.in or their `www.` names.
+          No `http://`, other hosts, user-info (`user@host`) or ports; anything else → `target_not_allowed`.
+        - `redirect_loop`: `toPath` equals `fromPath`, or `toPath` is itself the `fromPath` of an enabled
+          redirect on the same site (no chains either).
+
+        Audit-logged; revalidates `fromPath`.
+      operationId: adminSaveContentRedirect
+      x-status: proposed
+      x-content-phase: 2
+      x-phase: 4
+      x-roles: [admin, content_editor]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ContentRedirectInput" }
+      responses:
+        "200":
+          description: The saved redirect
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContentRedirect" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422":
+          description: "`validation_failed`, `target_not_allowed` or `redirect_loop`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /growthx_core.api.v1.admin.delete_content_redirect:
+    post:
+      tags: [content]
+      summary: "[PROPOSED · phase 2] Delete a redirect"
+      operationId: adminDeleteContentRedirect
+      x-status: proposed
+      x-content-phase: 2
+      x-phase: 4
+      x-roles: [admin, content_editor]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /growthx_core.api.v1.admin.upload_content_image:
+    post:
+      tags: [content]
+      summary: "[PROPOSED · phase 2] Upload a cover or inline image"
+      description: |
+        Server-side upload (the website server forwards the editor's file). Core checks the file is really a
+        JPEG, PNG or WebP by decoding it (not by its name or Content-Type), at most 5 MB and 6000 × 6000 px;
+        SVG, GIF and anything else → `422 fields.file`. Core re-encodes it, which strips EXIF and location data,
+        and stores it in S3 under `content/<site>/<yyyy>/<random>.<ext>`, served through the media CDN
+        (e.g. `https://media.tbogrowthx.com/…`). Core keeps only the URL. Nothing is stored on the Core host.
+        Rate limit: 60 uploads per user per hour.
+      operationId: adminUploadContentImage
+      x-status: proposed
+      x-content-phase: 2
+      x-phase: 4
+      x-roles: [admin, content_editor]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [site, file]
+              properties:
+                site: { $ref: "#/components/schemas/ContentSiteSlugValue" }
+                file: { type: string, format: binary }
+      responses:
+        "201":
+          description: Uploaded
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContentImage" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503":
+          description: "`storage_unavailable`: S3 is not configured or not reachable; nothing was stored"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
 components:
   securitySchemes:
@@ -2848,6 +3416,14 @@ components:
         Refresh tokens last 30 days and rotate on every use. Logging out, resetting the password or disabling
         the user revokes the tokens. An expired or revoked token returns 401 `unauthenticated`.
 
+    webKey:
+      type: apiKey
+      in: header
+      name: X-GrowthX-Web-Key
+      description: |
+        The websites' shared server secret (Core's `growthx_web_key`, `GROWTHX_WEB_KEY` on the sites). Optional on
+        `content.*`: with the right key those calls skip the per-IP rate limit (all six sites call Core from one
+        server address). Without it they are limited to 60 per minute per IP. Never sent from a browser.
   parameters:
     Page:
       name: page
@@ -2868,6 +3444,12 @@ components:
       required: false
       description: A UUID chosen by the client. Reusing the same key within 24 h returns the original response.
       schema: { type: string, format: uuid }
+
+    ContentSiteSlug:
+      name: site
+      in: query
+      required: true
+      schema: { $ref: "#/components/schemas/ContentSiteSlugValue" }
 
   responses:
     Ok:
@@ -2988,7 +3570,10 @@ components:
 
     Role:
       type: string
-      enum: [customer, partner, admin]
+      enum: [customer, partner, admin, content_editor]
+      description: |
+        `content_editor` **[PROPOSED, content phase 2]**: may use only the Website content endpoints (`admin.*content*`); every
+        other admin endpoint returns `403`. /admin shows such a user only the Website content section.
 
     User:
       type: object
@@ -3598,7 +4183,7 @@ components:
         name: { type: string }
         email: { type: string, format: email }
         company: { type: string, nullable: true }
-        message: { type: string, description: Plain text; may contain line breaks. Render as text, not HTML. }
+        message: { type: string, description: "Plain text; may contain line breaks. Render as text, not HTML." }
         source: { $ref: "#/components/schemas/ContactRequestSource" }
         customerId:
           type: string
@@ -3669,7 +4254,7 @@ components:
           description: |
             Without the entity prefix, e.g. `suspend` (customer), `approve` (partner), `reschedule` (appointment),
             `retry_provisioning` / `archive_tenant` / `open_site` / `add_custom_domain` / `remove_custom_domain` (tenant)
-        entityType: { type: string, nullable: true, enum: [customer, partner, tenant, appointment, null] }
+        entityType: { type: string, nullable: true, enum: [customer, partner, tenant, appointment, content, null], description: "`content` is proposed (website content edits)" }
         entityId: { type: string, nullable: true }
         entityLabel: { type: string, nullable: true, description: "Company, partner, site or visitor name" }
         details: { type: string, nullable: true }
@@ -3759,3 +4344,291 @@ components:
                   actor: { type: string, description: "User id, or Guest for the visitor" }
                   action: { type: string, example: reschedule }
                   details: { type: string, nullable: true }
+
+    ContentSiteSlugValue:
+      type: string
+      enum: [growthx, printagx, willpex, billax, phoebix, stayvex]
+      description: The site's slug (its repo name without `-web`). New sites are added by Core.
+
+    ContentSlug:
+      type: string
+      pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+      maxLength: 100
+      example: gst-invoicing-for-print-shops
+
+    ContentTag:
+      type: string
+      pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+      maxLength: 30
+      example: gst
+
+    ContentPostStatus:
+      type: string
+      enum: [draft, scheduled, published]
+      description: |
+        `scheduled` goes live by itself once `publishedAt` passes (checked every 5 minutes); the public endpoints
+        treat it as live from then on. Admin endpoints keep returning `scheduled` with `isLive: true`.
+
+    ContentImageUrl:
+      type: string
+      format: uri
+      maxLength: 500
+      description: An image URL on the media host, from `admin.upload_content_image`.
+      example: https://media.tbogrowthx.com/content/printagx/2026/3f9c2a7d1b.webp
+
+    ContentSeo:
+      type: object
+      required: [title, description, ogImage, noindex]
+      properties:
+        title: { type: string, nullable: true, maxLength: 70 }
+        description: { type: string, nullable: true, maxLength: 200 }
+        ogImage: { allOf: [{ $ref: "#/components/schemas/ContentImageUrl" }], nullable: true }
+        noindex: { type: boolean }
+
+    ContentPage:
+      type: object
+      description: Page SEO for one path. Empty fields fall back to the site defaults, then the site's built-in values.
+      required: [path, title, description, ogImage, noindex]
+      properties:
+        path: { type: string, example: /pricing, maxLength: 200 }
+        title: { type: string, nullable: true, maxLength: 70 }
+        description: { type: string, nullable: true, maxLength: 200 }
+        ogImage: { allOf: [{ $ref: "#/components/schemas/ContentImageUrl" }], nullable: true }
+        noindex: { type: boolean }
+
+    AdminContentPage:
+      allOf:
+        - $ref: "#/components/schemas/ContentPage"
+        - type: object
+          required: [id, site, updatedAt, updatedBy]
+          properties:
+            id: { type: string }
+            site: { $ref: "#/components/schemas/ContentSiteSlugValue" }
+            updatedAt: { type: string, format: date-time }
+            updatedBy: { type: string, format: email, nullable: true }
+
+    ContentPageInput:
+      allOf:
+        - $ref: "#/components/schemas/ContentPage"
+        - type: object
+          required: [site]
+          properties:
+            site: { $ref: "#/components/schemas/ContentSiteSlugValue" }
+
+    ContentRedirectRule:
+      type: object
+      required: [fromPath, toPath, permanent]
+      properties:
+        fromPath: { type: string, maxLength: 500, example: /blog/old-post }
+        toPath:
+          type: string
+          maxLength: 500
+          description: A path on the same site, or an https URL on an allowlisted GrowthX domain
+          example: /blog/new-post
+        permanent: { type: boolean, description: "true: 301, false: 302" }
+
+    ContentRedirect:
+      allOf:
+        - $ref: "#/components/schemas/ContentRedirectRule"
+        - type: object
+          required: [id, site, enabled, updatedAt, updatedBy]
+          properties:
+            id: { type: string }
+            site: { $ref: "#/components/schemas/ContentSiteSlugValue" }
+            enabled: { type: boolean }
+            updatedAt: { type: string, format: date-time }
+            updatedBy: { type: string, format: email, nullable: true }
+
+    ContentRedirectInput:
+      allOf:
+        - $ref: "#/components/schemas/ContentRedirectRule"
+        - type: object
+          required: [site]
+          properties:
+            site: { $ref: "#/components/schemas/ContentSiteSlugValue" }
+            enabled: { type: boolean, default: true }
+
+    ContentSite:
+      type: object
+      description: What a site's server needs besides posts (`content.site`).
+      required: [site, siteName, baseUrl, titleTemplate, defaults, verification, analyticsId, blogEnabled, pages, redirects, version]
+      properties:
+        site: { $ref: "#/components/schemas/ContentSiteSlugValue" }
+        siteName: { type: string, example: PrintagX }
+        baseUrl: { type: string, format: uri, example: https://printagx.in }
+        titleTemplate: { type: string, example: "%s · PrintagX", description: "`%s` is replaced by the page title" }
+        defaults:
+          type: object
+          required: [title, description, ogImage]
+          properties:
+            title: { type: string, nullable: true, maxLength: 70 }
+            description: { type: string, nullable: true, maxLength: 200 }
+            ogImage: { allOf: [{ $ref: "#/components/schemas/ContentImageUrl" }], nullable: true }
+        verification:
+          type: object
+          required: [google, bing]
+          properties:
+            google: { type: string, nullable: true, description: The google-site-verification meta content }
+            bing: { type: string, nullable: true, description: The msvalidate.01 meta content }
+        analyticsId:
+          type: string
+          nullable: true
+          description: GA4 `G-…`. Always `null` until management approves tracking, even if an editor saved one.
+        blogEnabled: { type: boolean, description: "false: hide /blog and /blog/<slug>" }
+        pages:
+          type: array
+          items: { $ref: "#/components/schemas/ContentPage" }
+        redirects:
+          type: array
+          description: Enabled redirects only
+          items: { $ref: "#/components/schemas/ContentRedirectRule" }
+        version: { type: string, description: "Opaque; changes on any change for this site. Compare, don't parse." }
+
+    AdminContentSite:
+      type: object
+      required: [site, siteName, baseUrl, titleTemplate, defaultTitle, defaultDescription, defaultOgImage, googleVerification, bingVerification, analyticsId, analyticsActive, blogEnabled, postCounts, updatedAt]
+      properties:
+        site: { $ref: "#/components/schemas/ContentSiteSlugValue" }
+        siteName: { type: string }
+        baseUrl: { type: string, format: uri, description: Set by Core; not editable here }
+        titleTemplate: { type: string }
+        defaultTitle: { type: string, nullable: true }
+        defaultDescription: { type: string, nullable: true }
+        defaultOgImage: { allOf: [{ $ref: "#/components/schemas/ContentImageUrl" }], nullable: true }
+        googleVerification: { type: string, nullable: true }
+        bingVerification: { type: string, nullable: true }
+        analyticsId: { type: string, nullable: true }
+        analyticsActive:
+          type: boolean
+          description: Whether the sites receive `analyticsId`. Off until management decides; show "saved, not active yet".
+        blogEnabled: { type: boolean }
+        postCounts:
+          type: object
+          required: [draft, scheduled, published]
+          properties:
+            draft: { type: integer }
+            scheduled: { type: integer }
+            published: { type: integer }
+        updatedAt: { type: string, format: date-time }
+
+    ContentSiteInput:
+      type: object
+      required: [site]
+      properties:
+        site: { $ref: "#/components/schemas/ContentSiteSlugValue" }
+        siteName: { type: string, maxLength: 60 }
+        titleTemplate: { type: string, maxLength: 80, description: Must contain `%s` exactly once }
+        defaultTitle: { type: string, nullable: true, maxLength: 70 }
+        defaultDescription: { type: string, nullable: true, maxLength: 200 }
+        defaultOgImage: { allOf: [{ $ref: "#/components/schemas/ContentImageUrl" }], nullable: true }
+        googleVerification:
+          type: string
+          nullable: true
+          pattern: "^[A-Za-z0-9_-]{10,100}$"
+          description: Only the code, not the meta tag
+        bingVerification:
+          type: string
+          nullable: true
+          pattern: "^[A-Fa-f0-9]{32}$"
+        analyticsId: { type: string, nullable: true, pattern: "^G-[A-Z0-9]{4,20}$" }
+        blogEnabled: { type: boolean }
+
+    ContentPostSummary:
+      type: object
+      required: [slug, title, excerpt, coverImage, coverAlt, authorName, tags, publishedAt, updatedAt]
+      properties:
+        slug: { $ref: "#/components/schemas/ContentSlug" }
+        title: { type: string, maxLength: 150 }
+        excerpt: { type: string, maxLength: 300 }
+        coverImage: { allOf: [{ $ref: "#/components/schemas/ContentImageUrl" }], nullable: true }
+        coverAlt: { type: string, nullable: true, maxLength: 200 }
+        authorName: { type: string, nullable: true, maxLength: 100 }
+        tags:
+          type: array
+          maxItems: 10
+          items: { $ref: "#/components/schemas/ContentTag" }
+        publishedAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    ContentPost:
+      allOf:
+        - $ref: "#/components/schemas/ContentPostSummary"
+        - type: object
+          required: [body, seo, canonicalUrl]
+          properties:
+            body:
+              type: string
+              maxLength: 100000
+              description: Markdown. Render with raw HTML switched off.
+            seo: { $ref: "#/components/schemas/ContentSeo" }
+            canonicalUrl:
+              type: string
+              format: uri
+              nullable: true
+              description: Only when the post was first published elsewhere; same domain rules as redirects
+
+    ContentPostInput:
+      type: object
+      required: [site, slug, title, body, status]
+      properties:
+        id: { type: string, description: Omit to create }
+        expectedUpdatedAt: { type: string, format: date-time, description: Optional edit-conflict check }
+        site: { $ref: "#/components/schemas/ContentSiteSlugValue" }
+        slug: { $ref: "#/components/schemas/ContentSlug" }
+        title: { type: string, maxLength: 150 }
+        excerpt: { type: string, maxLength: 300, description: Defaults to the start of the body }
+        body: { type: string, maxLength: 100000 }
+        coverImage: { allOf: [{ $ref: "#/components/schemas/ContentImageUrl" }], nullable: true }
+        coverAlt: { type: string, nullable: true, maxLength: 200, description: Required when coverImage is set }
+        authorName: { type: string, nullable: true, maxLength: 100 }
+        tags:
+          type: array
+          maxItems: 10
+          items: { $ref: "#/components/schemas/ContentTag" }
+        status: { $ref: "#/components/schemas/ContentPostStatus" }
+        publishedAt: { type: string, format: date-time, nullable: true }
+        seo: { $ref: "#/components/schemas/ContentSeo" }
+        canonicalUrl: { type: string, format: uri, nullable: true }
+
+    AdminContentPostSummary:
+      type: object
+      required: [id, site, slug, title, status, isLive, publishedAt, tags, authorName, updatedAt, updatedBy]
+      properties:
+        id: { type: string }
+        site: { $ref: "#/components/schemas/ContentSiteSlugValue" }
+        slug: { $ref: "#/components/schemas/ContentSlug" }
+        title: { type: string }
+        status: { $ref: "#/components/schemas/ContentPostStatus" }
+        isLive: { type: boolean, description: Visible on the site right now }
+        publishedAt: { type: string, format: date-time, nullable: true }
+        tags:
+          type: array
+          items: { $ref: "#/components/schemas/ContentTag" }
+        authorName: { type: string, nullable: true }
+        updatedAt: { type: string, format: date-time }
+        updatedBy: { type: string, format: email, nullable: true }
+
+    AdminContentPost:
+      allOf:
+        - $ref: "#/components/schemas/AdminContentPostSummary"
+        - type: object
+          required: [excerpt, body, coverImage, coverAlt, seo, canonicalUrl, url, createdAt]
+          properties:
+            excerpt: { type: string }
+            body: { type: string }
+            coverImage: { allOf: [{ $ref: "#/components/schemas/ContentImageUrl" }], nullable: true }
+            coverAlt: { type: string, nullable: true }
+            seo: { $ref: "#/components/schemas/ContentSeo" }
+            canonicalUrl: { type: string, format: uri, nullable: true }
+            url: { type: string, format: uri, description: "`<baseUrl>/blog/<slug>`", example: https://printagx.in/blog/gst-invoicing }
+            createdAt: { type: string, format: date-time }
+
+    ContentImage:
+      type: object
+      required: [url, contentType, width, height, size]
+      properties:
+        url: { $ref: "#/components/schemas/ContentImageUrl" }
+        contentType: { type: string, enum: [image/jpeg, image/png, image/webp] }
+        width: { type: integer }
+        height: { type: integer }
+        size: { type: integer, description: Bytes after re-encoding }
