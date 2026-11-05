@@ -43,6 +43,6 @@ def ensure_root(doctype: str) -> str:
 	return root
 
 
-def after_install():
+def ensure_all():
 	for doctype in TREES:
 		default_link(doctype)

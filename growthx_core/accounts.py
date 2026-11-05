@@ -30,6 +30,46 @@ def create_user(email: str, full_name: str, password: str, role: str, phone: str
 	return user.name
 
 
+GOOGLE = "google"
+
+
+def link_google(user: str, google_id: str):
+	"""Record that the user signs in with Google (Frappe's User Social Login), for the welcome email."""
+	if frappe.db.exists("User Social Login", {"parent": user, "provider": GOOGLE}):
+		return
+	frappe.get_doc(
+		{
+			"doctype": "User Social Login",
+			"parent": user,
+			"parenttype": "User",
+			"parentfield": "social_logins",
+			"provider": GOOGLE,
+			"userid": google_id,
+		}
+	).insert(ignore_permissions=True)
+
+
+# A Google sign-up without a password gets a random one nobody knows. Kept as a user default
+# (no DocType change) until the user sets a password ("Forgot password" or change_password).
+NO_PASSWORD = "growthx_no_password"
+
+
+def mark_no_password(user: str):
+	frappe.db.set_default(NO_PASSWORD, "1", parent=user)
+
+
+def mark_has_password(user: str):
+	frappe.db.delete("DefaultValue", {"parent": user, "defkey": NO_PASSWORD})
+
+
+def has_password(user: str) -> bool:
+	return not frappe.db.get_value("DefaultValue", {"parent": user, "defkey": NO_PASSWORD})
+
+
+def signs_in_with_google(user: str | None) -> bool:
+	return bool(user and frappe.db.exists("User Social Login", {"parent": user, "provider": GOOGLE}))
+
+
 def create_customer_account(
 	*,
 	email: str,
@@ -39,8 +79,14 @@ def create_customer_account(
 	phone: str | None = None,
 	plan=None,
 	referral_code: str | None = None,
+	subdomain: str | None = None,
+	country: str | None = None,
+	chart_of_accounts: str | None = None,
 ) -> tuple[str, str | None]:
-	"""Returns (user, tenant_name or None). The caller commits; provisioning starts after commit."""
+	"""Returns (user, tenant_name or None). The caller commits; provisioning starts after commit.
+
+	`subdomain` is the one the customer chose (already checked); without it, one is made from
+	the company name. `country` is a Country name; site set-up follows it (see countries.py)."""
 	user = create_user(email, full_name, password, CUSTOMER_ROLE, phone)
 	partner = referrals.resolve(referral_code, email)
 
@@ -78,6 +124,9 @@ def create_customer_account(
 		}
 	).insert(ignore_permissions=True)
 
+	if account.referred_by:
+		_notify_partner(account)
+
 	if not plan:
 		return user, None
 
@@ -103,7 +152,9 @@ def create_customer_account(
 			"product": plan.product,
 			"subscription": subscription.name,
 			"display_name": company,
-			"subdomain": runner.make_subdomain(company),
+			"subdomain": runner.site_subdomain(subdomain) if subdomain else runner.make_subdomain(company),
+			"country": country,
+			"chart_of_accounts": chart_of_accounts,
 			"status": "requested",
 			"status_message": "Preparing your site.",
 		}
@@ -114,6 +165,19 @@ def create_customer_account(
 
 	runner.enqueue(tenant.name)
 	return user, tenant.name
+
+
+def _notify_partner(account):
+	"""Tell the referring partner. Never fails the customer's sign-up: on error, undo only the
+	notification and log it."""
+	from growthx_core.partners.notifications import on_customer_referred
+
+	frappe.db.savepoint("gx_notify_partner")
+	try:
+		on_customer_referred(account)
+	except Exception:
+		frappe.db.rollback(save_point="gx_notify_partner")
+		frappe.log_error(title=f"GrowthX: could not notify the partner of {account.name}")
 
 
 def create_partner_account(

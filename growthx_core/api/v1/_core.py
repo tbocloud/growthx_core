@@ -13,6 +13,8 @@ See openapi.yaml for the contract and docs/api-decisions.md for why it looks lik
 
 import functools
 import hashlib
+import hmac
+import ipaddress
 import json
 import re
 from dataclasses import dataclass
@@ -53,13 +55,16 @@ DEFAULT_MESSAGES = {
 class ApiError(Exception):
 	"""Raise from an endpoint to return a contract error response."""
 
-	def __init__(self, status: int, code: str, message: str, fields: dict | None = None, headers=None):
+	def __init__(
+		self, status: int, code: str, message: str, fields: dict | None = None, headers=None, extra=None
+	):
 		super().__init__(message)
 		self.status = status
 		self.code = code
 		self.message = message
 		self.fields = fields
 		self.headers = headers or {}
+		self.extra = extra or {}  # more keys for the error object, e.g. {"loginUrl": ...}
 
 
 def validation_error(fields: dict, message: str = "Please correct the highlighted fields.") -> ApiError:
@@ -78,6 +83,8 @@ class RateLimit:
 	by_field: str | None = None
 	# Optional request header to key on instead of the IP address, e.g. a tenant key
 	by_header: str | None = None
+	# Key on the logged-in user instead of the IP address
+	by_user: bool = False
 
 
 # ---------------------------------------------------------------- responses
@@ -95,8 +102,8 @@ def json_response(data, status: int = 200, headers: dict | None = None) -> Respo
 	return response
 
 
-def error_response(status, code, message, fields=None, reference=None, headers=None) -> Response:
-	error = {"code": code, "message": message}
+def error_response(status, code, message, fields=None, reference=None, headers=None, extra=None) -> Response:
+	error = {**(extra or {}), "code": code, "message": message}
 	if fields:
 		error["fields"] = fields
 	if reference:
@@ -147,7 +154,7 @@ def endpoint(
 
 			except ApiError as e:
 				frappe.db.rollback()
-				return error_response(e.status, e.code, e.message, e.fields, headers=e.headers)
+				return error_response(e.status, e.code, e.message, e.fields, headers=e.headers, extra=e.extra)
 			except frappe.DoesNotExistError:
 				frappe.db.rollback()
 				return error_response(404, "not_found", "Not found.")
@@ -245,8 +252,37 @@ def current_user() -> str:
 	return frappe.session.user
 
 
+# The website calls Core from its own server, so Core would see one IP for every visitor. It
+# forwards the visitor's IP; Core trusts it only with the shared key (`growthx_web_key` in
+# site_config, GROWTHX_WEB_KEY on the website).
+WEB_KEY_HEADER = "X-GrowthX-Web-Key"
+CLIENT_IP_HEADER = "X-GrowthX-Client-IP"
+
+
+def has_web_key() -> bool:
+	"""The request carries the website's shared key (server-to-server calls from the website)."""
+	if getattr(frappe.local, "request", None) is None:
+		return False
+	key = frappe.conf.get("growthx_web_key")
+	sent = frappe.get_request_header(WEB_KEY_HEADER)
+	return bool(key and sent and hmac.compare_digest(sent.encode(), str(key).encode()))
+
+
 def client_ip() -> str:
-	return getattr(frappe.local, "request_ip", None) or "unknown"
+	"""The caller's IP address, for rate limits and records: the visitor's, for website calls."""
+	return _forwarded_client_ip() or getattr(frappe.local, "request_ip", None) or "unknown"
+
+
+def _forwarded_client_ip() -> str | None:
+	if getattr(frappe.local, "request", None) is None:
+		return None
+	if not has_web_key():
+		return None
+	ip = (frappe.get_request_header(CLIENT_IP_HEADER) or "").strip()
+	try:
+		return str(ipaddress.ip_address(ip))
+	except ValueError:
+		return None  # "unknown" (the website had no X-Real-IP) or junk: use the connection's IP
 
 
 # ---------------------------------------------------------------- input
@@ -364,6 +400,9 @@ def net_of_gst(amount, gst_included, gst_rate) -> float:
 
 
 def monthly(amount, interval) -> float:
+	"""The monthly recurring share of a price. A one-time (lifetime) payment recurs never: 0."""
+	if interval == "one_time":
+		return 0.0
 	return flt(amount) / 12 if interval == "year" else flt(amount)
 
 
@@ -382,6 +421,8 @@ def _check_rate_limit(name: str, limit: RateLimit):
 		value = frappe.get_request_header(limit.by_header)
 		if value and value.strip():
 			parts = [name, limit.by_header, value.strip()]
+	elif limit.by_user and frappe.session.user != "Guest":
+		parts = [name, "user", frappe.session.user]
 	key = frappe.cache.make_key("gx:rl:" + hashlib.sha256("|".join(parts).encode()).hexdigest())
 	count = frappe.cache.incrby(key, 1)
 	if count == 1:

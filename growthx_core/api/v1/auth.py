@@ -1,25 +1,32 @@
+import re
 from datetime import timedelta
+from urllib.parse import urlsplit
 
 import frappe
 from frappe.core.doctype.user.user import test_password_strength
 from frappe.utils import cint, now_datetime, sha256_hash
 from frappe.utils.password import check_password, update_password
 
-from growthx_core import accounts, tokens
+from growthx_core import accounts, google_signin, signup_codes, tokens
 from growthx_core.api.v1 import _serializers as s
 from growthx_core.api.v1._core import (
 	ApiError,
 	RateLimit,
+	audit,
 	body,
 	current_user,
 	endpoint,
 	get_choice,
 	get_email,
 	get_str,
+	iso,
 	ok,
+	query,
 	validation_error,
 	web_url,
 )
+from growthx_core.provisioning import countries, custom_domains, runner
+from growthx_core.provisioning import site_login as site_login_tokens
 
 GROWTHX_ROLES = {"GrowthX Customer", "GrowthX Partner", "GrowthX Admin"}
 MIN_PASSWORD_LENGTH = 8
@@ -82,54 +89,195 @@ def login():
 	return s.auth_session(pair, user)
 
 
+@endpoint(methods=("POST",), auth=False, rate_limit=RateLimit(20, 15 * 60))
+def google():
+	"""Sign in with Google: an existing account is logged in (200); a new email gets a sign-up
+	token for `auth.signup` (202), or `404 no_account` with `signInOnly` (signing in to a site)."""
+	data = body()
+	code = get_str(data, "code", required=True, max_length=2048, label="Code")
+	code_verifier = get_str(data, "codeVerifier", max_length=128, label="Code verifier")
+	sign_in_only = data.get("signInOnly") is True
+	identity = google_signin.verified_identity(code, code_verifier)
+
+	user = _growthx_user(identity["email"])
+	if user:
+		accounts.link_google(user, identity["sub"])
+		return s.auth_session(tokens.issue(user, _client(data)), user)
+	if _email_taken(identity["email"]):
+		# A disabled account, or a staff account without a GrowthX role.
+		raise ApiError(403, "account_unavailable", "This account can't sign in here.")
+	if sign_in_only:
+		raise ApiError(404, "no_account", "There's no GrowthX account for this Google account.")
+	return 202, {
+		"signupRequired": True,
+		"signupToken": google_signin.issue_signup_token(identity),
+		"expiresAt": iso(now_datetime() + timedelta(seconds=google_signin.SIGNUP_TTL)),
+		"email": identity["email"],
+		"name": identity["name"],
+	}
+
+
+@endpoint(
+	methods=("POST",),
+	auth=False,
+	rate_limit=(RateLimit(10, 60 * 60), RateLimit(5, 60 * 60, by_field="email")),
+)
+def send_signup_code():
+	"""Email a 6-digit code to verify the address before `auth.signup` (not needed with Google)."""
+	data = body()
+	email = get_email(data)
+	_client(data)
+	if _email_taken(email):
+		raise _email_taken_error()
+	sent = signup_codes.send(email)
+	return 202, {"expiresAt": iso(sent["expiresAt"]), "resendAfter": iso(sent["resendAfter"])}
+
+
+def _email_taken(email: str) -> bool:
+	return bool(frappe.db.exists("User", {"email": email}) or frappe.db.exists("User", email))
+
+
+def _email_taken_error():
+	return ApiError(
+		409,
+		"email_taken",
+		"An account with this email already exists.",
+		fields={"email": "An account with this email already exists."},
+	)
+
+
 @endpoint(methods=("POST",), auth=False, rate_limit=RateLimit(10, 60 * 60), idempotent=True)
 def signup():
 	data = body()
 	account_type = get_choice(data, "accountType", ("customer", "partner"), required=True)
-	name = get_str(data, "name", required=True, label="Name")
-	email = get_email(data)
-	password = _password(data)
+	google_token = get_str(data, "googleSignupToken", max_length=100)
+	google = _google_signup(google_token) if google_token else None
+	name = get_str(data, "name", required=not google, label="Name") or google["name"]
+	if not name:
+		raise validation_error({"name": "Name is required."})
+	email = google["email"] if google else get_email(data)
+	# With Google there's no password; the user can set one later with "Forgot password".
+	password = _password(data) if not google or data.get("password") else frappe.generate_hash(length=32)
 	phone = get_str(data, "phone", max_length=20, label="Phone")
 	company = get_str(data, "company", required=account_type == "customer", label="Company")
 	client = _client(data)
-	_check_password_policy(password, "password", (name, email, company))
+	site = _signup_site(data) if account_type == "customer" else {}
+	if not google or data.get("password"):
+		_check_password_policy(password, "password", (name, email, company))
 
-	if frappe.db.exists("User", {"email": email}) or frappe.db.exists("User", email):
-		raise ApiError(
-			409,
-			"email_taken",
-			"An account with this email already exists.",
-			fields={"email": "An account with this email already exists."},
-		)
+	if _email_taken(email):
+		raise _email_taken_error()
+	# Google has verified a Google sign-up's email; everyone else proves it with the emailed code.
+	check_code = not google and signup_codes.required()
+	if check_code:
+		code = get_str(data, "emailCode", required=True, max_length=6, label="Code")
+		if not (len(code) == 6 and code.isdigit()):
+			raise validation_error({"emailCode": "Enter the 6-digit code from the email."})
+		signup_codes.check(email, code)
 
 	tenant = None
 	if account_type == "customer":
 		plan = _signup_plan(data)
-		user, tenant = accounts.create_customer_account(
-			email=email,
-			full_name=name,
-			company=company,
-			password=password,
-			phone=phone,
-			plan=plan,
-			referral_code=get_str(data, "referralCode", max_length=40),
-		)
-	else:
-		user = accounts.create_partner_account(
-			email=email, full_name=name, password=password, phone=phone, company=company
-		)
+		# Last, because it calls Press (10 name checks a minute for the whole team).
+		if plan and site["subdomain"] and runner.press_name_taken(site["subdomain"]):
+			raise _subdomain_taken()
+	referral_code = get_str(data, "referralCode", max_length=40)
+	try:
+		if account_type == "customer":
+			user, tenant = accounts.create_customer_account(
+				email=email,
+				full_name=name,
+				company=company,
+				password=password,
+				phone=phone,
+				plan=plan,
+				referral_code=referral_code,
+				**site,
+			)
+		else:
+			user = accounts.create_partner_account(
+				email=email, full_name=name, password=password, phone=phone, company=company
+			)
+	except frappe.ValidationError as e:
+		if isinstance(e, frappe.UniqueValidationError) and site.get("subdomain"):
+			raise _subdomain_taken()  # someone else signed up with it a moment ago
+		# Everything the visitor can fix was checked above; this is Core's setup (e.g. ERPNext
+		# defaults). A 500 with a reference, logged, instead of ERPNext's text as a 422.
+		raise AccountSetupError(f"Creating the {account_type} account failed") from e
 
+	if google_token:
+		accounts.link_google(user, google["sub"])
+		if not data.get("password"):
+			accounts.mark_no_password(user)
+		google_signin.use_signup_token(google_token)
+	if check_code:
+		signup_codes.use(email)
 	result = s.auth_session(tokens.issue(user, client), user)
 	if tenant:
 		result["site"] = {"id": tenant, "status": frappe.db.get_value("GX Tenant", tenant, "status")}
 	return 201, result
 
 
+class AccountSetupError(Exception):
+	"""Creating an account failed for a reason the visitor can't fix."""
+
+
+def _google_signup(token: str) -> dict:
+	identity = google_signin.signup_identity(token)
+	if not identity:
+		raise ApiError(
+			400,
+			"google_signup_expired",
+			"Your Google sign-in has expired. Please continue with Google again.",
+		)
+	return identity
+
+
+SUBDOMAIN_MESSAGES = {
+	"invalid": "Use {min}-{max} lowercase letters, numbers and hyphens, starting and ending with a letter or number.",
+	"reserved": "This address is reserved. Please choose another.",
+	"taken": "This address is already taken.",
+}
+
+
+def subdomain_message(problem: str) -> str:
+	return SUBDOMAIN_MESSAGES[problem].format(min=5, max=runner.longest_subdomain())
+
+
+def _subdomain_taken():
+	message = subdomain_message("taken")
+	return ApiError(409, "subdomain_taken", message, fields={"subdomain": message})
+
+
+def _signup_site(data) -> dict:
+	"""A customer's choices for their site (docs 09 §2). All optional: without them the site is
+	set up for India, with a subdomain made from the company name."""
+	code = get_choice(data, "country", tuple(countries.COUNTRIES), default=countries.DEFAULT)
+	country = countries.COUNTRIES[code]
+	chart = get_str(data, "chartOfAccounts", label="Chart of accounts")
+	if chart and chart not in countries.charts(code):
+		raise validation_error({"chartOfAccounts": "This chart of accounts isn't available for the country."})
+
+	subdomain = get_str(data, "subdomain", max_length=64, label="Subdomain")
+	if subdomain:
+		subdomain = subdomain.lower()
+		problem = runner.subdomain_problem(subdomain)
+		if problem == "taken":
+			raise _subdomain_taken()
+		if problem:
+			raise validation_error({"subdomain": subdomain_message(problem)})
+	return {
+		"subdomain": subdomain,
+		"country": country.country,
+		"chart_of_accounts": chart or country.default_chart,
+	}
+
+
 def _signup_plan(data):
 	"""The plan to start a trial on, or None if the customer didn't pick a product."""
 	product_slug = get_str(data, "productSlug", max_length=40)
 	plan_id = get_str(data, "planId", max_length=140)
-	interval = get_choice(data, "billingInterval", ("month", "year"))
+	interval = get_choice(data, "billingInterval", ("month", "year", "one_time"))
 	if not product_slug and not plan_id:
 		return None
 
@@ -204,6 +352,7 @@ def forgot_password():
 			frappe.sendmail(
 				recipients=[email],
 				subject="Reset your GrowthX password",
+				now=True,  # at once, not via the queue: the user is waiting for it
 				message=(
 					"<p>We received a request to reset your GrowthX password.</p>"
 					f'<p><a href="{link}">Choose a new password</a>. The link works once and expires in 24 hours.</p>'
@@ -245,5 +394,128 @@ def reset_password():
 	_check_password_policy(new_password, "newPassword", tuple(user_inputs or ()))
 	update_password(row.name, new_password)
 	frappe.db.set_value("User", row.name, "reset_password_key", "")
+	accounts.mark_has_password(row.name)
 	tokens.revoke_all(row.name)
 	return ok()
+
+
+# ---------------------------------------------------------------- account settings
+
+NEW_PASSWORD_MIN = 10
+
+
+def _new_password(data, key="newPassword") -> str:
+	"""Account settings rule (the website's sign-up rule): 10+ characters with a letter and a number."""
+	value = data.get(key)
+	if not isinstance(value, str) or not value:
+		raise validation_error({key: "Password is required."})
+	if len(value) < NEW_PASSWORD_MIN or len(value) > 128:
+		raise validation_error({key: f"Use {NEW_PASSWORD_MIN} to 128 characters."})
+	if not (any(c.isalpha() for c in value) and any(c.isdigit() for c in value)):
+		raise validation_error({key: "Use at least one letter and one number."})
+	return value
+
+
+@endpoint(methods=("POST",), rate_limit=RateLimit(5, 15 * 60, by_user=True))
+def change_password():
+	"""New password for the logged-in user. Every other session is logged out; this device gets
+	new tokens."""
+	data = body()
+	user = current_user()
+	current = data.get("currentPassword")
+	if not accounts.has_password(user):
+		raise ApiError(
+			409,
+			"no_password",
+			"Your account signs in with Google and has no password yet. Use Forgot password to set one.",
+		)
+	if not isinstance(current, str) or not current:
+		raise validation_error({"currentPassword": "Enter your current password."})
+	new_password = _new_password(data)
+	try:
+		check_password(user, current)
+	except frappe.AuthenticationError:
+		raise ApiError(
+			422,
+			"wrong_password",
+			"Your current password is incorrect.",
+			fields={"currentPassword": "Your current password is incorrect."},
+		)
+	if new_password == current:
+		raise validation_error({"newPassword": "Choose a password you haven't been using."})
+	user_inputs = frappe.db.get_value("User", user, ["first_name", "last_name", "email"])
+	_check_password_policy(new_password, "newPassword", tuple(user_inputs or ()))
+
+	client = frappe.db.get_value("GX Auth Token", frappe.local.gx_token, "client") or "web"
+	update_password(user, new_password)
+	accounts.mark_has_password(user)
+	tokens.revoke_all(user)
+	return s.auth_session(tokens.issue(user, client), user)
+
+
+@endpoint(methods=("POST",))
+def logout_others():
+	"""Log out every other device: revoke all the user's tokens except the one making this call."""
+	revoked = tokens.revoke_all(current_user(), keep=frappe.local.gx_token)
+	return {"ok": True, "revoked": revoked}
+
+
+# ---------------------------------------------------------------- "Sign in with GrowthX" on a site
+# The button on a site's login page goes to <website>/login?site=<host>. The website shows the
+# site's name (site_info), the person signs in to GrowthX, presses "Continue", and site_login
+# returns the same one-time link as "Open my app". Core only ever links to the site address in
+# its own records, never to one from the request.
+
+SIGN_IN_STATUSES = ("ready", "suspended")
+HOST = re.compile(r"^[a-z0-9.-]{1,253}$")
+
+
+def _site_by_host(host: str | None):
+	"""The tenant whose address (or active custom domain) is `host`, or 404 site_not_found."""
+	host = (host or "").strip().lower().rstrip(".")
+	host = urlsplit(host if "//" in host else f"//{host}").hostname or ""
+	missing = ApiError(404, "site_not_found", "We couldn't find this site.")
+	if not HOST.match(host):
+		raise missing
+	rows = frappe.get_all(
+		"GX Tenant",
+		filters={"status": ("in", SIGN_IN_STATUSES)},
+		or_filters={"site_url": ("like", f"%//{host}%"), "custom_domain": host},
+		fields=["name", "site_url", "custom_domain", "custom_domain_status"],
+	)
+	for row in rows:
+		if urlsplit(row.site_url or "").hostname == host or (
+			row.custom_domain == host and row.custom_domain_status == "active"
+		):
+			return frappe.get_doc("GX Tenant", row.name)
+	raise missing
+
+
+def _site_info(tenant) -> dict:
+	url = custom_domains.public_url(tenant)
+	name = tenant.display_name or frappe.db.get_value("GX Account", tenant.account, "account_name")
+	return {"siteName": name or urlsplit(url).hostname, "siteUrl": url, "loginUrl": f"{url}/login"}
+
+
+@endpoint(methods=("GET",), auth=False, rate_limit=RateLimit(60, 60))
+def site_info():
+	return _site_info(_site_by_host(get_str(query(), "site", required=True, max_length=300)))
+
+
+@endpoint(methods=("POST",), rate_limit=RateLimit(20, 60, by_user=True))
+def site_login():
+	tenant = _site_by_host(get_str(body(), "site", required=True, max_length=300))
+	info = _site_info(tenant)
+	if frappe.db.get_value("GX Account", tenant.account, "user") != current_user():
+		raise ApiError(
+			403,
+			"not_linked",
+			f"Your GrowthX account isn't linked to {info['siteName']}. If you work there, sign in with "
+			"the site's own login.",
+			extra={"loginUrl": info["loginUrl"]},
+		)
+	if tenant.status != "ready":
+		raise ApiError(409, "site_unavailable", f"{info['siteName']} isn't available right now.")
+	token = site_login_tokens.issue(tenant.name, current_user())
+	audit("site_login", "GX Tenant", tenant.name)  # never log the token
+	return {"redirectUrl": site_login_tokens.login_url(info["siteUrl"], token)}

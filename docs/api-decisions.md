@@ -50,7 +50,7 @@ Each decision below was checked against the Frappe/ERPNext **v16** source (Frapp
 | OI-2 | Does the trial start at sign-up or when the site is `ready`? Is the account kept if provisioning fails? | Start when the site is ready; keep the account. |
 | — | One site per product subscription at v1? | Yes. |
 | — | Partner sign-up: approved automatically, or by an admin? | Admin approval (`partnerStatus: pending_approval`). |
-| — | Business rules in 02 §2.0.3 (prices, GST inclusion, 14-day trial, 90-day referral window, single-level commission) | The contract carries them as data only; these need owners' approval. |
+| — | Business rules in 02 §2.0.3 (prices, GST inclusion, 7-day trial, 90-day referral window, single-level commission) | The contract carries them as data only; these need owners' approval. |
 | OI-6 | Browser → Next.js CSRF: token, or custom header | Web's call. |
 
 ## 4. 02 §2.4 gaps: target phase (not yet specified)
@@ -64,16 +64,15 @@ These are deliberately left out of `openapi.yaml` until their business rules are
 | 4 (Launch) | `admin.products`, `admin.plans` (the ERPNext desk is used until then); `admin.analytics` |
 | Needs a decision | `customer.access` (tenant users and seats), `customer.support_tickets`; `partner.team` (only if multi-level commission is approved) |
 
-The **Partner app** endpoints are now in `openapi.yaml` as **proposed shapes** (`x-status: proposed`), from Flutter's
-"GrowthX Partner App - Proposed API Contract" (14 Oct 2026). They are for review by Flutter and Web and are not built yet:
+The **Partner app** endpoints come from Flutter's "GrowthX Partner App - Proposed API Contract" (14 Oct 2026).
 
-| Phase | Proposed endpoints | Blocked on |
+| State | Endpoints | Notes |
 |---|---|---|
-| 2 | `partner.dashboard`, `partner.customers`, `partner.customer`, `partner.referral_stats`, `partner.notifications`, `partner.mark_notification_read`, `partner.mark_all_notifications_read`, `partner.dismiss_notification` (optional), `partner.register_device`, `partner.unregister_device`, `partner.profile`, `partner.update_profile`, `partner.notification_preferences`, `partner.update_notification_preferences` | — (click counts in `referral_stats` need the website to record visits) |
-| 2 | `partner.leads`, `partner.create_lead`, `partner.update_lead` | Lead rules: duplicates across partners, who changes status (Sammish) |
-| 2 | `partner.campaigns` | Do campaigns exist at launch? Global or per partner? (Sammish) |
-| 3 | `partner.earnings`, `partner.commissions`, `partner.payouts`, `partner.payout` | Commission rules, review period, TDS, payout date (D8, finance) |
-| 3 | `partner.request_payout_method_otp`, `partner.update_payout_method` | Verification method (SMS or email OTP, or password) and an SMS provider (Sammish) |
+| **Built** (14 Oct 2026) | `partner.dashboard`, `partner.customers`, `partner.customer`, `partner.referral_stats`, `partner.earnings`, `partner.notifications`, `partner.mark_notification_read`, `partner.mark_all_notifications_read`, `partner.dismiss_notification`, `partner.register_device`, `partner.unregister_device`, `partner.profile`, `partner.update_profile`, `partner.notification_preferences`, `partner.update_notification_preferences` | `earnings` (and `dashboard.earnings`) show placeholder figures until D8. `referral_stats.clicks` is null until the website records link visits. Push needs a Firebase project (`growthx_fcm` in site_config); until then notifications are in-app only. Notifications are created for a new referred customer and 3 days before a trial ends. |
+| Proposed | `partner.leads`, `partner.create_lead`, `partner.update_lead` | Lead rules: duplicates across partners, who changes status (Sammish). ERPNext Lead's own rule is one lead per email across the whole site. |
+| Proposed | `partner.campaigns` | Do campaigns exist at launch? Global or per partner? (Sammish) |
+| Proposed | `partner.commissions`, `partner.payouts`, `partner.payout` | Commission rules, review period, TDS, payout date (D8, finance) |
+| Proposed | `partner.request_payout_method_otp`, `partner.update_payout_method` | Verification method (SMS or email OTP, or password) and an SMS provider (Sammish) |
 
 How Flutter's proposal was adapted to the agreed conventions: no `{data, meta, error}` envelope (the body is the
 resource); camelCase fields; money as integer paise; `{items, page, pageSize, total}`; Frappe methods (POST with `id`
@@ -99,6 +98,8 @@ All 23 operations in `openapi.yaml` are implemented in `growthx_core/api/v1/` an
 | partner.summary / commission_history | Working | Commission figures use placeholder rules until D8. |
 | admin.summary / customers / tenants / tenant / retry_provisioning | Working | — |
 
-**Placeholder business data** (seed script): prices ₹699 / ₹1,499 / ₹3,999 per month, yearly = 10 × monthly, GST 18 % excluded, 14-day trial starting at sign-up (OI-2), demo partner commission 10 %. These are for testing only (D6, D7, D8).
+**Pricing (D6, decided Nov 2026):** the launch offer is one lifetime plan per product (`<product>-lifetime`, `one_time`): ₹1,50,000 **including** 18 % GST, paid once by bank transfer and recorded with `admin.record_payment`. The monthly and yearly plans are retired (`seed.lifetime_plans`). Trial: 7 days from sign-up (was 14 until Nov 2026).
+
+**Placeholder business data** (seed script): the retired monthly and yearly prices ₹699 / ₹1,499 / ₹3,999 per month, yearly = 10 × monthly, GST 18 % excluded, and the demo partner commission of 10 %. These are for testing only (D8).
 
 **Site config keys:** `growthx_web_url` (website base URL for reset and referral links), `growthx_press` (`{"mode": "fake"}` by default), `growthx_tenant_domain`, `growthx_tenant_login_path`, `razorpay_key_id`, `razorpay_key_secret`, `growthx_default_commission_rate`.
