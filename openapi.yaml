@@ -2158,7 +2158,8 @@ paths:
       description: |
         Admin → Messages: what visitors send from the website's Contact form and customers from the Support page
         (`contact.submit`, stored as GX Contact Request). Newest first. Existing requests with the old desk
-        statuses map as Replied/Closed → `handled`, New → `new`.
+        statuses map as Replied/Closed → `handled`, New → `new`. `from`/`to` work like `admin.audit_log`: either
+        may be left out; `from` after `to` gives `422` with `fields.from`.
       operationId: adminListContactRequests
       x-status: proposed
       x-phase: 2
@@ -2174,6 +2175,14 @@ paths:
         - name: source
           in: query
           schema: { $ref: "#/components/schemas/ContactRequestSource" }
+        - name: from
+          in: query
+          description: Received on or after this date (site timezone, Asia/Kolkata)
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          description: Received on or before this date, inclusive
+          schema: { type: string, format: date }
         - $ref: "#/components/parameters/Page"
         - $ref: "#/components/parameters/PageSize"
       responses:
