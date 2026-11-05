@@ -26,6 +26,11 @@ def submit():
 	return ok(202)
 
 
+def _one_line(value):
+	"""Collapse line breaks and runs of whitespace: submitted text must not span lines in a header."""
+	return " ".join((value or "").split())
+
+
 def _email_support(doc):
 	try:
 		esc = escape_html
@@ -33,14 +38,16 @@ def _email_support(doc):
 		frappe.sendmail(
 			recipients=[frappe.conf.get("growthx_support_email") or SUPPORT_EMAIL],
 			reply_to=doc.email,
-			subject=f"Contact request from {doc.full_name}" + (f" ({doc.company})" if doc.company else ""),
+			subject=f"Contact request from {_one_line(doc.full_name)}"
+			+ (f" ({_one_line(doc.company)})" if _one_line(doc.company) else ""),
 			message=(
 				f"<p><b>Name:</b> {esc(doc.full_name)}<br>"
 				f"<b>Email:</b> {esc(doc.email)}<br>"
 				f"<b>Company:</b> {esc(doc.company or '-')}</p>"
 				f"<p>{text}</p>"
-				f'<p><a href="{get_url_to_form(doc.doctype, doc.name)}">Open {esc(doc.name)} in Core</a>. '
-				"Reply to this email to answer the sender.</p>"
+				"<p>Reply to this email to answer the sender.</p>"
+				f'<p><a href="{get_url_to_form(doc.doctype, doc.name)}">Open {esc(doc.name)} in Core</a> '
+				"(needs a Core login).</p>"
 			),
 			reference_doctype=doc.doctype,
 			reference_name=doc.name,
