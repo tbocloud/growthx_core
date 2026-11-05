@@ -85,6 +85,8 @@ class RateLimit:
 	by_header: str | None = None
 	# Key on the logged-in user instead of the IP address
 	by_user: bool = False
+	# Not counted for the website's server calls (X-GrowthX-Web-Key): all its sites share one address
+	skip_with_web_key: bool = False
 
 
 # ---------------------------------------------------------------- responses
@@ -411,6 +413,8 @@ def monthly(amount, interval) -> float:
 
 def _check_rate_limit(name: str, limit: RateLimit):
 	if frappe.flags.in_test and not frappe.flags.gx_enforce_rate_limits:
+		return
+	if limit.skip_with_web_key and has_web_key():
 		return
 	parts = [name, client_ip()]
 	if limit.by_field:

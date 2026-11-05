@@ -258,7 +258,12 @@ required_apps = ["erpnext"]
 # -------
 
 fixtures = [
-	{"dt": "Role", "filters": [["name", "in", ["GrowthX Customer", "GrowthX Partner", "GrowthX Admin"]]]},
+	{
+		"dt": "Role",
+		"filters": [
+			["name", "in", ["GrowthX Customer", "GrowthX Partner", "GrowthX Admin", "GrowthX Content Editor"]]
+		],
+	},
 ]
 
 # Bearer tokens issued by `auth.login` / `auth.signup` (see growthx_core/tokens.py)
