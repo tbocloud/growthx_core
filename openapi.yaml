@@ -67,7 +67,8 @@ tags:
     description: Server-to-server calls from tenant sites (growthx_theme). Not for Web or Flutter.
   - name: content
     description: |
-      **[PROPOSED]** Blog and SEO for the six marketing sites. Public `content.*` calls are for the sites'
+      Blog and SEO for the six marketing sites. **Phase 1 is built** (`content.posts`, `content.post`,
+      `content.sitemap`); phase 2 is **[PROPOSED]**. Public `content.*` calls are for the sites'
       servers and return live content only. `admin.*content*` calls are for /admin → Website content and take the
       `admin` or `content_editor` role. A `content_editor` sees these endpoints and nothing else in /admin: no
       customers, partners, payments, revenue, audit log or messages (`403 forbidden` there).
@@ -2860,7 +2861,7 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
         "429": { $ref: "#/components/responses/RateLimited" }
-  # ---------------------------------------------------------------- website content (proposed; phase 1 = posts, sitemap)
+  # ---------------------------------------------------------------- website content (phase 1 built: posts, sitemap; the rest proposed)
   # Blog and SEO for the six marketing sites (growthx, printagx, willpex, billax, phoebix, stayvex).
   # Public content.* calls come from the sites' servers; admin.*content* calls from /admin → Website content.
   /growthx_core.api.v1.content.site:
@@ -2895,13 +2896,12 @@ paths:
   /growthx_core.api.v1.content.posts:
     get:
       tags: [content]
-      summary: "[PROPOSED · phase 1] Published posts, newest first"
+      summary: "[phase 1] Published posts, newest first"
       description: |
         Only live posts (`published`, or `scheduled` whose `publishedAt` has passed), 12 per page, newest
         `publishedAt` first. Empty when the site's blog is switched off (phase 2). `tag` filters on one tag.
         Phase 1: `coverImage` and `coverAlt` are always `null`. A missing `site` or a bad `tag` is `422`.
       operationId: contentPosts
-      x-status: proposed
       x-content-phase: 1
       x-phase: 4
       security: [{}, { webKey: [] }]
@@ -2936,13 +2936,12 @@ paths:
   /growthx_core.api.v1.content.post:
     get:
       tags: [content]
-      summary: "[PROPOSED · phase 1] One live post in full"
+      summary: "[phase 1] One live post in full"
       description: |
         `body` is Markdown: render it with raw HTML switched off. Phase 1: `coverImage`, `coverAlt` and
         `seo.ogImage` are always `null`, and the body has no images. `excerpt` is the editor's, or the start of
         the body as plain text when they left it empty.
       operationId: contentPost
-      x-status: proposed
       x-content-phase: 1
       x-phase: 4
       security: [{}, { webKey: [] }]
@@ -2969,10 +2968,9 @@ paths:
   /growthx_core.api.v1.content.sitemap:
     get:
       tags: [content]
-      summary: "[PROPOSED · phase 1] Live, indexable posts for sitemap.xml"
+      summary: "[phase 1] Live, indexable posts for sitemap.xml"
       description: Every live post without `noindex` and without a `canonicalUrl`. Not paged.
       operationId: contentSitemap
-      x-status: proposed
       x-content-phase: 1
       x-phase: 4
       security: [{}, { webKey: [] }]

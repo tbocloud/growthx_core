@@ -33,6 +33,7 @@
   "doctype": "Role",
   "is_custom": 0,
   "name": "GrowthX Content Editor",
-  "role_name": "GrowthX Content Editor"
+  "role_name": "GrowthX Content Editor",
+  "two_factor_auth": 1
  }
 ]

@@ -31,6 +31,17 @@ def apply_settings():
 	# Our own footer, unless someone has set one (System Settings → Email Footer Address).
 	if not frappe.db.get_single_value("System Settings", "email_footer_address"):
 		_set_system_setting("email_footer_address", EMAIL_FOOTER)
+	_enable_two_factor()
+
+
+def _enable_two_factor():
+	"""Two-factor login (authenticator app) for roles with "Two Factor Authentication" ticked, which
+	is only GrowthX Content Editor (role fixture): desk users who aren't GrowthX admins (DevOps,
+	5 Nov 2026). Users without such a role sign in as before. Re-applied on every migrate."""
+	_set_system_setting("enable_two_factor_auth", 1)
+	_set_system_setting("two_factor_method", "OTP App")
+	if not frappe.db.get_single_value("System Settings", "otp_issuer_name"):
+		_set_system_setting("otp_issuer_name", "TBO GrowthX Core")
 
 
 def _set_system_setting(field: str, value):

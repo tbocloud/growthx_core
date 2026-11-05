@@ -243,3 +243,51 @@ class TestWebKeySkipsTheLimit(IntegrationTestCase):
 			self.assertEqual(e.exception.status, 429)
 		finally:
 			frappe.flags.gx_enforce_rate_limits = False
+
+
+class TestContentEditorTwoFactor(IntegrationTestCase):
+	"""Two-factor login (authenticator app) for GrowthX Content Editor only."""
+
+	def setUp(self):
+		frappe.set_user("Administrator")
+
+	def tearDown(self):
+		frappe.set_user("Administrator")
+		frappe.db.rollback()
+
+	def _user(self, role):
+		email = f"gx-2fa-{uuid.uuid4().hex[:8]}@example.com"
+		user = frappe.get_doc(
+			{"doctype": "User", "email": email, "first_name": "Two", "send_welcome_email": 0}
+		).insert(ignore_permissions=True)
+		user.add_roles(role)
+		return email
+
+	def test_migrate_turns_on_otp_app_and_only_the_editor_role_needs_it(self):
+		from frappe.twofactor import two_factor_is_enabled
+
+		from growthx_core.setup import install
+
+		frappe.db.set_single_value("System Settings", "enable_two_factor_auth", 0)
+		install.apply_settings()
+		self.assertEqual(frappe.db.get_single_value("System Settings", "enable_two_factor_auth"), 1)
+		self.assertEqual(frappe.db.get_single_value("System Settings", "two_factor_method"), "OTP App")
+		self.assertTrue(frappe.db.get_single_value("System Settings", "otp_issuer_name"))
+
+		self.assertEqual(frappe.db.get_value("Role", EDITOR_ROLE, "two_factor_auth"), 1)
+		for role in ("GrowthX Admin", "GrowthX Customer", "GrowthX Partner"):
+			self.assertEqual(frappe.db.get_value("Role", role, "two_factor_auth"), 0, role)
+		self.assertTrue(two_factor_is_enabled(self._user(EDITOR_ROLE)))
+		self.assertFalse(two_factor_is_enabled(self._user("GrowthX Admin")))
+
+	def test_core_api_login_is_not_a_way_around_it(self):
+		from frappe.utils.password import update_password
+
+		from growthx_core.api.v1 import auth
+
+		email = self._user(EDITOR_ROLE)
+		update_password(email, "Long-Enough-Pass-91")
+		frappe.set_user("Guest")
+		frappe.local.request = None
+		frappe.local.form_dict = frappe._dict({"email": email, "password": "Long-Enough-Pass-91"})
+		self.assertEqual(auth.login().status_code, 401)  # no GrowthX role: no API token

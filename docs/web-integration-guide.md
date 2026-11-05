@@ -596,9 +596,9 @@ The button on a site's login page (growthx_theme) goes to `<website>/login?site=
 - Errors: `403 not_linked` (`message` + `loginUrl`, the site's own login, for staff), `409 site_unavailable`
   (suspended), `404 site_not_found`.
 
-### 5.17 Website content: blog and SEO (proposed)
+### 5.17 Website content: blog and SEO (phase 1 built)
 
-**Proposed, not built yet.** The full contract is the `content` tag in `openapi.yaml`. In short:
+**Phase 1 is built; phase 2 is proposed.** The full contract is the `content` tag in `openapi.yaml`. In short:
 
 **Phases.** Phase 1 is `content.posts`, `content.post` and `content.sitemap` only. Editors write posts in
 Core desk (GX Website Post, role GrowthX Content Editor), posts are text-only (image fields are `null`), there
