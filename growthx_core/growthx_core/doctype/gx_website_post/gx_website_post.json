@@ -1,0 +1,188 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:GXW-{#####}",
+ "creation": "2026-11-05 15:00:00.000000",
+ "description": "A blog post on one of the six marketing sites. Shown on <site>/blog once live.",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "site",
+  "title",
+  "slug",
+  "column_break_main",
+  "status",
+  "published_at",
+  "author_name",
+  "tags",
+  "section_body",
+  "excerpt",
+  "body",
+  "section_seo",
+  "seo_title",
+  "seo_description",
+  "column_break_seo",
+  "noindex",
+  "canonical_url"
+ ],
+ "fields": [
+  {
+   "fieldname": "site",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Site",
+   "options": "growthx\nprintagx\nwillpex\nbillax\nphoebix\nstayvex",
+   "reqd": 1
+  },
+  {
+   "fieldname": "title",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Title",
+   "length": 150,
+   "reqd": 1
+  },
+  {
+   "description": "The address: <site>/blog/<slug>. Lowercase letters, numbers and hyphens. Left empty, it is made from the title.",
+   "fieldname": "slug",
+   "fieldtype": "Data",
+   "label": "Slug",
+   "length": 100,
+   "search_index": 1
+  },
+  {
+   "fieldname": "column_break_main",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "draft",
+   "description": "draft: not public. published: live now (or at a past date). scheduled: goes live by itself at Published At.",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "draft\nscheduled\npublished",
+   "reqd": 1
+  },
+  {
+   "description": "Empty on publish: now. Required (and in the future) for scheduled.",
+   "fieldname": "published_at",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Published At"
+  },
+  {
+   "fieldname": "author_name",
+   "fieldtype": "Data",
+   "label": "Author Name",
+   "length": 100
+  },
+  {
+   "description": "Comma separated, e.g. gst, invoicing. At most 10.",
+   "fieldname": "tags",
+   "fieldtype": "Small Text",
+   "label": "Tags"
+  },
+  {
+   "fieldname": "section_body",
+   "fieldtype": "Section Break",
+   "label": "Post"
+  },
+  {
+   "description": "Shown on the blog list (at most 300 characters). Left empty, the start of the body is used.",
+   "fieldname": "excerpt",
+   "fieldtype": "Small Text",
+   "label": "Excerpt"
+  },
+  {
+   "description": "Markdown. Links must be http(s)://, mailto: or a path starting with / or #. Images aren't supported yet. HTML shows as plain text on the site.",
+   "fieldname": "body",
+   "fieldtype": "Markdown Editor",
+   "label": "Body",
+   "reqd": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_seo",
+   "fieldtype": "Section Break",
+   "label": "SEO"
+  },
+  {
+   "description": "At most 70 characters. Empty: the post title.",
+   "fieldname": "seo_title",
+   "fieldtype": "Data",
+   "label": "SEO Title",
+   "length": 70
+  },
+  {
+   "description": "At most 200 characters. Empty: the excerpt.",
+   "fieldname": "seo_description",
+   "fieldtype": "Small Text",
+   "label": "SEO Description"
+  },
+  {
+   "fieldname": "column_break_seo",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "description": "Ask search engines not to index this post, and leave it out of the sitemap.",
+   "fieldname": "noindex",
+   "fieldtype": "Check",
+   "label": "No Index"
+  },
+  {
+   "description": "Only when the post was first published elsewhere: an https:// URL on one of the six GrowthX sites.",
+   "fieldname": "canonical_url",
+   "fieldtype": "Data",
+   "label": "Canonical URL",
+   "length": 500
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-11-05 15:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "GrowthX Core",
+ "name": "GX Website Post",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "report": 1,
+   "role": "GrowthX Admin",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "report": 1,
+   "role": "GrowthX Content Editor",
+   "write": 1
+  }
+ ],
+ "show_title_field_in_link": 1,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "title",
+ "track_changes": 1
+}
