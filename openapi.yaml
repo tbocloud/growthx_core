@@ -74,7 +74,21 @@ tags:
 
       Every admin write is audit-logged (`entityType: content`).
 
-      **Revalidate (Core → site).** After a change, Core calls the affected site in the background:
+      **Delivery phases** (`x-content-phase` on each operation):
+
+      - **Phase 1, blog posts:** `content.posts`, `content.post` and `content.sitemap`, with the shapes below.
+        Editors write posts in Core desk (doctype **GX Website Post**, desk role **GrowthX Content Editor**,
+        which can open only that doctype: no customers, partners, payments or revenue). Posts are text-only:
+        `coverImage`, `coverAlt` and `seo.ogImage` are always `null`, and Core refuses images in the body
+        (`![…](…)`) until S3 arrives. The link rules, slug/tag formats, statuses and scheduling are as in phase 2.
+        No revalidate call: the sites' 5-minute cache picks changes up. Every site's blog is on, and sites keep
+        their built-in SEO defaults (no `content.site` yet).
+      - **Phase 2, everything else:** `content.site` (SEO defaults, page SEO, redirects, verification,
+        `blogEnabled`, `analyticsId`), every `admin.*content*` endpoint and the /admin → Website content editor,
+        the `content_editor` API role, S3 images (`admin.upload_content_image`) and the signed revalidate call.
+        Phase 1 posts carry over unchanged; the response shapes don't change.
+
+      **Revalidate (Core → site, phase 2).** After a change, Core calls the affected site in the background:
       `POST <baseUrl>/api/revalidate` with body `{"site", "paths": ["/blog", "/blog/<slug>", …], "version"}`
       and headers `X-GrowthX-Timestamp` (Unix seconds) and `X-GrowthX-Signature: sha256=<hex>`, the HMAC-SHA256 of
       `<timestamp>.<raw body>` with that site's own secret (Core site_config `growthx_revalidate_secrets.<site>`,
@@ -2846,13 +2860,13 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
         "429": { $ref: "#/components/responses/RateLimited" }
-  # ---------------------------------------------------------------- website content (proposed)
+  # ---------------------------------------------------------------- website content (proposed; phase 1 = posts, sitemap)
   # Blog and SEO for the six marketing sites (growthx, printagx, willpex, billax, phoebix, stayvex).
   # Public content.* calls come from the sites' servers; admin.*content* calls from /admin → Website content.
   /growthx_core.api.v1.content.site:
     get:
       tags: [content]
-      summary: "[PROPOSED] A site's SEO defaults, page SEO and redirects"
+      summary: "[PROPOSED · phase 2] A site's SEO defaults, page SEO and redirects"
       description: |
         Everything a site needs besides posts, in one call: defaults, every Page SEO row and the enabled
         redirects. Cache it (5 minutes, or until a revalidate call) and keep serving the last copy if Core is
@@ -2860,6 +2874,7 @@ paths:
         live. `analyticsId` is `null` until management turns tracking on (a Core setting, not the editor).
       operationId: contentSite
       x-status: proposed
+      x-content-phase: 2
       x-phase: 4
       security: [{}, { webKey: [] }]
       parameters:
@@ -2880,12 +2895,14 @@ paths:
   /growthx_core.api.v1.content.posts:
     get:
       tags: [content]
-      summary: "[PROPOSED] Published posts, newest first"
+      summary: "[PROPOSED · phase 1] Published posts, newest first"
       description: |
         Only live posts (`published`, or `scheduled` whose `publishedAt` has passed), 12 per page, newest
-        `publishedAt` first. Empty when the site's blog is switched off. `tag` filters on one tag.
+        `publishedAt` first. Empty when the site's blog is switched off (phase 2). `tag` filters on one tag.
+        Phase 1: `coverImage` and `coverAlt` are always `null`. A missing `site` or a bad `tag` is `422`.
       operationId: contentPosts
       x-status: proposed
+      x-content-phase: 1
       x-phase: 4
       security: [{}, { webKey: [] }]
       parameters:
@@ -2913,14 +2930,20 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
         "429": { $ref: "#/components/responses/RateLimited" }
 
   /growthx_core.api.v1.content.post:
     get:
       tags: [content]
-      summary: "[PROPOSED] One live post in full"
+      summary: "[PROPOSED · phase 1] One live post in full"
+      description: |
+        `body` is Markdown: render it with raw HTML switched off. Phase 1: `coverImage`, `coverAlt` and
+        `seo.ogImage` are always `null`, and the body has no images. `excerpt` is the editor's, or the start of
+        the body as plain text when they left it empty.
       operationId: contentPost
       x-status: proposed
+      x-content-phase: 1
       x-phase: 4
       security: [{}, { webKey: [] }]
       parameters:
@@ -2936,19 +2959,21 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ContentPost" }
         "404":
-          description: "`site_not_found`, or `not_found` for an unknown, draft or not-yet-live post or a switched-off blog"
+          description: "`site_not_found`, or `not_found` for an unknown, draft or not-yet-live post, or a switched-off blog (phase 2)"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
         "429": { $ref: "#/components/responses/RateLimited" }
 
   /growthx_core.api.v1.content.sitemap:
     get:
       tags: [content]
-      summary: "[PROPOSED] Live, indexable posts for sitemap.xml"
-      description: Every live post without `noindex` and without a `canonicalUrl` pointing elsewhere. Not paged.
+      summary: "[PROPOSED · phase 1] Live, indexable posts for sitemap.xml"
+      description: Every live post without `noindex` and without a `canonicalUrl`. Not paged.
       operationId: contentSitemap
       x-status: proposed
+      x-content-phase: 1
       x-phase: 4
       security: [{}, { webKey: [] }]
       parameters:
@@ -2975,14 +3000,16 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
         "429": { $ref: "#/components/responses/RateLimited" }
 
   /growthx_core.api.v1.admin.content_sites:
     get:
       tags: [content]
-      summary: "[PROPOSED] The six sites with their settings and post counts"
+      summary: "[PROPOSED · phase 2] The six sites with their settings and post counts"
       operationId: adminContentSites
       x-status: proposed
+      x-content-phase: 2
       x-phase: 4
       x-roles: [admin, content_editor]
       responses:
@@ -3003,12 +3030,13 @@ paths:
   /growthx_core.api.v1.admin.update_content_site:
     post:
       tags: [content]
-      summary: "[PROPOSED] Save a site's SEO defaults"
+      summary: "[PROPOSED · phase 2] Save a site's SEO defaults"
       description: |
         Send only the fields to change; `null` clears an optional field. Sites themselves (slug, base URL) are
         set up by Core, not created here. Audit-logged.
       operationId: adminUpdateContentSite
       x-status: proposed
+      x-content-phase: 2
       x-phase: 4
       x-roles: [admin, content_editor]
       requestBody:
@@ -3030,10 +3058,11 @@ paths:
   /growthx_core.api.v1.admin.content_posts:
     get:
       tags: [content]
-      summary: "[PROPOSED] A site's posts, drafts included"
+      summary: "[PROPOSED · phase 2] A site's posts, drafts included"
       description: Newest `updatedAt` first. `q` searches title, slug and excerpt. Items have no `body`.
       operationId: adminContentPosts
       x-status: proposed
+      x-content-phase: 2
       x-phase: 4
       x-roles: [admin, content_editor]
       parameters:
@@ -3070,9 +3099,10 @@ paths:
   /growthx_core.api.v1.admin.content_post:
     get:
       tags: [content]
-      summary: "[PROPOSED] One post in full, any status"
+      summary: "[PROPOSED · phase 2] One post in full, any status"
       operationId: adminContentPost
       x-status: proposed
+      x-content-phase: 2
       x-phase: 4
       x-roles: [admin, content_editor]
       parameters:
@@ -3090,7 +3120,7 @@ paths:
   /growthx_core.api.v1.admin.save_content_post:
     post:
       tags: [content]
-      summary: "[PROPOSED] Create or update a post"
+      summary: "[PROPOSED · phase 2] Create or update a post"
       description: |
         Without `id` it creates a post; with `id` it replaces that post's fields (send the whole post).
 
@@ -3108,6 +3138,7 @@ paths:
         Audit-logged. Triggers a revalidate of `/blog` and the post's path when the post is or was live.
       operationId: adminSaveContentPost
       x-status: proposed
+      x-content-phase: 2
       x-phase: 4
       x-roles: [admin, content_editor]
       requestBody:
@@ -3134,10 +3165,11 @@ paths:
   /growthx_core.api.v1.admin.delete_content_post:
     post:
       tags: [content]
-      summary: "[PROPOSED] Delete a post"
+      summary: "[PROPOSED · phase 2] Delete a post"
       description: Permanent. Audit-logged with the title and slug. Uploaded images are kept.
       operationId: adminDeleteContentPost
       x-status: proposed
+      x-content-phase: 2
       x-phase: 4
       x-roles: [admin, content_editor]
       requestBody:
@@ -3158,10 +3190,11 @@ paths:
   /growthx_core.api.v1.admin.content_pages:
     get:
       tags: [content]
-      summary: "[PROPOSED] A site's page SEO rows"
+      summary: "[PROPOSED · phase 2] A site's page SEO rows"
       description: Sorted by path. Not paged (a site has a few dozen pages at most).
       operationId: adminContentPages
       x-status: proposed
+      x-content-phase: 2
       x-phase: 4
       x-roles: [admin, content_editor]
       parameters:
@@ -3185,12 +3218,13 @@ paths:
   /growthx_core.api.v1.admin.save_content_page:
     post:
       tags: [content]
-      summary: "[PROPOSED] Create or update a page's SEO"
+      summary: "[PROPOSED · phase 2] Create or update a page's SEO"
       description: |
         Keyed by `site` + `path`: saving an existing path updates that row. `path` starts with `/`, has no query
         or fragment, and isn't under `/blog/` (posts carry their own SEO). Audit-logged; revalidates `path`.
       operationId: adminSaveContentPage
       x-status: proposed
+      x-content-phase: 2
       x-phase: 4
       x-roles: [admin, content_editor]
       requestBody:
@@ -3211,9 +3245,10 @@ paths:
   /growthx_core.api.v1.admin.delete_content_page:
     post:
       tags: [content]
-      summary: "[PROPOSED] Delete a page's SEO row (the page falls back to the site defaults)"
+      summary: "[PROPOSED · phase 2] Delete a page's SEO row (the page falls back to the site defaults)"
       operationId: adminDeleteContentPage
       x-status: proposed
+      x-content-phase: 2
       x-phase: 4
       x-roles: [admin, content_editor]
       requestBody:
@@ -3234,10 +3269,11 @@ paths:
   /growthx_core.api.v1.admin.content_redirects:
     get:
       tags: [content]
-      summary: "[PROPOSED] A site's redirects"
+      summary: "[PROPOSED · phase 2] A site's redirects"
       description: Sorted by `fromPath`. Not paged.
       operationId: adminContentRedirects
       x-status: proposed
+      x-content-phase: 2
       x-phase: 4
       x-roles: [admin, content_editor]
       parameters:
@@ -3261,7 +3297,7 @@ paths:
   /growthx_core.api.v1.admin.save_content_redirect:
     post:
       tags: [content]
-      summary: "[PROPOSED] Create or update a redirect"
+      summary: "[PROPOSED · phase 2] Create or update a redirect"
       description: |
         Keyed by `site` + `fromPath`. Rules (each a `422` with the code in `error.code` and the field in `fields`):
 
@@ -3275,6 +3311,7 @@ paths:
         Audit-logged; revalidates `fromPath`.
       operationId: adminSaveContentRedirect
       x-status: proposed
+      x-content-phase: 2
       x-phase: 4
       x-roles: [admin, content_editor]
       requestBody:
@@ -3299,9 +3336,10 @@ paths:
   /growthx_core.api.v1.admin.delete_content_redirect:
     post:
       tags: [content]
-      summary: "[PROPOSED] Delete a redirect"
+      summary: "[PROPOSED · phase 2] Delete a redirect"
       operationId: adminDeleteContentRedirect
       x-status: proposed
+      x-content-phase: 2
       x-phase: 4
       x-roles: [admin, content_editor]
       requestBody:
@@ -3322,7 +3360,7 @@ paths:
   /growthx_core.api.v1.admin.upload_content_image:
     post:
       tags: [content]
-      summary: "[PROPOSED] Upload a cover or inline image"
+      summary: "[PROPOSED · phase 2] Upload a cover or inline image"
       description: |
         Server-side upload (the website server forwards the editor's file). Core checks the file is really a
         JPEG, PNG or WebP by decoding it (not by its name or Content-Type), at most 5 MB and 6000 × 6000 px;
@@ -3332,6 +3370,7 @@ paths:
         Rate limit: 60 uploads per user per hour.
       operationId: adminUploadContentImage
       x-status: proposed
+      x-content-phase: 2
       x-phase: 4
       x-roles: [admin, content_editor]
       requestBody:
@@ -3533,7 +3572,7 @@ components:
       type: string
       enum: [customer, partner, admin, content_editor]
       description: |
-        `content_editor` **[PROPOSED]**: may use only the Website content endpoints (`admin.*content*`); every
+        `content_editor` **[PROPOSED, content phase 2]**: may use only the Website content endpoints (`admin.*content*`); every
         other admin endpoint returns `403`. /admin shows such a user only the Website content section.
 
     User:

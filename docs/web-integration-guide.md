@@ -600,7 +600,12 @@ The button on a site's login page (growthx_theme) goes to `<website>/login?site=
 
 **Proposed, not built yet.** The full contract is the `content` tag in `openapi.yaml`. In short:
 
-- **Sites' servers:** `content.site`, `content.posts`, `content.post` and `content.sitemap` (`?site=growthx|printagx|willpex|billax|phoebix|stayvex`). These return live content only. Send `X-GrowthX-Web-Key` to skip the per-IP limit (all six sites share one server address). Cache for 5 minutes and keep the last copy if Core is down.
+**Phases.** Phase 1 is `content.posts`, `content.post` and `content.sitemap` only. Editors write posts in
+Core desk (GX Website Post, role GrowthX Content Editor), posts are text-only (image fields are `null`), there
+is no revalidate (rely on the 5-minute cache), and every site keeps its built-in SEO defaults. Everything else
+below is phase 2. Phase 2 keeps the phase 1 response shapes.
+
+- **Sites' servers:** `content.site` (phase 2), `content.posts`, `content.post` and `content.sitemap` (`?site=growthx|printagx|willpex|billax|phoebix|stayvex`). These return live content only. Send `X-GrowthX-Web-Key` to skip the per-IP limit (all six sites share one server address). Cache for 5 minutes and keep the last copy if Core is down.
 - **/admin → Website content:** the `admin.*content*` endpoints, for the `admin` and new `content_editor` roles. A `content_editor` gets `403` on every other admin endpoint, so show them only this section.
 - **Images:** `admin.upload_content_image` (multipart). Core checks and re-encodes the image, stores it in S3 behind the media CDN, and returns the URL. Posts store only that URL.
 - **Markdown:** render with raw HTML switched off. Core refuses link/image targets other than `http(s)`, `mailto:` and relative paths.
