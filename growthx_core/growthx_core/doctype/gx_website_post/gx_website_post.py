@@ -75,6 +75,15 @@ class GXWebsitePost(Document):
 					_("{0} must be at most {1} characters.").format(self.meta.get_label(field), limit)
 				)
 		self.author_name = (self.author_name or "").strip() or None
+		# Plain-text fields keep Frappe's XSS filter (desk shows them unescaped), which would store
+		# "A > B" as "A &gt; B". Refuse < and > instead, so they are always stored exactly as typed.
+		# The body skips the filter (ignore_xss_filter): it is Markdown, kept as typed.
+		for field in ("title", "author_name", "excerpt", "seo_title", "seo_description"):
+			if any(c in (self.get(field) or "") for c in "<>"):
+				frappe.throw(
+					_("{0} can't contain < or >.").format(self.meta.get_label(field)),
+					title=self.meta.get_label(field),
+				)
 		self.canonical_url = (self.canonical_url or "").strip() or None
 		if self.canonical_url and not wc.canonical_allowed(self.canonical_url):
 			frappe.throw(

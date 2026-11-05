@@ -77,7 +77,7 @@ def body_problem(body: str) -> str | None:
 
 
 def canonical_allowed(url: str) -> bool:
-	m = re.match(r"^https://([a-z0-9.-]+)(?::443)?(/[^\s]*)?$", (url or "").strip(), re.I)
+	m = re.match(r"^https://([a-z0-9.-]+)(?::443)?(/[^\s<>\"']*)?$", (url or "").strip(), re.I)
 	if not m:
 		return False
 	host = m.group(1).lower()
