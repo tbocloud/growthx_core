@@ -291,3 +291,59 @@ class TestContentEditorTwoFactor(IntegrationTestCase):
 		frappe.local.request = None
 		frappe.local.form_dict = frappe._dict({"email": email, "password": "Long-Enough-Pass-91"})
 		self.assertEqual(auth.login().status_code, 401)  # no GrowthX role: no API token
+
+
+class TestStoredAsTyped(IntegrationTestCase):
+	"""Posts are never stored HTML-escaped (Frappe's XSS filter turned "> quote" into "&gt; quote")."""
+
+	def setUp(self):
+		frappe.set_user("Administrator")
+		frappe.db.delete("GX Website Post")  # rolled back in tearDown
+
+	def tearDown(self):
+		frappe.set_user("Administrator")
+		frappe.db.rollback()
+
+	def test_body_is_stored_exactly_as_typed(self):
+		body = (
+			"> A quote.\n\n"
+			"Prices: 5 < 10 and 10 > 5, Tom & Jerry.\n\n"
+			"<https://tbogrowthx.com> and <b>bold</b> and <script>alert(1)</script>\n\n"
+			"```\nif a < b && b > c: pass\n```\n"
+		)
+		doc = _post(body=body)
+		self.assertEqual(frappe.db.get_value("GX Website Post", doc.name, "body"), body)
+		doc.reload()
+		doc.title = "Edited"
+		doc.save()  # a desk re-save keeps it too
+		self.assertEqual(frappe.db.get_value("GX Website Post", doc.name, "body"), body)
+		frappe.set_user("Guest")
+		self.assertEqual(_call(content.post, site="printagx", slug=doc.slug)[1]["body"], body)
+
+	def test_plain_fields_refuse_angle_brackets_and_keep_ampersands(self):
+		doc = _post(
+			title="Tips & tricks: GST",
+			excerpt="Fast & simple",
+			author_name="Asha & Ravi",
+			seo_title="GST & you",
+			seo_description="All about GST & invoices",
+		)
+		row = frappe.db.get_value(
+			"GX Website Post",
+			doc.name,
+			["title", "excerpt", "author_name", "seo_title", "seo_description"],
+			as_dict=True,
+		)
+		self.assertEqual(
+			list(row.values()),
+			["Tips & tricks: GST", "Fast & simple", "Asha & Ravi", "GST & you", "All about GST & invoices"],
+		)
+		for i, field in enumerate(("title", "excerpt", "author_name", "seo_title", "seo_description")):
+			with self.assertRaises(frappe.ValidationError, msg=field):
+				_post(slug=f"angle-{i}", **{field: "A > B"})
+			with self.assertRaises(frappe.ValidationError, msg=field):
+				_post(slug=f"tag-{i}", **{field: "<img src=x onerror=alert(1)>"})
+
+	def test_canonical_url_refuses_markup(self):
+		with self.assertRaises(frappe.ValidationError):
+			_post(canonical_url='https://printagx.in/x"><script>')
