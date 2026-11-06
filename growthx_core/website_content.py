@@ -146,7 +146,7 @@ SITE_NAMES = {
 	"printagx": "PrintagX",
 	"willpex": "WillpeX",
 	"billax": "BillaX",
-	"phoebix": "Phoebix",
+	"phoebix": "PhoebiX",
 	"stayvex": "Stayvex",
 }
 GOOGLE_VERIFICATION_RE = re.compile(r"^[A-Za-z0-9_-]{10,100}$")
