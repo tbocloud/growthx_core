@@ -422,6 +422,10 @@ paths:
       description: |
         Called server-to-server by the Next.js server, or directly by the Flutter app. Never call it from browser JavaScript.
         Rate-limited per email and per IP address.
+
+        Content editors (role `content_editor`, for the /content portal) sign in here with password only, while
+        Core's `growthx_content_portal_login` is on (the default). Turning it off refuses their login and refresh
+        and stops tokens they hold (`401`). Google sign-in (`auth.google`) stays closed to them.
       operationId: login
       x-phase: 1
       security: []
@@ -3570,8 +3574,12 @@ components:
       type: string
       enum: [customer, partner, admin, content_editor]
       description: |
-        `content_editor` **[PROPOSED, content phase 2]**: may use only the Website content endpoints (`admin.*content*`); every
-        other admin endpoint returns `403`. /admin shows such a user only the Website content section.
+        `content_editor`: signs in to the /content portal through `auth.login` (password only for now). Their token
+        reaches only the Website content endpoints (`admin.*content*`, which list `content_editor` in `x-roles`)
+        and their own account (`auth.me`, `auth.logout`, `auth.logout_others`, `auth.change_password`); everything
+        else, including `auth.site_login` and every other admin endpoint, returns `403`, and Frappe's own API
+        doesn't accept the token. A user who is also an admin gets `admin`. In Core desk the same role keeps
+        two-factor login.
 
     User:
       type: object

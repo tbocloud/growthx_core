@@ -17,6 +17,12 @@ REFRESH_PREFIX = "gxr_"
 ACCESS_TTL = timedelta(hours=1)
 REFRESH_TTL = timedelta(days=30)
 
+# A content editor's token works only on GrowthX API calls, never on Frappe's own /api/resource or
+# desk methods, where their desk permissions apply without the desk's two-factor login.
+V1_PATH_PREFIX = "/api/method/growthx_core.api.v1."
+CONTENT_EDITOR_ROLE = "GrowthX Content Editor"
+FULL_ROLES = {"GrowthX Admin", "GrowthX Customer", "GrowthX Partner"}
+
 
 def _hash(token: str) -> str:
 	return hashlib.sha256(token.encode()).hexdigest()
@@ -66,11 +72,18 @@ def authenticate_request():
 		return
 	if not frappe.db.get_value("User", row.user, "enabled"):
 		return
+	if _content_editor_only(row.user) and not (frappe.request.path or "").startswith(V1_PATH_PREFIX):
+		return
 
 	form_dict = frappe.local.form_dict  # set_user() clears it
 	frappe.set_user(row.user)
 	frappe.local.form_dict = form_dict
 	frappe.local.gx_token = row.name
+
+
+def _content_editor_only(user: str) -> bool:
+	roles = set(frappe.get_roles(user))
+	return CONTENT_EDITOR_ROLE in roles and not (FULL_ROLES & roles)
 
 
 def rotate(refresh_token: str, client: str | None = None) -> dict | None:

@@ -37,7 +37,13 @@ ROLE_MAP = {
 	"admin": "GrowthX Admin",
 	"partner": "GrowthX Partner",
 	"customer": "GrowthX Customer",
+	# Lowest precedence: a user who is also an admin is an admin. Portal sign-in (tbogrowthx.com/content)
+	# is password-only for now (DevOps, 6 Nov 2026); desk keeps two-factor for this role.
+	"content_editor": "GrowthX Content Editor",
 }
+
+# What a content_editor token may call besides endpoints that list "content_editor" in their roles.
+CONTENT_EDITOR_ACCOUNT_ENDPOINTS = {"auth.me", "auth.logout", "auth.logout_others", "auth.change_password"}
 
 DEFAULT_MESSAGES = {
 	400: ("bad_request", "The request could not be processed."),
@@ -139,7 +145,7 @@ def endpoint(
 				for limit in limits:
 					_check_rate_limit(fn.__name__, limit)
 				if auth:
-					_require_auth(roles)
+					_require_auth(roles, f"{fn.__module__.rsplit('.', 1)[-1]}.{fn.__name__}")
 
 				replay_key = _idempotency_key(fn) if idempotent else None
 				if replay_key:
@@ -233,16 +239,32 @@ def _log_exception(fn) -> str | None:
 # ---------------------------------------------------------------- auth
 
 
-def _require_auth(roles):
+def _require_auth(roles, endpoint_name: str | None = None):
 	if not getattr(frappe.local, "gx_token", None):
 		# No GrowthX bearer token. Frappe cookie sessions are deliberately not accepted.
 		raise ApiError(401, "unauthenticated", "Please log in.")
-	if roles and get_role(frappe.session.user) not in roles:
+	role = get_role(frappe.session.user)
+	if role == "content_editor":
+		if not content_portal_login():
+			raise ApiError(401, "unauthenticated", "Please log in.")
+		# A content editor's token reaches the content endpoints and their own account, nothing else.
+		if (
+			not (roles and "content_editor" in roles)
+			and endpoint_name not in CONTENT_EDITOR_ACCOUNT_ENDPOINTS
+		):
+			raise ApiError(403, "forbidden", "You don't have access to this.")
+	if roles and role not in roles:
 		raise ApiError(403, "forbidden", "You don't have access to this.")
 
 
+def content_portal_login() -> bool:
+	"""Content editors may sign in through the API (the /content portal). On unless site_config sets
+	`growthx_content_portal_login: 0`, which also stops tokens they already hold. Desk is unaffected."""
+	return bool(cint(frappe.conf.get("growthx_content_portal_login", 1)))
+
+
 def get_role(user: str) -> str | None:
-	"""The caller's GrowthX role: admin, partner or customer (highest wins)."""
+	"""The caller's GrowthX role: admin, partner, customer or content_editor (highest wins)."""
 	user_roles = set(frappe.get_roles(user))
 	for role, role_name in ROLE_MAP.items():
 		if role_name in user_roles:
