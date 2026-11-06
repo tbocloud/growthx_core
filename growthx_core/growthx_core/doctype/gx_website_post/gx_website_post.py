@@ -15,6 +15,7 @@ TEXT_LIMITS = {
 	"excerpt": wc.EXCERPT_MAX,
 	"seo_title": 70,
 	"seo_description": 200,
+	"cover_alt": 200,
 }
 
 
@@ -115,6 +116,13 @@ class GXWebsitePost(Document):
 			# The body skips the filter (ignore_xss_filter): it is Markdown, kept as typed.
 			if any(c in value for c in "<>"):
 				self._fail(field, _("{0} can't contain < or >.").format(self.meta.get_label(field)))
+		for field in ("cover_image", "og_image"):
+			value = (self.get(field) or "").strip()
+			self.set(field, value or None)
+			if value and not wc.media_url_ok(value):
+				self._fail(field, wc.MEDIA_ONLY)
+		if self.cover_image and not self.cover_alt:
+			self._fail("cover_alt", _("Describe the cover image (for screen readers)."))
 		self.canonical_url = (self.canonical_url or "").strip() or None
 		if self.canonical_url and not wc.canonical_allowed(self.canonical_url):
 			self._fail(

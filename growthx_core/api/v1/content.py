@@ -2,7 +2,7 @@
 blog (content.posts, content.post, content.sitemap).
 
 Live posts only: `published`, or `scheduled` once `published_at` has passed, and only while the
-site's blog is on. Editors work in Core desk or the /content portal. Image fields stay null until S3.
+site's blog is on. Editors work in Core desk or the /content portal. Images are on the media host (S3).
 """
 
 import frappe
@@ -26,7 +26,18 @@ POSTS_PAGE_SIZE = 12
 # Visitors' requests reach Core through the sites' servers, which send the web key and are not limited.
 PUBLIC_LIMIT = RateLimit(60, 60, skip_with_web_key=True)
 
-SUMMARY_FIELDS = ["slug", "title", "excerpt", "body", "author_name", "tags", "published_at", "modified"]
+SUMMARY_FIELDS = [
+	"slug",
+	"title",
+	"excerpt",
+	"body",
+	"author_name",
+	"tags",
+	"published_at",
+	"modified",
+	"cover_image",
+	"cover_alt",
+]
 
 
 @endpoint(auth=False, rate_limit=PUBLIC_LIMIT)
@@ -75,7 +86,7 @@ def post():
 	rows = frappe.get_all(
 		"GX Website Post",
 		filters={**_live_filters(site), "slug": slug},
-		fields=[*SUMMARY_FIELDS, "seo_title", "seo_description", "noindex", "canonical_url"],
+		fields=[*SUMMARY_FIELDS, "seo_title", "seo_description", "og_image", "noindex", "canonical_url"],
 		limit=1,
 	)
 	if not rows:
@@ -87,7 +98,7 @@ def post():
 		"seo": {
 			"title": r.seo_title or None,
 			"description": r.seo_description or None,
-			"ogImage": None,  # phase 2 (S3)
+			"ogImage": r.og_image or None,
 			"noindex": bool(r.noindex),
 		},
 		"canonicalUrl": r.canonical_url or None,
@@ -118,7 +129,7 @@ def site():
 	pages = frappe.get_all(
 		"GX Content Page",
 		{"site": slug},
-		["path", "seo_title", "seo_description", "noindex"],
+		["path", "seo_title", "seo_description", "og_image", "noindex"],
 		order_by="path asc",
 	)
 	return {
@@ -129,7 +140,7 @@ def site():
 		"defaults": {
 			"title": doc.default_title or None,
 			"description": doc.default_description or None,
-			"ogImage": None,  # S3 comes later
+			"ogImage": doc.default_og_image or None,
 		},
 		"verification": {"google": doc.google_verification or None, "bing": doc.bing_verification or None},
 		# Saved by editors, sent only once management approves tracking.
@@ -140,7 +151,7 @@ def site():
 				"path": p.path,
 				"title": p.seo_title or None,
 				"description": p.seo_description or None,
-				"ogImage": None,
+				"ogImage": p.og_image or None,
 				"noindex": bool(p.noindex),
 			}
 			for p in pages
@@ -170,8 +181,8 @@ def _summary(r) -> dict:
 		"slug": r.slug,
 		"title": r.title,
 		"excerpt": r.excerpt or wc.plain_excerpt(r.body),
-		"coverImage": None,  # phase 2 (S3)
-		"coverAlt": None,
+		"coverImage": r.cover_image or None,
+		"coverAlt": r.cover_alt or None,
 		"authorName": r.author_name or None,
 		"tags": [t.strip() for t in (r.tags or "").split(",") if t.strip()],
 		"publishedAt": iso(r.published_at),

@@ -16,12 +16,15 @@
   "author_name",
   "tags",
   "section_body",
+  "cover_image",
+  "cover_alt",
   "excerpt",
   "body",
   "section_seo",
   "seo_title",
   "seo_description",
   "column_break_seo",
+  "og_image",
   "noindex",
   "canonical_url"
  ],
@@ -91,13 +94,27 @@
    "label": "Post"
   },
   {
+   "fieldname": "cover_image",
+   "fieldtype": "Data",
+   "label": "Cover Image",
+   "length": 500,
+   "description": "Shown at the top of the post and on the blog list. An image address from /content (https://media.tbogrowthx.com/...)."
+  },
+  {
+   "fieldname": "cover_alt",
+   "fieldtype": "Data",
+   "label": "Cover Image Description",
+   "length": 200,
+   "description": "What the cover image shows, for screen readers. Required with a cover image."
+  },
+  {
    "description": "Shown on the blog list (at most 300 characters). Left empty, the start of the body is used.",
    "fieldname": "excerpt",
    "fieldtype": "Small Text",
    "label": "Excerpt"
   },
   {
-   "description": "Markdown. Links must be http(s)://, mailto: or a path starting with / or #. Images aren't supported yet. HTML shows as plain text on the site.",
+   "description": "Markdown. Links must be http(s)://, mailto: or a path starting with / or #. Images: upload them in /content and use ![description](image address). HTML is not shown on the site.",
    "fieldname": "body",
    "fieldtype": "Markdown Editor",
    "ignore_xss_filter": 1,
@@ -128,6 +145,13 @@
    "fieldtype": "Column Break"
   },
   {
+   "fieldname": "og_image",
+   "fieldtype": "Data",
+   "label": "Share Image",
+   "length": 500,
+   "description": "Shown when the post is shared. Empty: the cover image. An image address from /content (https://media.tbogrowthx.com/...)."
+  },
+  {
    "default": "0",
    "description": "Ask search engines not to index this post, and leave it out of the sitemap.",
    "fieldname": "noindex",
@@ -144,7 +168,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-11-06 10:00:00.000000",
+ "modified": "2026-11-06 18:00:00.000000",
  "modified_by": "Administrator",
  "module": "GrowthX Core",
  "name": "GX Website Post",

@@ -31,8 +31,9 @@ class GXContentPage(Document):
 				self._fail(field, _("At most {0} characters.").format(limit))
 			if any(c in value for c in "<>"):
 				self._fail(field, _("{0} can't contain < or >.").format(self.meta.get_label(field)))
-		if self.og_image:
-			self._fail("og_image", _("Images aren't supported yet."))
+		self.og_image = (self.og_image or "").strip() or None
+		if self.og_image and not wc.media_url_ok(self.og_image):
+			self._fail("og_image", wc.MEDIA_ONLY)
 
 	def on_trash(self):
 		wc.detach_audit_on_desk_delete(self, f"{self.site} {self.path}")

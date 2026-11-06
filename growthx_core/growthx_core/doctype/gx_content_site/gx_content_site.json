@@ -68,8 +68,7 @@
    "fieldtype": "Data",
    "label": "Default Share Image",
    "length": 500,
-   "read_only": 1,
-   "description": "Images arrive with S3."
+   "description": "Shown when the page is shared. An image address from /content (https://media.tbogrowthx.com/...)."
   },
   {
    "fieldname": "section_verification",
@@ -97,7 +96,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-11-06 12:00:00.000000",
+ "modified": "2026-11-06 18:00:00.000000",
  "modified_by": "Administrator",
  "module": "GrowthX Core",
  "name": "GX Content Site",

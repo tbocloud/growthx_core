@@ -3,7 +3,7 @@ admin.save_content_post, admin.delete_content_post). Re-exported from admin.py, 
 `growthx_core.api.v1.admin.*`.
 
 For the `admin` and `content_editor` roles. The checks are GX Website Post's own (the same as in
-desk); this module maps them to the contract's fields. Text-only until S3: image fields must be null.
+desk); this module maps them to the contract's fields. Images must come from admin.upload_content_image.
 """
 
 from zoneinfo import ZoneInfo
@@ -46,8 +46,10 @@ API_FIELDS = {
 	"seo_title": "seo.title",
 	"seo_description": "seo.description",
 	"canonical_url": "canonicalUrl",
+	"cover_image": "coverImage",
+	"cover_alt": "coverAlt",
+	"og_image": "seo.ogImage",
 }
-NO_IMAGES = "Images aren't supported yet."
 
 
 @endpoint(roles=CONTENT_ROLES)
@@ -186,10 +188,10 @@ def _input(data: dict) -> dict:
 	seo_title = take(_seo_str, seo, "title", 70, "SEO title")
 	seo_description = take(_seo_str, seo, "description", 200, "SEO description")
 
-	if data.get("coverImage"):
-		errors["coverImage"] = NO_IMAGES
-	if seo.get("ogImage"):
-		errors["seo.ogImage"] = NO_IMAGES
+	# Images: addresses from admin.upload_content_image (checked by the doctype).
+	cover_image = take(get_str, data, "coverImage", max_length=500, label="Cover image")
+	cover_alt = take(get_str, data, "coverAlt", max_length=200, label="Cover image description")
+	og_image = take(_seo_str, seo, "ogImage", 500, "Share image")
 	if errors:
 		raise validation_error(errors)
 
@@ -207,6 +209,9 @@ def _input(data: dict) -> dict:
 		"seo_description": seo_description,
 		"noindex": 1 if seo.get("noindex") is True else 0,
 		"canonical_url": canonical,
+		"cover_image": cover_image,
+		"cover_alt": cover_alt,
+		"og_image": og_image,
 	}
 
 
@@ -284,12 +289,12 @@ def _full(doc) -> dict:
 		**_summary(doc),
 		"excerpt": doc.excerpt or "",
 		"body": doc.body,
-		"coverImage": None,  # S3 comes later
-		"coverAlt": None,
+		"coverImage": doc.cover_image or None,
+		"coverAlt": doc.cover_alt or None,
 		"seo": {
 			"title": doc.seo_title or None,
 			"description": doc.seo_description or None,
-			"ogImage": None,
+			"ogImage": doc.og_image or None,
 			"noindex": bool(doc.noindex),
 		},
 		"canonicalUrl": doc.canonical_url or None,
