@@ -491,8 +491,12 @@ ENTITY_DOCTYPES = {
 	"appointment": "GX Appointment",
 	"content": "GX Website Post",
 }
+# Website content spans three doctypes; entityType=content lists them all.
+CONTENT_DOCTYPES = ("GX Website Post", "GX Content Site", "GX Content Page")
 ENTITY_LABELS = {
 	"GX Website Post": "title",
+	"GX Content Site": "site_name",
+	"GX Content Page": "path",
 	"GX Account": "account_name",
 	"GX Partner Profile": "partner_name",
 	"GX Tenant": "display_name",
@@ -513,7 +517,9 @@ def audit_log():
 		raise validation_error({"from": "from must be on or before to."})
 
 	filters = {}
-	if entity_type:
+	if entity_type == "content":
+		filters["reference_doctype"] = ("in", CONTENT_DOCTYPES)
+	elif entity_type:
 		filters["reference_doctype"] = ENTITY_DOCTYPES[entity_type]
 	if entity_id:
 		filters["reference_name"] = entity_id
@@ -536,6 +542,7 @@ def audit_log():
 	)
 	total = frappe.db.count("GX Audit Log", filters)
 	type_of = {doctype: kind for kind, doctype in ENTITY_DOCTYPES.items()}
+	type_of.update({doctype: "content" for doctype in CONTENT_DOCTYPES})
 	labels = {}
 	for doctype, field in ENTITY_LABELS.items():
 		names = [r.reference_name for r in rows if r.reference_doctype == doctype and r.reference_name]
@@ -961,4 +968,11 @@ from growthx_core.api.v1.admin_content import (
 	content_posts,
 	delete_content_post,
 	save_content_post,
+)
+from growthx_core.api.v1.admin_content_seo import (
+	content_pages,
+	content_sites,
+	delete_content_page,
+	save_content_page,
+	update_content_site,
 )

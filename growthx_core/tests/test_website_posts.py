@@ -114,11 +114,11 @@ class TestWebsitePostDoctype(IntegrationTestCase):
 			with self.assertRaises(frappe.ValidationError, msg=url):
 				_post(slug=f"canon-{i}", canonical_url=url)
 
-	def test_content_editor_role_sees_only_posts(self):
+	def test_content_editor_role_sees_only_website_content(self):
 		self.assertEqual(frappe.db.get_value("Role", EDITOR_ROLE, "desk_access"), 1)
 		perms = frappe.get_all("DocPerm", {"role": EDITOR_ROLE}, pluck="parent")
 		perms += frappe.get_all("Custom DocPerm", {"role": EDITOR_ROLE}, pluck="parent")
-		self.assertEqual(sorted(set(perms)), ["GX Website Post"])
+		self.assertEqual(sorted(set(perms)), ["GX Content Page", "GX Content Site", "GX Website Post"])
 		email = f"gx-editor-{uuid.uuid4().hex[:8]}@example.com"
 		user = frappe.get_doc(
 			{"doctype": "User", "email": email, "first_name": "Editor", "send_welcome_email": 0}

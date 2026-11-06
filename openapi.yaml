@@ -67,9 +67,11 @@ tags:
     description: Server-to-server calls from tenant sites (growthx_theme). Not for Web or Flutter.
   - name: content
     description: |
-      Blog and SEO for the six marketing sites. **Built:** `content.posts`, `content.post`, `content.sitemap`,
-      `content_editor` sign-in, and the /content portal's posts (`admin.content_posts`, `admin.content_post`,
-      `admin.save_content_post`, `admin.delete_content_post`). The rest of phase 2 is **[PROPOSED]**. Public `content.*` calls are for the sites'
+      Blog and SEO for the six marketing sites. **Built:** `content.site`, `content.posts`, `content.post`,
+      `content.sitemap`, `content_editor` sign-in, and the /content portal's posts, site SEO settings and page SEO
+      (`admin.content_posts`/`content_post`/`save_content_post`/`delete_content_post`, `admin.content_sites`,
+      `admin.update_content_site`, `admin.content_pages`, `admin.save_content_page`, `admin.delete_content_page`).
+      Still **[PROPOSED]**: images (S3), redirects and revalidate. Public `content.*` calls are for the sites'
       servers and return live content only. `admin.*content*` calls are for /admin → Website content and take the
       `admin` or `content_editor` role. A `content_editor` sees these endpoints and nothing else in /admin: no
       customers, partners, payments, revenue, audit log or messages (`403 forbidden` there).
@@ -2872,14 +2874,14 @@ paths:
   /growthx_core.api.v1.content.site:
     get:
       tags: [content]
-      summary: "[PROPOSED · phase 2] A site's SEO defaults, page SEO and redirects"
+      summary: "A site's SEO defaults, page SEO and redirects"
       description: |
         Everything a site needs besides posts, in one call: defaults, every Page SEO row and the enabled
         redirects. Cache it (5 minutes, or until a revalidate call) and keep serving the last copy if Core is
         unreachable. `version` changes whenever anything for the site changes, including a scheduled post going
         live. `analyticsId` is `null` until management turns tracking on (a Core setting, not the editor).
+        Until redirects and S3 are built, `redirects` is `[]` and every `ogImage` is `null`.
       operationId: contentSite
-      x-status: proposed
       x-content-phase: 2
       x-phase: 4
       security: [{}, { webKey: [] }]
@@ -3009,9 +3011,8 @@ paths:
   /growthx_core.api.v1.admin.content_sites:
     get:
       tags: [content]
-      summary: "[PROPOSED · phase 2] The six sites with their settings and post counts"
+      summary: "The six sites with their settings and post counts"
       operationId: adminContentSites
-      x-status: proposed
       x-content-phase: 2
       x-phase: 4
       x-roles: [admin, content_editor]
@@ -3033,12 +3034,13 @@ paths:
   /growthx_core.api.v1.admin.update_content_site:
     post:
       tags: [content]
-      summary: "[PROPOSED · phase 2] Save a site's SEO defaults"
+      summary: "Save a site's SEO defaults"
       description: |
         Send only the fields to change; `null` clears an optional field. Sites themselves (slug, base URL) are
-        set up by Core, not created here. Audit-logged.
+        set up by Core, not created here. Audit-logged. Text fields can't contain `<` or `>`. Until S3 is ready,
+        a `defaultOgImage` is `422` ("Images aren't supported yet."). `analyticsId` is saved but reaches the sites
+        only when `analyticsActive` is true (Core's `growthx_content_analytics`, off until management decides).
       operationId: adminUpdateContentSite
-      x-status: proposed
       x-content-phase: 2
       x-phase: 4
       x-roles: [admin, content_editor]
@@ -3195,10 +3197,9 @@ paths:
   /growthx_core.api.v1.admin.content_pages:
     get:
       tags: [content]
-      summary: "[PROPOSED · phase 2] A site's page SEO rows"
+      summary: "A site's page SEO rows"
       description: Sorted by path. Not paged (a site has a few dozen pages at most).
       operationId: adminContentPages
-      x-status: proposed
       x-content-phase: 2
       x-phase: 4
       x-roles: [admin, content_editor]
@@ -3223,12 +3224,13 @@ paths:
   /growthx_core.api.v1.admin.save_content_page:
     post:
       tags: [content]
-      summary: "[PROPOSED · phase 2] Create or update a page's SEO"
+      summary: "Create or update a page's SEO"
       description: |
         Keyed by `site` + `path`: saving an existing path updates that row. `path` starts with `/`, has no query
-        or fragment, and isn't under `/blog/` (posts carry their own SEO). Audit-logged; revalidates `path`.
+        or fragment, and isn't under `/blog/` (posts carry their own SEO; `/blog` itself is fine). A trailing `/` is
+        dropped (`/pricing/` → `/pricing`). `title`/`description` can't contain `<` or `>`. Until S3 is ready, an
+        `ogImage` is `422`. Audit-logged; will revalidate `path` once revalidate is built.
       operationId: adminSaveContentPage
-      x-status: proposed
       x-content-phase: 2
       x-phase: 4
       x-roles: [admin, content_editor]
@@ -3250,9 +3252,8 @@ paths:
   /growthx_core.api.v1.admin.delete_content_page:
     post:
       tags: [content]
-      summary: "[PROPOSED · phase 2] Delete a page's SEO row (the page falls back to the site defaults)"
+      summary: "Delete a page's SEO row (the page falls back to the site defaults)"
       operationId: adminDeleteContentPage
-      x-status: proposed
       x-content-phase: 2
       x-phase: 4
       x-roles: [admin, content_editor]

@@ -114,3 +114,113 @@ def is_live(status: str, published_at) -> bool:
 		and bool(published_at)
 		and get_datetime(published_at) <= now_datetime()
 	)
+
+
+# ---------------------------------------------------------------- site SEO settings and page SEO
+
+# Seeded once into GX Content Site; editors can rename (siteName) from /content.
+SITE_NAMES = {
+	"growthx": "TBO GrowthX",
+	"printagx": "PrintagX",
+	"willpex": "WillpeX",
+	"billax": "BillaX",
+	"phoebix": "Phoebix",
+	"stayvex": "Stayvex",
+}
+GOOGLE_VERIFICATION_RE = re.compile(r"^[A-Za-z0-9_-]{10,100}$")
+BING_VERIFICATION_RE = re.compile(r"^[A-Fa-f0-9]{32}$")
+GA4_RE = re.compile(r"^G-[A-Z0-9]{4,20}$")
+PAGE_PATH_MAX = 200
+
+
+def ensure_sites():
+	"""One GX Content Site per site (after_migrate). Existing rows are left as editors set them,
+	except the base URL, which Core owns."""
+	import frappe
+
+	for site in SITES:
+		if frappe.db.exists("GX Content Site", site):
+			if frappe.db.get_value("GX Content Site", site, "base_url") != SITE_BASE_URLS[site]:
+				frappe.db.set_value("GX Content Site", site, "base_url", SITE_BASE_URLS[site])
+			continue
+		frappe.get_doc(
+			{
+				"doctype": "GX Content Site",
+				"site": site,
+				"site_name": SITE_NAMES[site],
+				"base_url": SITE_BASE_URLS[site],
+				"title_template": f"%s · {SITE_NAMES[site]}",
+				"blog_enabled": 1,
+			}
+		).insert(ignore_permissions=True)
+
+
+def analytics_active() -> bool:
+	"""GA4 reaches the sites only once management approves tracking (site_config, not the editor)."""
+	import frappe
+
+	return bool(frappe.utils.cint(frappe.conf.get("growthx_content_analytics")))
+
+
+def blog_enabled(site: str) -> bool:
+	import frappe
+
+	value = frappe.db.get_value("GX Content Site", site, "blog_enabled")
+	return value is None or bool(value)  # no settings row yet: on
+
+
+def page_path_problem(path: str) -> str | None:
+	if not path.startswith("/") or path.startswith("//"):
+		return "Must start with a single /."
+	if len(path) > PAGE_PATH_MAX:
+		return f"At most {PAGE_PATH_MAX} characters."
+	if any(c in path for c in "?#") or any(c.isspace() for c in path) or any(c in path for c in "<>\"'\\"):
+		return "Just the path: no query (?), fragment (#), spaces or quotes."
+	if path.startswith("/blog/"):
+		return "Posts under /blog/ carry their own SEO; edit the post instead."
+	return None
+
+
+def normalise_path(path: str) -> str:
+	path = (path or "").strip()
+	return path.rstrip("/") or "/" if path.startswith("/") else path
+
+
+def site_version(site: str) -> str:
+	"""Opaque; changes on any change for the site, including a scheduled post going live."""
+	import hashlib
+
+	import frappe
+
+	parts = [
+		frappe.db.get_value("GX Content Site", site, "modified"),
+		frappe.db.sql("select count(*), max(modified) from `tabGX Content Page` where site=%s", site)[0],
+		frappe.db.sql("select count(*), max(modified) from `tabGX Website Post` where site=%s", site)[0],
+		frappe.db.sql(
+			"""select count(*), max(published_at) from `tabGX Website Post`
+			where site=%s and status in ('published', 'scheduled') and published_at <= %s""",
+			(site, now_datetime()),
+		)[0],
+	]
+	return hashlib.sha256(repr(parts).encode()).hexdigest()[:16]
+
+
+def detach_audit_on_desk_delete(doc, details: str):
+	"""Desk delete of a content record: its audit rows would block it (they link to it). They keep
+	their details and type (still listed under entityType=content) but drop the record's name, and the
+	delete is logged. The /content endpoints delete with `force` and log it themselves (flag
+	`audit_logged`), keeping the links. Audit rows still protect every other kind of record."""
+	import frappe
+
+	if doc.flags.audit_logged:
+		return
+	frappe.db.set_value(
+		"GX Audit Log",
+		{"reference_doctype": doc.doctype, "reference_name": doc.name},
+		"reference_name",
+		None,
+		update_modified=False,
+	)
+	from growthx_core.api.v1._core import audit
+
+	audit(f"content.{doc.doctype.split()[-1].lower()}_deleted", doc.doctype, details=f"{doc.name}: {details}")
