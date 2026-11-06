@@ -218,4 +218,24 @@ class TestAdminContentPosts(IntegrationTestCase):
 		frappe.set_user(self.editor)
 		frappe.delete_doc("GX Website Post", post["id"])
 		self.assertFalse(frappe.db.exists("GX Website Post", post["id"]))
-		self.assertTrue(frappe.db.exists("GX Audit Log", {"reference_name": post["id"]}))  # history kept
+		rows = frappe.get_all(
+			"GX Audit Log",
+			{"reference_doctype": "GX Website Post", "details": ("like", f"%{post['title']}%")},
+			["action", "reference_name", "actor"],
+			order_by="creation asc",
+		)
+		# History kept (still under entityType=content), only the deleted post's name is dropped.
+		self.assertEqual(
+			[(r.action, r.reference_name) for r in rows],
+			[("content.post_created", None), ("content.post_deleted", None)],
+		)
+		self.assertEqual(rows[-1].actor, self.editor)
+
+	def test_audit_rows_still_protect_other_records(self):
+		frappe.set_user("Administrator")
+		request = frappe.get_doc(
+			{"doctype": "GX Contact Request", "full_name": "A", "email": "a@example.com", "message": "Hi"}
+		).insert(ignore_permissions=True)
+		_core.audit("contact.test", "GX Contact Request", request.name)
+		with self.assertRaises(frappe.LinkExistsError):
+			frappe.delete_doc("GX Contact Request", request.name)

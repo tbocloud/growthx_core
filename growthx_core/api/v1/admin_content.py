@@ -133,9 +133,10 @@ def save_content_post():
 @endpoint(methods=("POST",), roles=CONTENT_ROLES)
 def delete_content_post():
 	doc = _get(get_str(body(), "id", required=True))
-	# Logged first: the audit row's link must point at an existing post when it's written.
+	# Logged first: the audit row's link must point at an existing post when it's written. `force`
+	# skips only the link check (the post's audit rows), not permissions; the rows keep their link.
 	audit("content.post_deleted", POST, doc.name, details=f"{doc.title} ({doc.site}/blog/{doc.slug})")
-	frappe.delete_doc(POST, doc.name)
+	frappe.delete_doc(POST, doc.name, force=True, flags={"audit_logged": True})
 	return {"ok": True}
 
 
