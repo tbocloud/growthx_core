@@ -280,7 +280,9 @@ class TestContentEditorTwoFactor(IntegrationTestCase):
 		self.assertTrue(two_factor_is_enabled(self._user(EDITOR_ROLE)))
 		self.assertFalse(two_factor_is_enabled(self._user("GrowthX Admin")))
 
-	def test_core_api_login_is_not_a_way_around_it(self):
+	def test_api_login_only_while_portal_sign_in_is_on(self):
+		# Portal sign-in is password-only by decision (DevOps, 6 Nov 2026); turning it off is the way
+		# back to "desk with two-factor only". Details in test_content_editor_login.
 		from frappe.utils.password import update_password
 
 		from growthx_core.api.v1 import auth
@@ -290,7 +292,9 @@ class TestContentEditorTwoFactor(IntegrationTestCase):
 		frappe.set_user("Guest")
 		frappe.local.request = None
 		frappe.local.form_dict = frappe._dict({"email": email, "password": "Long-Enough-Pass-91"})
-		self.assertEqual(auth.login().status_code, 401)  # no GrowthX role: no API token
+		self.assertEqual(auth.login().status_code, 200)
+		with patch.dict(frappe.conf, {"growthx_content_portal_login": 0}):
+			self.assertEqual(auth.login().status_code, 401)  # last: a refusal rolls back the test user
 
 
 class TestStoredAsTyped(IntegrationTestCase):

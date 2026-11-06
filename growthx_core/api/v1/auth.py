@@ -14,10 +14,12 @@ from growthx_core.api.v1._core import (
 	RateLimit,
 	audit,
 	body,
+	content_portal_login,
 	current_user,
 	endpoint,
 	get_choice,
 	get_email,
+	get_role,
 	get_str,
 	iso,
 	ok,
@@ -29,6 +31,7 @@ from growthx_core.provisioning import countries, custom_domains, runner
 from growthx_core.provisioning import site_login as site_login_tokens
 
 GROWTHX_ROLES = {"GrowthX Customer", "GrowthX Partner", "GrowthX Admin"}
+CONTENT_EDITOR_ROLE = "GrowthX Content Editor"
 MIN_PASSWORD_LENGTH = 8
 RESET_KEY_TTL = timedelta(hours=24)
 
@@ -57,10 +60,16 @@ def _check_password_policy(password: str, key: str, user_inputs: tuple):
 		raise validation_error({key: (hint or "This password is too weak.").strip()})
 
 
-def _growthx_user(email: str) -> str | None:
-	"""The enabled user with this email who has a GrowthX role, or None."""
+def _growthx_user(email: str, editors: bool = False) -> str | None:
+	"""The enabled user with this email who has a GrowthX role, or None. With `editors`, content
+	editors too while portal sign-in is on (password sign-in and reset only, not Google)."""
 	user = frappe.db.get_value("User", {"email": email, "enabled": 1}, "name")
-	if user and GROWTHX_ROLES & set(frappe.get_roles(user)):
+	if not user:
+		return None
+	roles = set(frappe.get_roles(user))
+	if GROWTHX_ROLES & roles:
+		return user
+	if editors and CONTENT_EDITOR_ROLE in roles and content_portal_login():
 		return user
 	return None
 
@@ -77,7 +86,7 @@ def login():
 	if not isinstance(password, str) or not password:
 		raise validation_error({"password": "Password is required."})
 
-	user = _growthx_user(email)
+	user = _growthx_user(email, editors=True)
 	try:
 		if not user:
 			raise frappe.AuthenticationError
@@ -318,6 +327,9 @@ def refresh():
 	pair = tokens.rotate(refresh_token if isinstance(refresh_token, str) else "")
 	if not pair:
 		raise ApiError(401, "invalid_token", "Your session has expired. Please log in again.")
+	if get_role(pair["_user"]) == "content_editor" and not content_portal_login():
+		tokens.revoke_all(pair["_user"])
+		raise ApiError(401, "invalid_token", "Your session has expired. Please log in again.")
 	return s.auth_session(pair, pair["_user"])
 
 
@@ -339,7 +351,7 @@ def me():
 )
 def forgot_password():
 	email = get_email(body())
-	user = _growthx_user(email)
+	user = _growthx_user(email, editors=True)
 	if user:
 		key = frappe.generate_hash()
 		frappe.db.set_value(
