@@ -1,0 +1,156 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "field:site",
+ "creation": "2026-11-06 12:00:00.000000",
+ "description": "SEO settings for one marketing site. Core creates one per site; edit them here or in /content.",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "site",
+   "fieldtype": "Data",
+   "label": "Site",
+   "reqd": 1,
+   "unique": 1,
+   "read_only": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "site_name",
+   "fieldtype": "Data",
+   "label": "Site Name",
+   "reqd": 1,
+   "length": 60,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "base_url",
+   "fieldtype": "Data",
+   "label": "Base URL",
+   "read_only": 1,
+   "description": "Set by Core."
+  },
+  {
+   "fieldname": "title_template",
+   "fieldtype": "Data",
+   "label": "Title Template",
+   "reqd": 1,
+   "length": 80,
+   "description": "%s is replaced by the page title, e.g. %s \u00b7 PrintagX"
+  },
+  {
+   "fieldname": "blog_enabled",
+   "fieldtype": "Check",
+   "label": "Blog Enabled",
+   "default": "1",
+   "description": "Off: /blog and every post on this site are hidden."
+  },
+  {
+   "fieldname": "section_defaults",
+   "fieldtype": "Section Break",
+   "label": "Default SEO"
+  },
+  {
+   "fieldname": "default_title",
+   "fieldtype": "Data",
+   "label": "Default Title",
+   "length": 70
+  },
+  {
+   "fieldname": "default_description",
+   "fieldtype": "Small Text",
+   "label": "Default Description",
+   "description": "At most 200 characters."
+  },
+  {
+   "fieldname": "default_og_image",
+   "fieldtype": "Data",
+   "label": "Default Share Image",
+   "length": 500,
+   "read_only": 1,
+   "description": "Images arrive with S3."
+  },
+  {
+   "fieldname": "section_verification",
+   "fieldtype": "Section Break",
+   "label": "Verification and analytics"
+  },
+  {
+   "fieldname": "google_verification",
+   "fieldtype": "Data",
+   "label": "Google Verification",
+   "description": "Only the code from the google-site-verification meta tag."
+  },
+  {
+   "fieldname": "bing_verification",
+   "fieldtype": "Data",
+   "label": "Bing Verification",
+   "description": "Only the 32-character code from the msvalidate.01 meta tag."
+  },
+  {
+   "fieldname": "analytics_id",
+   "fieldtype": "Data",
+   "label": "GA4 Measurement ID",
+   "description": "G-\u2026 Saved, but not sent to the site until management turns tracking on."
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-11-06 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "GrowthX Core",
+ "name": "GX Content Site",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 0,
+   "delete": 0,
+   "read": 1,
+   "report": 1,
+   "role": "GrowthX Admin",
+   "write": 1
+  },
+  {
+   "create": 0,
+   "delete": 0,
+   "read": 1,
+   "report": 1,
+   "role": "GrowthX Content Editor",
+   "write": 1
+  }
+ ],
+ "sort_field": "site",
+ "sort_order": "ASC",
+ "states": [],
+ "title_field": "site_name",
+ "track_changes": 1,
+ "field_order": [
+  "site",
+  "site_name",
+  "base_url",
+  "title_template",
+  "blog_enabled",
+  "section_defaults",
+  "default_title",
+  "default_description",
+  "default_og_image",
+  "section_verification",
+  "google_verification",
+  "bing_verification",
+  "analytics_id"
+ ]
+}

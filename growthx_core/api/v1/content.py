@@ -1,7 +1,8 @@
-"""Public website content (blog) for the six marketing sites' servers. Phase 1: posts only.
+"""Public website content for the six marketing sites' servers: SEO settings (content.site) and the
+blog (content.posts, content.post, content.sitemap).
 
-Live posts only: `published`, or `scheduled` once `published_at` has passed. Editors write posts in
-Core desk (GX Website Post). Text-only until S3 arrives in phase 2, so image fields are always null.
+Live posts only: `published`, or `scheduled` once `published_at` has passed, and only while the
+site's blog is on. Editors work in Core desk or the /content portal. Image fields stay null until S3.
 """
 
 import frappe
@@ -37,6 +38,8 @@ def posts():
 	if tag is not None and not wc.SLUG_RE.match(tag):
 		raise validation_error({"tag": "Lowercase letters, numbers and hyphens only."})
 
+	if not wc.blog_enabled(site):
+		return page_meta(page, POSTS_PAGE_SIZE, 0, [])
 	filters, or_filters = _live_filters(site), None
 	if tag:
 		or_filters = [
@@ -67,7 +70,7 @@ def post():
 	data = query()
 	site = _site(data)
 	slug = get_str(data, "slug", required=True, max_length=wc.SLUG_MAX, label="Slug")
-	if not wc.SLUG_RE.match(slug):
+	if not wc.SLUG_RE.match(slug) or not wc.blog_enabled(site):
 		raise not_found()
 	rows = frappe.get_all(
 		"GX Website Post",
@@ -94,6 +97,8 @@ def post():
 @endpoint(auth=False, rate_limit=PUBLIC_LIMIT)
 def sitemap():
 	site = _site(query())
+	if not wc.blog_enabled(site):
+		return {"items": []}
 	rows = frappe.get_all(
 		"GX Website Post",
 		filters={**_live_filters(site), "noindex": 0},
@@ -102,6 +107,47 @@ def sitemap():
 		order_by="published_at desc, creation desc",
 	)
 	return {"items": [{"slug": r.slug, "updatedAt": iso(r.modified)} for r in rows]}
+
+
+@endpoint(auth=False, rate_limit=PUBLIC_LIMIT)
+def site():
+	"""Everything a site needs besides posts: SEO defaults, page SEO and (later) redirects."""
+	slug = _site(query())
+	wc.ensure_sites()
+	doc = frappe.get_doc("GX Content Site", slug)
+	pages = frappe.get_all(
+		"GX Content Page",
+		{"site": slug},
+		["path", "seo_title", "seo_description", "noindex"],
+		order_by="path asc",
+	)
+	return {
+		"site": doc.site,
+		"siteName": doc.site_name,
+		"baseUrl": doc.base_url,
+		"titleTemplate": doc.title_template,
+		"defaults": {
+			"title": doc.default_title or None,
+			"description": doc.default_description or None,
+			"ogImage": None,  # S3 comes later
+		},
+		"verification": {"google": doc.google_verification or None, "bing": doc.bing_verification or None},
+		# Saved by editors, sent only once management approves tracking.
+		"analyticsId": (doc.analytics_id or None) if wc.analytics_active() else None,
+		"blogEnabled": bool(doc.blog_enabled),
+		"pages": [
+			{
+				"path": p.path,
+				"title": p.seo_title or None,
+				"description": p.seo_description or None,
+				"ogImage": None,
+				"noindex": bool(p.noindex),
+			}
+			for p in pages
+		],
+		"redirects": [],  # redirects come in a later step
+		"version": wc.site_version(slug),
+	}
 
 
 def _site(data) -> str:
