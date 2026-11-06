@@ -67,8 +67,9 @@ tags:
     description: Server-to-server calls from tenant sites (growthx_theme). Not for Web or Flutter.
   - name: content
     description: |
-      Blog and SEO for the six marketing sites. **Phase 1 is built** (`content.posts`, `content.post`,
-      `content.sitemap`); phase 2 is **[PROPOSED]**. Public `content.*` calls are for the sites'
+      Blog and SEO for the six marketing sites. **Built:** `content.posts`, `content.post`, `content.sitemap`,
+      `content_editor` sign-in, and the /content portal's posts (`admin.content_posts`, `admin.content_post`,
+      `admin.save_content_post`, `admin.delete_content_post`). The rest of phase 2 is **[PROPOSED]**. Public `content.*` calls are for the sites'
       servers and return live content only. `admin.*content*` calls are for /admin → Website content and take the
       `admin` or `content_editor` role. A `content_editor` sees these endpoints and nothing else in /admin: no
       customers, partners, payments, revenue, audit log or messages (`403 forbidden` there).
@@ -3060,10 +3061,9 @@ paths:
   /growthx_core.api.v1.admin.content_posts:
     get:
       tags: [content]
-      summary: "[PROPOSED · phase 2] A site's posts, drafts included"
+      summary: "A site's posts, drafts included"
       description: Newest `updatedAt` first. `q` searches title, slug and excerpt. Items have no `body`.
       operationId: adminContentPosts
-      x-status: proposed
       x-content-phase: 2
       x-phase: 4
       x-roles: [admin, content_editor]
@@ -3101,9 +3101,8 @@ paths:
   /growthx_core.api.v1.admin.content_post:
     get:
       tags: [content]
-      summary: "[PROPOSED · phase 2] One post in full, any status"
+      summary: "One post in full, any status"
       operationId: adminContentPost
-      x-status: proposed
       x-content-phase: 2
       x-phase: 4
       x-roles: [admin, content_editor]
@@ -3122,7 +3121,7 @@ paths:
   /growthx_core.api.v1.admin.save_content_post:
     post:
       tags: [content]
-      summary: "[PROPOSED · phase 2] Create or update a post"
+      summary: "Create or update a post"
       description: |
         Without `id` it creates a post; with `id` it replaces that post's fields (send the whole post).
 
@@ -3130,16 +3129,21 @@ paths:
           an imported post), or `scheduled` (`publishedAt` required and in the future; it goes live by itself).
         - `body` is Markdown and is checked: link and image targets must be `http(s)://`, `mailto:` or a relative
           path (`/…`, `#…`), so `javascript:` and `data:` are refused (`422 fields.body`). Images in the body and
-          `coverImage`/`ogImage` must be on the media host (from `admin.upload_content_image`). Raw HTML is
-          stored as typed but the sites render Markdown with HTML switched off, so it shows as text.
+          `coverImage`/`ogImage` must be on the media host (from `admin.upload_content_image`). **Until S3 is
+          ready, images aren't supported:** a body image, `coverImage` or `seo.ogImage` is `422` ("Images aren't
+          supported yet."). Raw HTML is stored as typed; the sites render Markdown with HTML switched off.
+        - Plain-text fields (`title`, `excerpt`, `authorName`, `seo.title`, `seo.description`) can't contain `<` or
+          `>` (`422`). `publishedAt` takes any ISO 8601 offset (`Z` included) and comes back in UTC.
+        - Errors name the field: `slug`, `title`, `body`, `tags`, `publishedAt`, `seo.title`, `canonicalUrl`, ….
+          The checks are the same as in Core desk.
         - `expectedUpdatedAt` (optional, the `updatedAt` the editor loaded): if the post changed since, `409
           edit_conflict` instead of overwriting someone else's edit.
         - `409 slug_taken` if another post on the site has the slug. Changing a published post's slug doesn't add a
           redirect by itself; add one with `admin.save_content_redirect`.
 
-        Audit-logged. Triggers a revalidate of `/blog` and the post's path when the post is or was live.
+        Audit-logged. Will trigger a revalidate of `/blog` and the post's path once revalidate is built; until
+        then the sites pick changes up within 5 minutes.
       operationId: adminSaveContentPost
-      x-status: proposed
       x-content-phase: 2
       x-phase: 4
       x-roles: [admin, content_editor]
@@ -3167,10 +3171,9 @@ paths:
   /growthx_core.api.v1.admin.delete_content_post:
     post:
       tags: [content]
-      summary: "[PROPOSED · phase 2] Delete a post"
+      summary: "Delete a post"
       description: Permanent. Audit-logged with the title and slug. Uploaded images are kept.
       operationId: adminDeleteContentPost
-      x-status: proposed
       x-content-phase: 2
       x-phase: 4
       x-roles: [admin, content_editor]
@@ -4620,7 +4623,7 @@ components:
         - type: object
           required: [excerpt, body, coverImage, coverAlt, seo, canonicalUrl, url, createdAt]
           properties:
-            excerpt: { type: string }
+            excerpt: { type: string, description: "The editor's excerpt, or empty when they left it to the body" }
             body: { type: string }
             coverImage: { allOf: [{ $ref: "#/components/schemas/ContentImageUrl" }], nullable: true }
             coverAlt: { type: string, nullable: true }

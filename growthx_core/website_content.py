@@ -10,6 +10,15 @@ from frappe.utils import get_datetime, now_datetime
 # The site slug is the website repo's name without `-web`.
 SITES = ("growthx", "printagx", "willpex", "billax", "phoebix", "stayvex")
 STATUSES = ("draft", "scheduled", "published")
+# Each site's address. A post lives at <base>/blog/<slug>.
+SITE_BASE_URLS = {
+	"growthx": "https://tbogrowthx.com",
+	"printagx": "https://printagx.in",
+	"willpex": "https://willpex.in",
+	"billax": "https://billax.in",
+	"phoebix": "https://phoebix.in",
+	"stayvex": "https://stayvex.in",
+}
 
 # Where a canonical URL (and, in phase 2, a redirect) may point: https only, these hosts and their www.
 ALLOWED_DOMAINS = ("tbogrowthx.com", "printagx.in", "willpex.in", "billax.in", "phoebix.in", "stayvex.in")
