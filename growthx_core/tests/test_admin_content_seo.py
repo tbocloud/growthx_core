@@ -262,3 +262,30 @@ class TestContentSeo(IntegrationTestCase):
 			admin.delete_content_page,
 		):
 			self.assertEqual(_call(fn, site="printagx", id="x")[0], 403, fn.__name__)
+
+
+class TestPhoebixNamePatch(IntegrationTestCase):
+	def tearDown(self):
+		frappe.db.rollback()
+
+	def test_renames_the_seeded_name_only(self):
+		from growthx_core.patches.v1 import phoebix_site_name
+
+		wc.ensure_sites()
+		frappe.db.set_value(
+			"GX Content Site", "phoebix", {"site_name": "Phoebix", "title_template": "%s · Phoebix"}
+		)
+		phoebix_site_name.execute()
+		self.assertEqual(
+			frappe.db.get_value("GX Content Site", "phoebix", ["site_name", "title_template"]),
+			("PhoebiX", "%s · PhoebiX"),
+		)
+		frappe.db.set_value(
+			"GX Content Site", "phoebix", {"site_name": "Phoebix Solar", "title_template": "%s | Solar"}
+		)
+		phoebix_site_name.execute()  # an editor's own choice stays
+		self.assertEqual(
+			frappe.db.get_value("GX Content Site", "phoebix", ["site_name", "title_template"]),
+			("Phoebix Solar", "%s | Solar"),
+		)
+		self.assertEqual(wc.SITE_NAMES["phoebix"], "PhoebiX")
