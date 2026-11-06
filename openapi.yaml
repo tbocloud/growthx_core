@@ -1,11 +1,16 @@
 openapi: 3.0.3
 info:
   title: GrowthX API
-  version: 1.0.0-draft.5
+  version: 1.0.0
   description: |
-    GrowthX Core API (Frappe app `growthx_core`). **Status: DRAFT for review by Web, Flutter and the Lead.**
-    This file is the single API contract. Once agreed, it replaces the web team's
-    `02-api-contract.md` proposal. Decisions and open items are in `docs/api-decisions.md`.
+    GrowthX Core API (Frappe app `growthx_core`). **Status: Agreed v1** (approved by Web and Flutter in the PR
+    that set version 1.0.0).
+    This file is the single API contract. It replaces the web team's `02-api-contract.md` (v0.5).
+    Decisions and open items are in `docs/api-decisions.md`.
+
+    **Changes from now on** go through a pull request reviewed by Frappe, Web and Flutter. Additive changes
+    (new endpoints, new optional fields, building a `proposed` endpoint) stay in v1 as 1.x versions; breaking
+    changes go into `growthx_core.api.v2`.
 
     ## Conventions
     - **Routing:** every endpoint is a Frappe whitelisted method in `growthx_core.api.v1.<module>`.
