@@ -3,7 +3,7 @@ admin.update_content_site, admin.content_pages, admin.save_content_page, admin.d
 Re-exported from admin.py, so the paths are `growthx_core.api.v1.admin.*`.
 
 For the `admin` and `content_editor` roles. The checks are the doctypes' own (the same as in desk);
-this module maps them to the contract's fields. Images arrive with S3: image fields must be null.
+this module maps them to the contract's fields. Images must come from admin.upload_content_image.
 """
 
 import frappe
@@ -25,7 +25,6 @@ from growthx_core.api.v1._core import (
 CONTENT_ROLES = ("admin", "content_editor")
 SITE = "GX Content Site"
 PAGE = "GX Content Page"
-NO_IMAGES = "Images aren't supported yet."
 
 # Contract field -> doctype field, for sites (partial updates).
 SITE_INPUT = {
@@ -36,8 +35,9 @@ SITE_INPUT = {
 	"googleVerification": "google_verification",
 	"bingVerification": "bing_verification",
 	"analyticsId": "analytics_id",
+	"defaultOgImage": "default_og_image",
 }
-SITE_FIELDS = {v: k for k, v in SITE_INPUT.items()} | {"default_og_image": "defaultOgImage", "site": "site"}
+SITE_FIELDS = {v: k for k, v in SITE_INPUT.items()} | {"site": "site"}
 PAGE_FIELDS = {
 	"site": "site",
 	"path": "path",
@@ -82,8 +82,6 @@ def update_content_site():
 			errors["blogEnabled"] = "Must be true or false."
 		else:
 			doc.blog_enabled = 1 if data["blogEnabled"] else 0
-	if data.get("defaultOgImage"):
-		errors["defaultOgImage"] = NO_IMAGES
 	if errors:
 		raise validation_error(errors)
 
@@ -117,8 +115,7 @@ def save_content_page():
 	path = take(get_str, data, "path", required=True, max_length=wc.PAGE_PATH_MAX, label="Path")
 	title = take(get_str, data, "title", max_length=70, label="Title")
 	description = take(get_str, data, "description", max_length=200, label="Description")
-	if data.get("ogImage"):
-		errors["ogImage"] = NO_IMAGES
+	og_image = take(get_str, data, "ogImage", max_length=500, label="Share image")
 	if "noindex" in data and not isinstance(data["noindex"], bool):
 		errors["noindex"] = "Must be true or false."
 	if errors:
@@ -134,6 +131,7 @@ def save_content_page():
 			"seo_title": title,
 			"seo_description": description,
 			"noindex": 1 if data.get("noindex") is True else 0,
+			"og_image": og_image,
 		}
 	)
 	_save(doc, PAGE_FIELDS)
@@ -155,7 +153,17 @@ def delete_content_page():
 
 # ---------------------------------------------------------------- helpers
 
-_PAGE_COLUMNS = ["name", "site", "path", "seo_title", "seo_description", "noindex", "modified", "modified_by"]
+_PAGE_COLUMNS = [
+	"name",
+	"site",
+	"path",
+	"seo_title",
+	"seo_description",
+	"og_image",
+	"noindex",
+	"modified",
+	"modified_by",
+]
 
 
 def _save(doc, field_map: dict):
@@ -183,7 +191,7 @@ def _admin_site(doc, counts: dict) -> dict:
 		"titleTemplate": doc.title_template,
 		"defaultTitle": doc.default_title or None,
 		"defaultDescription": doc.default_description or None,
-		"defaultOgImage": None,  # S3 comes later
+		"defaultOgImage": doc.default_og_image or None,
 		"googleVerification": doc.google_verification or None,
 		"bingVerification": doc.bing_verification or None,
 		"analyticsId": doc.analytics_id or None,
@@ -201,7 +209,7 @@ def _admin_page(r) -> dict:
 		"path": r.path,
 		"title": r.seo_title or None,
 		"description": r.seo_description or None,
-		"ogImage": None,  # S3 comes later
+		"ogImage": r.og_image or None,
 		"noindex": bool(r.noindex),
 		"updatedAt": iso(r.modified),
 		"updatedBy": r.modified_by if "@" in (r.modified_by or "") else None,

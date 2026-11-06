@@ -71,7 +71,7 @@ tags:
       `content.sitemap`, `content_editor` sign-in, and the /content portal's posts, site SEO settings and page SEO
       (`admin.content_posts`/`content_post`/`save_content_post`/`delete_content_post`, `admin.content_sites`,
       `admin.update_content_site`, `admin.content_pages`, `admin.save_content_page`, `admin.delete_content_page`).
-      Still **[PROPOSED]**: images (S3), redirects and revalidate. Public `content.*` calls are for the sites'
+      Images (`admin.upload_content_image`) are built too. Still **[PROPOSED]**: redirects and revalidate. Public `content.*` calls are for the sites'
       servers and return live content only. `admin.*content*` calls are for /admin → Website content and take the
       `admin` or `content_editor` role. A `content_editor` sees these endpoints and nothing else in /admin: no
       customers, partners, payments, revenue, audit log or messages (`403 forbidden` there).
@@ -82,9 +82,8 @@ tags:
 
       - **Phase 1, blog posts:** `content.posts`, `content.post` and `content.sitemap`, with the shapes below.
         Editors write posts in Core desk (doctype **GX Website Post**, desk role **GrowthX Content Editor**,
-        which can open only that doctype: no customers, partners, payments or revenue). Posts are text-only:
-        `coverImage`, `coverAlt` and `seo.ogImage` are always `null`, and Core refuses images in the body
-        (`![…](…)`) until S3 arrives. The link rules, slug/tag formats, statuses and scheduling are as in phase 2.
+        which can open only that doctype: no customers, partners, payments or revenue). Phase 1 was text-only;
+        images arrived with `admin.upload_content_image` (S3 + media.tbogrowthx.com). The link rules, slug/tag formats, statuses and scheduling are as in phase 2.
         No revalidate call: the sites' 5-minute cache picks changes up. Every site's blog is on, and sites keep
         their built-in SEO defaults (no `content.site` yet).
       - **Phase 2, everything else:** `content.site` (SEO defaults, page SEO, redirects, verification,
@@ -2880,7 +2879,7 @@ paths:
         redirects. Cache it (5 minutes, or until a revalidate call) and keep serving the last copy if Core is
         unreachable. `version` changes whenever anything for the site changes, including a scheduled post going
         live. `analyticsId` is `null` until management turns tracking on (a Core setting, not the editor).
-        Until redirects and S3 are built, `redirects` is `[]` and every `ogImage` is `null`.
+        Until redirects are built, `redirects` is `[]`.
       operationId: contentSite
       x-content-phase: 2
       x-phase: 4
@@ -2907,7 +2906,7 @@ paths:
       description: |
         Only live posts (`published`, or `scheduled` whose `publishedAt` has passed), 12 per page, newest
         `publishedAt` first. Empty when the site's blog is switched off (phase 2). `tag` filters on one tag.
-        Phase 1: `coverImage` and `coverAlt` are always `null`. A missing `site` or a bad `tag` is `422`.
+        `coverImage`/`coverAlt` are set when the post has a cover image. A missing `site` or a bad `tag` is `422`.
       operationId: contentPosts
       x-content-phase: 1
       x-phase: 4
@@ -2945,8 +2944,8 @@ paths:
       tags: [content]
       summary: "[phase 1] One live post in full"
       description: |
-        `body` is Markdown: render it with raw HTML switched off. Phase 1: `coverImage`, `coverAlt` and
-        `seo.ogImage` are always `null`, and the body has no images. `excerpt` is the editor's, or the start of
+        `body` is Markdown: render it with raw HTML switched off. Images in the body, `coverImage` and
+        `seo.ogImage` are all on the media host. `excerpt` is the editor's, or the start of
         the body as plain text when they left it empty.
       operationId: contentPost
       x-content-phase: 1
@@ -3037,8 +3036,8 @@ paths:
       summary: "Save a site's SEO defaults"
       description: |
         Send only the fields to change; `null` clears an optional field. Sites themselves (slug, base URL) are
-        set up by Core, not created here. Audit-logged. Text fields can't contain `<` or `>`. Until S3 is ready,
-        a `defaultOgImage` is `422` ("Images aren't supported yet."). `analyticsId` is saved but reaches the sites
+        set up by Core, not created here. Audit-logged. Text fields can't contain `<` or `>`. `defaultOgImage`
+        must come from `admin.upload_content_image`. `analyticsId` is saved but reaches the sites
         only when `analyticsActive` is true (Core's `growthx_content_analytics`, off until management decides).
       operationId: adminUpdateContentSite
       x-content-phase: 2
@@ -3131,9 +3130,9 @@ paths:
           an imported post), or `scheduled` (`publishedAt` required and in the future; it goes live by itself).
         - `body` is Markdown and is checked: link and image targets must be `http(s)://`, `mailto:` or a relative
           path (`/…`, `#…`), so `javascript:` and `data:` are refused (`422 fields.body`). Images in the body and
-          `coverImage`/`ogImage` must be on the media host (from `admin.upload_content_image`). **Until S3 is
-          ready, images aren't supported:** a body image, `coverImage` or `seo.ogImage` is `422` ("Images aren't
-          supported yet."). Raw HTML is stored as typed; the sites render Markdown with HTML switched off.
+          `coverImage`/`ogImage` must be on the media host (from `admin.upload_content_image`), anything else
+          is `422`. Body images must be inline (`![description](url)`), not reference-style. `coverAlt` is required
+          with a `coverImage`. Raw HTML is stored as typed; the sites render Markdown with HTML switched off.
         - Plain-text fields (`title`, `excerpt`, `authorName`, `seo.title`, `seo.description`) can't contain `<` or
           `>` (`422`). `publishedAt` takes any ISO 8601 offset (`Z` included) and comes back in UTC.
         - Errors name the field: `slug`, `title`, `body`, `tags`, `publishedAt`, `seo.title`, `canonicalUrl`, ….
@@ -3228,8 +3227,8 @@ paths:
       description: |
         Keyed by `site` + `path`: saving an existing path updates that row. `path` starts with `/`, has no query
         or fragment, and isn't under `/blog/` (posts carry their own SEO; `/blog` itself is fine). A trailing `/` is
-        dropped (`/pricing/` → `/pricing`). `title`/`description` can't contain `<` or `>`. Until S3 is ready, an
-        `ogImage` is `422`. Audit-logged; will revalidate `path` once revalidate is built.
+        dropped (`/pricing/` → `/pricing`). `title`/`description` can't contain `<` or `>`. `ogImage` must come
+        from `admin.upload_content_image`. Audit-logged; will revalidate `path` once revalidate is built.
       operationId: adminSaveContentPage
       x-content-phase: 2
       x-phase: 4
@@ -3366,16 +3365,18 @@ paths:
   /growthx_core.api.v1.admin.upload_content_image:
     post:
       tags: [content]
-      summary: "[PROPOSED · phase 2] Upload a cover or inline image"
+      summary: "Upload a cover or inline image"
       description: |
         Server-side upload (the website server forwards the editor's file). Core checks the file is really a
         JPEG, PNG or WebP by decoding it (not by its name or Content-Type), at most 5 MB and 6000 × 6000 px;
         SVG, GIF and anything else → `422 fields.file`. Core re-encodes it, which strips EXIF and location data,
         and stores it in S3 under `content/<site>/<yyyy>/<random>.<ext>`, served through the media CDN
         (e.g. `https://media.tbogrowthx.com/…`). Core keeps only the URL. Nothing is stored on the Core host.
-        Rate limit: 60 uploads per user per hour.
+        Stored with its Content-Type and `Cache-Control: public, max-age=31536000, immutable` (every upload gets
+        a new random name, so a URL never changes content). The first frame of an animated image is kept; the
+        photo is turned upright from its EXIF orientation before EXIF is dropped. Rate limit: 60 uploads per user
+        per hour.
       operationId: adminUploadContentImage
-      x-status: proposed
       x-content-phase: 2
       x-phase: 4
       x-roles: [admin, content_editor]
@@ -4383,8 +4384,8 @@ components:
       type: string
       format: uri
       maxLength: 500
-      description: An image URL on the media host, from `admin.upload_content_image`.
-      example: https://media.tbogrowthx.com/content/printagx/2026/3f9c2a7d1b.webp
+      description: An image URL on the media host, exactly as `admin.upload_content_image` returned it.
+      example: https://media.tbogrowthx.com/content/printagx/2026/3f9c2a7d1b4e5f60718293a4b5c6d7e8.webp
 
     ContentSeo:
       type: object

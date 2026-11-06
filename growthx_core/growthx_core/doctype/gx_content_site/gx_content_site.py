@@ -40,8 +40,9 @@ class GXContentSite(Document):
 			self.set(field, value or None)
 			if value and not pattern.match(value):
 				self._fail(field, message)
-		if self.default_og_image:
-			self._fail("default_og_image", _("Images aren't supported yet."))
+		self.default_og_image = (self.default_og_image or "").strip() or None
+		if self.default_og_image and not wc.media_url_ok(self.default_og_image):
+			self._fail("default_og_image", wc.MEDIA_ONLY)
 
 	def on_trash(self):
 		frappe.throw(_("Sites are set up by Core and can't be deleted."))

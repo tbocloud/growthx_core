@@ -969,6 +969,7 @@ from growthx_core.api.v1.admin_content import (
 	delete_content_post,
 	save_content_post,
 )
+from growthx_core.api.v1.admin_content_media import upload_content_image
 from growthx_core.api.v1.admin_content_seo import (
 	content_pages,
 	content_sites,

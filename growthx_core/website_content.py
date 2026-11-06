@@ -37,6 +37,23 @@ _INLINE_DEST = re.compile(r"\]\(\s*<?([^\s)>]*)")
 _REF_DEF = re.compile(r"^ {0,3}\[[^\]]+\]:\s*<?([^\s>]*)", re.M)
 _AUTOLINK = re.compile(r"<([A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*)>")
 _IMAGE = re.compile(r"!\[[^\]]*\]\s*[(\[]")
+_INLINE_IMAGE_DEST = re.compile(r"!\[[^\]]*\]\(\s*<?([^\s)>]*)")
+DEFAULT_MEDIA_HOST = "media.tbogrowthx.com"
+
+
+def media_host() -> str:
+	import frappe
+
+	return frappe.conf.get("growthx_media_host") or DEFAULT_MEDIA_HOST
+
+
+def media_url_ok(url: str) -> bool:
+	"""Only images uploaded through admin.upload_content_image: our media host and key format."""
+	pattern = rf"^https://{re.escape(media_host())}/content/[a-z0-9]+/\d{{4}}/[a-f0-9]{{32}}\.(jpg|png|webp)$"
+	return bool(re.match(pattern, (url or "").strip()))
+
+
+MEDIA_ONLY = "Upload the image in /content first; only images on the media host can be used."
 
 
 def slugify(text: str) -> str:
@@ -75,8 +92,13 @@ def body_problem(body: str) -> str | None:
 	"""Why the Markdown body can't be saved, or None."""
 	if len(body or "") > BODY_MAX:
 		return f"The body must be at most {BODY_MAX:,} characters."
-	if _IMAGE.search(body or ""):
-		return "Images in posts aren't supported yet. Remove them for now."
+	images = _IMAGE.findall(body or "")
+	inline = _INLINE_IMAGE_DEST.findall(body or "")
+	if len(images) > len(inline):
+		return "Write images as ![description](image address), not with a reference."
+	for target in inline:
+		if not media_url_ok(target):
+			return MEDIA_ONLY
 	targets = _INLINE_DEST.findall(body or "") + _REF_DEF.findall(body or "") + _AUTOLINK.findall(body or "")
 	for target in targets:
 		if not link_allowed(target):

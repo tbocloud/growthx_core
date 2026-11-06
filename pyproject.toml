@@ -9,6 +9,7 @@ readme = "README.md"
 dynamic = ["version"]
 dependencies = [
     # "frappe~=16.35.0", "erpnext~=16.35.0"  # installed and managed by bench
+    "boto3>=1.35,<2",  # website content images to S3 (content_media.py)
 ]
 
 [build-system]

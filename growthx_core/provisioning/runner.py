@@ -44,6 +44,7 @@ RESERVED_SUBDOMAINS = {
 	"billing",
 	"growthx",
 	"growthx-core",
+	"media",  # media.tbogrowthx.com, the content CDN
 	"web-origin",
 	"products-origin",
 	"autodiscover",
