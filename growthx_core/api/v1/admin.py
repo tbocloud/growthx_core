@@ -489,8 +489,10 @@ ENTITY_DOCTYPES = {
 	"partner": "GX Partner Profile",
 	"tenant": "GX Tenant",
 	"appointment": "GX Appointment",
+	"content": "GX Website Post",
 }
 ENTITY_LABELS = {
+	"GX Website Post": "title",
 	"GX Account": "account_name",
 	"GX Partner Profile": "partner_name",
 	"GX Tenant": "display_name",
@@ -951,3 +953,12 @@ def appointment_experts():
 	return {
 		"items": [{"email": e, "name": names.get(e) or e, "upcoming": upcoming.count(e)} for e in experts]
 	}
+
+
+# Website content for the /content portal lives in its own module; its endpoints are admin.*.
+from growthx_core.api.v1.admin_content import (
+	content_post,
+	content_posts,
+	delete_content_post,
+	save_content_post,
+)

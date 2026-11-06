@@ -199,6 +199,10 @@ required_apps = ["erpnext"]
 # -----------------------------------------------------------
 
 # ignore_links_on_delete = ["Communication", "ToDo"]
+# Audit rows are history: they keep the reference but never block deleting the record (e.g. a
+# website post deleted from /content or desk). Customers, tenants and partners are still protected
+# by their other links.
+ignore_links_on_delete = ["GX Audit Log"]
 
 # Request Events
 # ----------------
