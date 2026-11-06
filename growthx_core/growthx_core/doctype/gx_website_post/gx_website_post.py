@@ -29,6 +29,28 @@ class GXWebsitePost(Document):
 		self._validate_status()
 		self._validate_text()
 
+	def on_trash(self):
+		"""A delete from desk: the post's audit rows would block it (they link to it), so they keep
+		their details and entity type (still listed under entityType=content) but drop the post's
+		name, and the delete is logged. Audit rows still protect every other record. The /content
+		endpoint deletes with `force` and logs it itself, keeping the links."""
+		if self.flags.audit_logged:
+			return
+		frappe.db.set_value(
+			"GX Audit Log",
+			{"reference_doctype": self.doctype, "reference_name": self.name},
+			"reference_name",
+			None,
+			update_modified=False,
+		)
+		from growthx_core.api.v1._core import audit
+
+		audit(
+			"content.post_deleted",
+			self.doctype,
+			details=f"{self.name}: {self.title} ({self.site}/blog/{self.slug})",
+		)
+
 	def _fail(self, field, message, exc=frappe.ValidationError):
 		self.flags.problem_field = field
 		frappe.throw(message, exc, title=self.meta.get_label(field))
