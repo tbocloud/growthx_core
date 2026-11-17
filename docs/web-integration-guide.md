@@ -110,7 +110,7 @@ A slash (`{GROWTHX_API_URL}/catalogue.products`) is not a Frappe method and retu
 | GET | `customer.subscriptions` | customer | 3 | `GET /customer/subscriptions` |
 | GET | `customer.invoices?status=` | customer | 3 | `GET /customer/invoices` |
 | POST | `billing.create_checkout` | customer | 3 | `POST /customer/checkout` |
-| POST | `billing.verify_checkout` | customer | 3 | `POST /customer/checkout/verify` |
+| GET | `billing.checkout_status?txnid=` | customer | 3 | `GET /customer/checkout/status` |
 | GET | `partner.summary` | partner | 2 | `GET /partner/summary` |
 | GET | `partner.commission_history` | partner | 3 | `GET /partner/commission-history` |
 | GET | `admin.summary` | admin | 3 | `GET /admin/summary` |
@@ -370,38 +370,53 @@ POST {GROWTHX_API_URL}.customer.open_site        {"id": "GXT-00004"}
 ```
 Invoice `status` is one of `draft`, `open`, `overdue`, `paid` or `void`. There is no `uncollectible`.
 
-### 5.7 Checkout (OI-3: your gateway-neutral shape, adopted)
+### 5.7 Checkout (PayU)
+
+The customer pays on PayU's own page; the website never handles card details or an amount it could change.
 
 ```http
 POST {GROWTHX_API_URL}.billing.create_checkout
 Idempotency-Key: …
-{"planId": "solar-growth-year", "billingInterval": "year", "subscriptionId": "GXS-00003"}
+{"planId": "solar-lifetime"}
 ```
 → `201`:
 ```json
 {
-  "provider": "razorpay",
-  "reference": "sub_NgQ8kTgV5bE2xY",
-  "publicKey": "rzp_test_…",
-  "plan": {"id": "solar-growth-year", "name": "Growth", "interval": "year"},
-  "amount": {"amount": 1499000, "currency": "INR", "gstIncluded": false},
-  "description": "GrowthX Solar Growth — billed yearly",
-  "prefill": {"name": "Amina Noor", "email": "customer@growthx.test", "phone": "+919876543210"}
+  "provider": "payu",
+  "reference": "GXO-00001",
+  "plan": {"id": "solar-lifetime", "name": "Lifetime", "interval": "one_time"},
+  "amount": {"amount": 15000000, "currency": "INR", "gstIncluded": true},
+  "invoice": Invoice,
+  "description": "GrowthX Solar Lifetime",
+  "prefill": {"name": "Amina Noor", "email": "customer@growthx.test", "phone": "+919876543210"},
+  "redirect": {"url": "https://test.payu.in/_payment", "method": "POST", "fields": {"key": "…", "txnid": "PAYU…", "amount": "150000.00", "hash": "…", "…": "…"}}
 }
 ```
-`subscriptionId` is the trial subscription being converted. Leave it out for a new subscription.
+Build a `<form method="POST" action="{redirect.url}">` with one hidden input per entry in `redirect.fields`
+(exactly as given; the hash covers them) and submit it in the same tab. `billingInterval` is optional; if
+sent it must match the plan. Calling again before paying reuses the same invoice with a new PayU attempt.
+
+PayU sends the customer back to `{growthx_web_url}/customer/billing?payu_txnid=PAYU…` (set in Core's PayU
+Settings). Core has already checked the payment with PayU's API by then. Ask for the result:
 
 ```http
-POST {GROWTHX_API_URL}.billing.verify_checkout
-{"provider": "razorpay", "reference": "sub_NgQ8kTgV5bE2xY", "payload": { /* exactly what Razorpay Checkout returned */ }}
+GET {GROWTHX_API_URL}.billing.checkout_status?txnid=PAYU…
 ```
-→ `200 {"subscription": Subscription, "invoice": null}`. The invoice arrives later through the gateway webhook. Repeating the call is safe.
+→ `200 {"reference": "GXO-00001", "status": "paid", "plan": {...}, "invoice": Invoice, "subscription": Subscription}`
+
+| `status` | Show |
+|---|---|
+| `pending` | "Confirming your payment…"; ask again every few seconds for a minute, then "We'll email you when it's confirmed" |
+| `paid` | Success; `subscription` is the now-active plan |
+| `failed` | "The payment didn't go through" and a button to try again (`billing.create_checkout` again) |
+| `attention` | "We've received your payment; our team is activating your plan" |
 
 **Errors:**
-- `400 payment_verification_failed`.
-- `404` for an unknown `reference`.
-- `422 invalid_plan`.
-- **`503 payment_unavailable`**, which is **what you get today**: no Razorpay keys are configured yet (D5). Show a friendly "payments are not available yet" message.
+- `create_checkout`: `409 invalid_transition` (already paid for lifetime access), `422 invalid_plan`,
+  `422 validation_failed` (no subscription for the plan's product), `429`.
+- `checkout_status`: `404` for someone else's or an unknown `txnid`/`reference`.
+- **`503 payment_unavailable`**: online payment is off (Core has no PayU gateway account configured, e.g.
+  production until PayU approves the domains). Show "online payment isn't available; pay by bank transfer".
 
 ### 5.8 Partner
 

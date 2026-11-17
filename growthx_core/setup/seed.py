@@ -208,6 +208,40 @@ def lifetime_plans(price: float = 150000, gst_included: int = 1, products: str =
 	frappe.db.commit()
 
 
+def plan_items(item_group: str = "Services", uom: str = "Nos"):
+	"""A non-stock service Item for each active plan, put on its online-payment invoices
+	(growthx_core.billing.payu). A plan that already has an Item keeps it. Safe to re-run.
+
+	    bench --site <core site> execute growthx_core.setup.seed.plan_items
+	"""
+	for g, label in ((item_group, "Item Group"), (uom, "UOM")):
+		if not frappe.db.exists(label, g):
+			frappe.throw(f"{label} {g} doesn't exist (pass another one)")
+	for plan in frappe.get_all("GX Plan", {"is_active": 1}, ["name", "plan_name", "product", "item"]):
+		if plan.item and frappe.db.exists("Item", plan.item):
+			print(f"{plan.name}: keeps {plan.item}")
+			continue
+		code = f"GX-{plan.name}".upper()
+		if not frappe.db.exists("Item", code):
+			product_name = frappe.db.get_value("GX Product", plan.product, "product_name")
+			frappe.get_doc(
+				{
+					"doctype": "Item",
+					"item_code": code,
+					"item_name": f"{product_name} {plan.plan_name}"[:140],
+					"description": f"{product_name}, {plan.plan_name} plan",
+					"item_group": item_group,
+					"stock_uom": uom,
+					"is_stock_item": 0,
+					"is_sales_item": 1,
+					"is_purchase_item": 0,
+				}
+			).insert(ignore_permissions=True)
+		frappe.db.set_value("GX Plan", plan.name, "item", code)
+		print(f"{plan.name}: {code}")
+	frappe.db.commit()
+
+
 def _upsert(doctype, name, values):
 	if frappe.db.exists(doctype, name):
 		doc = frappe.get_doc(doctype, name)

@@ -24,7 +24,7 @@ Web and mobile clients call only this API. Business rules (pricing, commissions,
 - `tokens.py`: bearer tokens (hashed in `GX Auth Token`, checked through `auth_hooks`).
 - `accounts.py`: sign-up (User, ERPNext Customer, GX Account, trial GX Subscription, GX Tenant).
 - `provisioning/runner.py` + `press.py`: the provisioning job and the Press client (a fake one until DevOps delivers the Press API).
-- `billing/gateway.py`: Razorpay checkout and signature checks.
+- `billing/payu.py` + `billing/payments.py`: online checkout through PayU (invoice, payment request, activation on payment) and the payment logic shared with `admin.record_payment`.
 
 ### Running it locally
 
