@@ -2,17 +2,7 @@ from datetime import date, timedelta
 
 import frappe
 from frappe.query_builder.functions import Count
-from frappe.utils import (
-	add_months,
-	add_years,
-	cint,
-	flt,
-	fmt_money,
-	get_datetime,
-	getdate,
-	now_datetime,
-	nowdate,
-)
+from frappe.utils import fmt_money, get_datetime, now_datetime, nowdate
 
 from growthx_core.api.v1 import _serializers as s
 from growthx_core.api.v1 import appointments as appts
@@ -34,6 +24,8 @@ from growthx_core.api.v1._core import (
 	query,
 	validation_error,
 )
+from growthx_core.billing import payments
+from growthx_core.billing.payments import set_customer_status as _set_customer_status
 from growthx_core.provisioning import runner
 
 CUSTOMER_STATUSES = ("trial", "active", "suspended", "churned")
@@ -287,74 +279,16 @@ def record_payment():
 	plan = frappe.get_doc("GX Plan", plan_id)
 
 	account = frappe.get_doc("GX Account", account_id, for_update=True)
-	if account.status not in ("trial", "suspended", "active"):
-		raise ApiError(
-			409, "invalid_transition", f"A customer who is {account.status} can't have a payment recorded."
-		)
-	subs = frappe.get_all(
-		"GX Subscription",
-		{"account": account.name, "product": plan.product},
-		pluck="name",
-		order_by="creation desc",
-		limit=1,
-	)
-	if not subs:
-		raise validation_error({"plan": "This customer has no subscription for this plan's product."})
-
-	sub = frappe.get_doc("GX Subscription", subs[0], for_update=True)
-	previous_plan = sub.plan
-	if sub.last_payment_id == reference:
-		raise ApiError(409, "duplicate_payment", "A payment with this reference is already recorded.")
-	if sub.status == "active" and sub.billing_interval == "one_time":
-		raise ApiError(409, "invalid_transition", "This customer has already paid for lifetime access.")
-	start = paid_on
-	if sub.status == "active" and sub.current_period_end:
-		start = max(getdate(sub.current_period_end), paid_on)
-	if plan.billing_interval == "one_time":
-		period_end = None  # lifetime: never expires or renews
-	else:
-		period_end = add_years(start, 1) if plan.billing_interval == "year" else add_months(start, 1)
-	sub.update(
-		{
-			"plan": plan.name,
-			"billing_interval": plan.billing_interval,
-			"price": plan.price,
-			"gst_included": plan.gst_included,
-			"gst_rate": plan.gst_rate,
-			"status": "active",
-			"trial_ends_at": None,
-			"current_period_end": period_end,
-			"cancel_at_period_end": 0,
-			"gateway": "manual",
-			"gateway_subscription_id": None,
-			"last_payment_id": reference,
-		}
-	)
-	sub.save(ignore_permissions=True)
-	if account.status == "active" and previous_plan != plan.name:
-		old_name = frappe.db.get_value("GX Plan", previous_plan, "plan_name") or previous_plan
-		details = f"plan change, {old_name} → {plan.plan_name}"
-	elif account.status == "active":
-		details = "renewal"
-	else:
-		details = _set_customer_status(account, "active", "suspended", "ready", "resume_site")
+	_sub, details, period_end = payments.apply_payment(account, plan, reference, paid_on, "manual")
 	audit(
 		"customer.record_payment",
 		"GX Account",
 		account.name,
 		f"{details}: {fmt_money(amount / 100, currency='INR')} for {plan.plan_name}"
-		f" (plan price {_plan_price(plan)}) paid on {paid_on.isoformat()}, reference {reference},"
+		f" (plan price {payments.plan_price(plan)}) paid on {paid_on.isoformat()}, reference {reference},"
 		f" active {f'until {period_end.isoformat()}' if period_end else 'for life'}",
 	)
 	return _customer_detail(account.name)
-
-
-def _plan_price(plan) -> str:
-	"""e.g. "₹ 1,499.00 + 18% GST", so a mistyped amount stands out in the audit line."""
-	text = fmt_money(plan.price, currency="INR")
-	if cint(plan.gst_included):
-		return f"{text} incl. GST"
-	return f"{text} + {flt(plan.gst_rate):g}% GST" if flt(plan.gst_rate) else text
 
 
 def _paid_on(value) -> date:
@@ -367,32 +301,6 @@ def _paid_on(value) -> date:
 	if paid_on.isoformat() > nowdate():
 		raise validation_error({"paidOn": "The date paid can't be in the future."})
 	return paid_on
-
-
-def _set_customer_status(account, new_status: str, site_from: str, site_to: str, press_action: str) -> str:
-	"""Change the account's status and move its sites from `site_from` to `site_to` on Press. A site
-	Press refuses keeps its status and is named in the audit details."""
-	previous = account.status
-	account.status = new_status
-	account.save(ignore_permissions=True)
-	client = None
-	failed = []
-	for t in frappe.get_all(
-		"GX Tenant", {"account": account.name, "status": site_from}, ["name", "press_site_id"]
-	):
-		try:
-			if t.press_site_id:
-				client = client or runner.get_client()
-				getattr(client, press_action)(t.press_site_id)
-		except Exception:
-			frappe.log_error(title=f"GrowthX: {press_action} failed for {t.name}")
-			failed.append(t.name)
-			continue
-		frappe.db.set_value("GX Tenant", t.name, "status", site_to)
-	details = f"{previous} → {new_status}"
-	if failed:
-		details += f" (sites not changed, Press error: {', '.join(failed)})"
-	return details
 
 
 @endpoint(methods=("GET",), roles=("admin",))

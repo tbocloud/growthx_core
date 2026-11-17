@@ -277,6 +277,11 @@ after_request = ["growthx_core.api.v1._core.after_request"]
 after_install = "growthx_core.setup.install.after_install"
 after_migrate = ["growthx_core.setup.install.after_migrate"]
 
+# Online checkout (PayU): a payment that settles a GX Checkout's invoice activates its plan.
+doc_events = {
+	"Payment Entry": {"on_submit": "growthx_core.billing.payu.on_payment_entry_submit"},
+}
+
 scheduler_events = {
 	"cron": {
 		# Resume provisioning jobs that are waiting on Press, or whose worker died
