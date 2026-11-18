@@ -279,7 +279,10 @@ after_migrate = ["growthx_core.setup.install.after_migrate"]
 
 # Online checkout (PayU): a payment that settles a GX Checkout's invoice activates its plan.
 doc_events = {
-	"Payment Entry": {"on_submit": "growthx_core.billing.payu.on_payment_entry_submit"},
+	"Payment Entry": {
+		"on_submit": "growthx_core.billing.payu.on_payment_entry_submit",
+		"on_cancel": "growthx_core.billing.payu.on_payment_entry_cancel",
+	},
 }
 
 scheduler_events = {

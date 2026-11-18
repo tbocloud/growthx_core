@@ -23,13 +23,19 @@ import inspect
 from urllib.parse import parse_qs, urlsplit
 
 import frappe
-from frappe.utils import cint, flt, getdate, now_datetime, nowdate
+from frappe.utils import add_to_date, cint, flt, get_datetime, getdate, now_datetime, nowdate
 
 from growthx_core.api.v1._core import ApiError, audit
 from growthx_core.billing import payments
 
 GATEWAY = "payu"
 PAYABLE_PR_STATUSES = ("Initiated", "Requested")
+# A PayU attempt in one of these states may still succeed; its invoice and Payment Request must not be
+# cancelled meanwhile. frappe_payu records a payment against a cancelled Payment Request without a
+# Payment Entry (and still mails the customer a receipt), so the money would be taken with nothing to
+# show for it. After this long an attempt counts as abandoned.
+IN_FLIGHT_ATTEMPT_STATUSES = ("Queued", "Authorized")
+IN_FLIGHT_MINUTES = 30
 
 
 class Unavailable(Exception):
@@ -155,11 +161,9 @@ def _cancel(row):
 	if row.sales_invoice:
 		si = frappe.get_doc("Sales Invoice", row.sales_invoice)
 		if si.docstatus == 1 and flt(si.outstanding_amount) != flt(si.grand_total):
-			raise ApiError(
-				409,
-				"payment_in_progress",
-				"A payment for this plan is already being processed. Please contact support.",
-			)
+			raise _payment_in_progress()
+	if row.payment_request and attempt_in_flight(row.payment_request):
+		raise _payment_in_progress()
 	with _as_administrator():
 		if row.payment_request:
 			pr = frappe.get_doc("Payment Request", row.payment_request)
@@ -168,6 +172,27 @@ def _cancel(row):
 		if si and si.docstatus == 1:
 			si.cancel()
 	frappe.db.set_value("GX Checkout", row.name, "status", "cancelled")
+
+
+def _payment_in_progress():
+	return ApiError(
+		409,
+		"payment_in_progress",
+		"A payment for this plan is already being processed. Please try again in a few minutes, or contact support.",
+	)
+
+
+def cancel_open_checkouts(account_name: str, product: str):
+	"""Before a payment is recorded by hand (admin.record_payment): cancel the account's pending
+	checkouts for the product, so the customer can't also pay online. Same rule as a new checkout:
+	409 payment_in_progress if one is part-paid or has a PayU attempt that may still succeed."""
+	frappe.db.get_value("GX Account", account_name, "name", for_update=True)
+	for row in frappe.get_all(
+		"GX Checkout",
+		{"account": account_name, "product": product, "status": "pending"},
+		["name", "plan", "sales_invoice", "payment_request"],
+	):
+		_cancel(row)
 
 
 def _make_invoice(account, plan, template):
@@ -288,6 +313,22 @@ def checkout_for_txnid(txnid: str) -> str | None:
 def last_attempt_status(payment_request: str) -> str | None:
 	"""Status of the newest PayU attempt for the Payment Request: Queued, Authorized, Completed,
 	Failed or Cancelled (frappe_payu's Integration Request statuses)."""
+	attempt = _last_attempt(payment_request)
+	return attempt.status if attempt else None
+
+
+def attempt_in_flight(payment_request: str) -> bool:
+	"""The newest PayU attempt is Queued or Authorized and under IN_FLIGHT_MINUTES old: the customer may
+	still be on PayU's page, and the payment may still go through."""
+	attempt = _last_attempt(payment_request)
+	return bool(
+		attempt
+		and attempt.status in IN_FLIGHT_ATTEMPT_STATUSES
+		and get_datetime(attempt.creation) > add_to_date(now_datetime(), minutes=-IN_FLIGHT_MINUTES)
+	)
+
+
+def _last_attempt(payment_request: str):
 	link = frappe.db.get_value(
 		"Integration Request",
 		{
@@ -308,7 +349,8 @@ def last_attempt_status(payment_request: str) -> str | None:
 			"request_id": link,
 			"request_description": "PayU payment attempt",
 		},
-		"status",
+		["status", "creation"],
+		as_dict=True,
 		order_by="creation desc",
 	)
 
@@ -327,10 +369,44 @@ def on_payment_entry_submit(doc, method=None):
 			"GX Checkout", {"sales_invoice": invoice, "status": ("in", ("pending", "cancelled"))}
 		)
 		if name:
-			_activate(name, doc.name)
+			_activate(name, doc.name, getdate(doc.posting_date))
 
 
-def _activate(checkout_name: str, payment_entry: str):
+def on_payment_entry_cancel(doc, method=None):
+	"""doc_events: a Payment Entry that activated (or tried to activate) a checkout was cancelled, e.g.
+	a reversal or refund. The plan stays as it is (no automatic suspension); the checkout becomes
+	needs_attention and the audit log says so, for an admin to decide. Never raises."""
+	for name in frappe.get_all(
+		"GX Checkout",
+		{"payment_entry": doc.name, "status": ("in", ("paid", "needs_attention"))},
+		pluck="name",
+	):
+		try:
+			checkout = frappe.get_doc("GX Checkout", name, for_update=True)
+			plan_state = (
+				"The plan it activated is still active"
+				if checkout.status == "paid"
+				else "The plan had not been activated"
+			)
+			checkout.db_set(
+				{
+					"status": "needs_attention",
+					"error": f"Payment Entry {doc.name} was cancelled. {plan_state}: check the payment, then"
+					" suspend the customer or record a new payment if needed.",
+				}
+			)
+			audit(
+				"customer.online_payment_cancelled",
+				"GX Account",
+				checkout.account,
+				f"Payment Entry {doc.name} cancelled for checkout {checkout.name}, invoice"
+				f" {checkout.sales_invoice}. {plan_state}; needs a decision",
+			)
+		except Exception:
+			frappe.log_error(title=f"GrowthX: could not flag checkout {name} after Payment Entry cancel")
+
+
+def _activate(checkout_name: str, payment_entry: str, paid_on):
 	checkout = frappe.get_doc("GX Checkout", checkout_name, for_update=True)
 	if flt(frappe.db.get_value("Sales Invoice", checkout.sales_invoice, "outstanding_amount")) > 0:
 		return  # part payment: wait for the rest
@@ -338,9 +414,7 @@ def _activate(checkout_name: str, payment_entry: str):
 	try:
 		account = frappe.get_doc("GX Account", checkout.account, for_update=True)
 		plan = frappe.get_doc("GX Plan", checkout.plan)
-		_sub, details, period_end = payments.apply_payment(
-			account, plan, checkout.name, getdate(nowdate()), GATEWAY
-		)
+		_sub, details, period_end = payments.apply_payment(account, plan, checkout.name, paid_on, GATEWAY)
 		audit(
 			"customer.online_payment",
 			"GX Account",

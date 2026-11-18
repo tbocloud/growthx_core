@@ -24,7 +24,7 @@ from growthx_core.api.v1._core import (
 	query,
 	validation_error,
 )
-from growthx_core.billing import payments
+from growthx_core.billing import payments, payu
 from growthx_core.billing.payments import set_customer_status as _set_customer_status
 from growthx_core.provisioning import runner
 
@@ -279,6 +279,8 @@ def record_payment():
 	plan = frappe.get_doc("GX Plan", plan_id)
 
 	account = frappe.get_doc("GX Account", account_id, for_update=True)
+	# The customer mustn't also pay online for what's recorded here (409 if a payment is under way).
+	payu.cancel_open_checkouts(account.name, plan.product)
 	_sub, details, period_end = payments.apply_payment(account, plan, reference, paid_on, "manual")
 	audit(
 		"customer.record_payment",

@@ -1388,7 +1388,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409":
-          description: "`invalid_transition` (already paid for lifetime access, or the account can't take a payment), or `idempotency_conflict`"
+          description: "`invalid_transition` (already paid for lifetime access, or the account can't take a payment), `payment_in_progress` (an earlier checkout for this product is part-paid, or its PayU attempt is still Queued/Authorized and under 30 minutes old: try again in a few minutes), or `idempotency_conflict`"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -2421,6 +2421,10 @@ paths:
         - The customer becomes `active`. A suspended customer's sites come back, as with `reactivate`.
         - The payment (amount, the plan's price, date, reference, new period end) is in `history` and the audit log.
           No invoice is created, and the customer isn't emailed.
+        - The customer's open online checkouts for the product are cancelled first (invoice and PayU Payment
+          Request), so they can't also pay online. `409 payment_in_progress` instead, and nothing is recorded, if
+          one is part-paid or has a PayU attempt that may still succeed (Queued/Authorized, under 30 minutes old):
+          wait for it, then check the customer before recording.
 
         Accepts `Idempotency-Key`: a new key per payment.
       operationId: adminRecordPayment
@@ -2451,7 +2455,7 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
-          description: "`invalid_transition`: the customer is churned. `duplicate_payment`: this reference is already recorded on the subscription."
+          description: "`invalid_transition`: the customer is churned. `duplicate_payment`: this reference is already recorded on the subscription. `payment_in_progress`: an online payment for this product is under way (see above)."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
