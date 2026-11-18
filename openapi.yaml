@@ -1388,7 +1388,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409":
-          description: "`invalid_transition` (already paid for lifetime access, or the account can't take a payment), `payment_in_progress` (an earlier checkout for this product is part-paid, or its PayU attempt is still Queued/Authorized and under 30 minutes old: try again in a few minutes), or `idempotency_conflict`"
+          description: "`invalid_transition` (already paid for lifetime access, or the account can't take a payment), `payment_in_progress` (an earlier checkout for this product is part-paid, or its PayU attempt may still succeed: Authorized at any age, or Queued and under 30 minutes old; try again later), or `idempotency_conflict`"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1412,7 +1412,9 @@ paths:
         `status`: `pending` (not paid yet, or PayU is still confirming: check again in a few seconds),
         `paid` (the plan is active; `subscription` is set), `failed` (the payment didn't go through: offer
         to try again, which calls `billing.create_checkout` again), `attention` (we received the money but
-        the plan couldn't be activated automatically: our team does it; tell the customer it's in hand).
+        the plan couldn't be activated automatically: our team does it; tell the customer it's in hand),
+        `reversed` (the payment was received but has since been cancelled or refunded on our side: our team
+        reviews the plan; don't say the payment was received or that the plan is being activated).
       operationId: checkoutStatus
       x-phase: 3
       x-roles: [customer]
@@ -2423,8 +2425,9 @@ paths:
           No invoice is created, and the customer isn't emailed.
         - The customer's open online checkouts for the product are cancelled first (invoice and PayU Payment
           Request), so they can't also pay online. `409 payment_in_progress` instead, and nothing is recorded, if
-          one is part-paid or has a PayU attempt that may still succeed (Queued/Authorized, under 30 minutes old):
-          wait for it, then check the customer before recording.
+          one is part-paid or has a PayU attempt that may still succeed (Authorized at any age, since PayU has
+          the money and the payment is still being completed; Queued under 30 minutes old): wait for it, then
+          check the customer before recording.
 
         Accepts `Idempotency-Key`: a new key per payment.
       operationId: adminRecordPayment
@@ -3849,7 +3852,7 @@ components:
       required: [reference, status, plan, invoice, subscription]
       properties:
         reference: { type: string, example: GXO-00001 }
-        status: { type: string, enum: [pending, paid, failed, attention] }
+        status: { type: string, enum: [pending, paid, failed, attention, reversed] }
         plan:
           type: object
           required: [id, name]
@@ -4277,7 +4280,7 @@ components:
                 properties:
                   at: { type: string, format: date-time }
                   actor: { type: string }
-                  action: { type: string, enum: [extend_trial, suspend, reactivate, record_payment, online_payment] }
+                  action: { type: string, enum: [extend_trial, suspend, reactivate, record_payment, online_payment, online_payment_cancelled] }
                   details: { type: string, example: "trial → suspended: Chargeback" }
 
     AuditLogEntry:

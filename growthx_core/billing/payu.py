@@ -30,11 +30,14 @@ from growthx_core.billing import payments
 
 GATEWAY = "payu"
 PAYABLE_PR_STATUSES = ("Initiated", "Requested")
-# A PayU attempt in one of these states may still succeed; its invoice and Payment Request must not be
-# cancelled meanwhile. frappe_payu records a payment against a cancelled Payment Request without a
-# Payment Entry (and still mails the customer a receipt), so the money would be taken with nothing to
-# show for it. After this long an attempt counts as abandoned.
-IN_FLIGHT_ATTEMPT_STATUSES = ("Queued", "Authorized")
+# While a PayU attempt may still succeed, its invoice and Payment Request must not be cancelled.
+# frappe_payu records a payment against a cancelled Payment Request without a Payment Entry (and still
+# mails the customer a receipt), so the money would be taken with nothing to show for it.
+# Authorized: PayU has confirmed the money and frappe_payu retries completing the Payment Request
+# hourly, so it blocks at any age. Queued: the customer may still be on PayU's page; after
+# IN_FLIGHT_MINUTES it counts as abandoned.
+AUTHORIZED_ATTEMPT_STATUS = "Authorized"
+QUEUED_ATTEMPT_STATUS = "Queued"
 IN_FLIGHT_MINUTES = 30
 
 
@@ -318,13 +321,16 @@ def last_attempt_status(payment_request: str) -> str | None:
 
 
 def attempt_in_flight(payment_request: str) -> bool:
-	"""The newest PayU attempt is Queued or Authorized and under IN_FLIGHT_MINUTES old: the customer may
-	still be on PayU's page, and the payment may still go through."""
+	"""The newest PayU attempt may still go through: Authorized (PayU has the money; frappe_payu keeps
+	retrying the Payment Request), or Queued and under IN_FLIGHT_MINUTES old (the customer may still be
+	on PayU's page)."""
 	attempt = _last_attempt(payment_request)
-	return bool(
-		attempt
-		and attempt.status in IN_FLIGHT_ATTEMPT_STATUSES
-		and get_datetime(attempt.creation) > add_to_date(now_datetime(), minutes=-IN_FLIGHT_MINUTES)
+	if not attempt:
+		return False
+	if attempt.status == AUTHORIZED_ATTEMPT_STATUS:
+		return True
+	return attempt.status == QUEUED_ATTEMPT_STATUS and get_datetime(attempt.creation) > add_to_date(
+		now_datetime(), minutes=-IN_FLIGHT_MINUTES
 	)
 
 

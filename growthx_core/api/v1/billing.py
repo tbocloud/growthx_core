@@ -100,7 +100,12 @@ def checkout_status():
 		raise not_found()
 
 	checkout = frappe.get_doc("GX Checkout", name)
-	if checkout.status == "paid":
+	if (
+		checkout.payment_entry
+		and frappe.db.get_value("Payment Entry", checkout.payment_entry, "docstatus") == 2
+	):
+		status = "reversed"  # the payment was cancelled or refunded after it was received
+	elif checkout.status == "paid":
 		status = "paid"
 	elif checkout.status == "needs_attention":
 		status = "attention"  # we have the money; our team activates the plan
