@@ -112,8 +112,12 @@ def checkout_status():
 	elif checkout.status == "cancelled":
 		status = "failed"
 	else:
-		attempt = payu.last_attempt_status(checkout.payment_request) if checkout.payment_request else None
-		status = "failed" if attempt in ("Failed", "Cancelled") else "pending"
+		pr = checkout.payment_request
+		attempt = payu.last_attempt_status(pr) if pr else None
+		# A payment that may still go through (an Authorized attempt, even with a newer failed one) is
+		# pending: the customer must not be told to pay again.
+		in_flight = bool(pr) and payu.attempt_in_flight(pr)
+		status = "failed" if attempt in ("Failed", "Cancelled") and not in_flight else "pending"
 
 	invoice = (
 		frappe.db.get_value("Sales Invoice", checkout.sales_invoice, INVOICE_FIELDS, as_dict=True)

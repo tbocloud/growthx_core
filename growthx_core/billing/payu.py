@@ -98,6 +98,10 @@ def create_checkout(account, plan):
 			checkout.db_set({"sales_invoice": invoice.name, "amount": invoice.grand_total})
 		if not checkout.payment_request:
 			checkout.db_set("payment_request", _payment_request(checkout.sales_invoice, account, gateway))
+		elif authorized_attempt(checkout.payment_request):
+			# PayU already has the money for this checkout; a new attempt would let them pay twice.
+			# (A recent Queued attempt is fine: that's the customer retrying on PayU's page.)
+			raise _payment_in_progress()
 		return checkout, start_attempt(checkout.payment_request)
 	except (frappe.ValidationError, frappe.PermissionError) as e:
 		# ERPNext or PayU set-up problems (no price list, no fiscal year, a refused link...): not
@@ -321,21 +325,38 @@ def last_attempt_status(payment_request: str) -> str | None:
 
 
 def attempt_in_flight(payment_request: str) -> bool:
-	"""The newest PayU attempt may still go through: Authorized (PayU has the money; frappe_payu keeps
-	retrying the Payment Request), or Queued and under IN_FLIGHT_MINUTES old (the customer may still be
-	on PayU's page)."""
-	attempt = _last_attempt(payment_request)
-	if not attempt:
-		return False
-	if attempt.status == AUTHORIZED_ATTEMPT_STATUS:
+	"""A PayU payment for the Payment Request may still go through: any attempt is Authorized (PayU has
+	the money; frappe_payu keeps retrying the Payment Request, whatever came after it), or the newest is
+	Queued and under IN_FLIGHT_MINUTES old (the customer may still be on PayU's page)."""
+	if authorized_attempt(payment_request):
 		return True
-	return attempt.status == QUEUED_ATTEMPT_STATUS and get_datetime(attempt.creation) > add_to_date(
-		now_datetime(), minutes=-IN_FLIGHT_MINUTES
+	attempt = _last_attempt(payment_request)
+	return bool(
+		attempt
+		and attempt.status == QUEUED_ATTEMPT_STATUS
+		and get_datetime(attempt.creation) > add_to_date(now_datetime(), minutes=-IN_FLIGHT_MINUTES)
 	)
 
 
-def _last_attempt(payment_request: str):
-	link = frappe.db.get_value(
+def authorized_attempt(payment_request: str) -> bool:
+	"""Any attempt on the Payment Request's PayU link is Authorized, not only the newest."""
+	links = _links(payment_request)
+	return bool(
+		links
+		and frappe.db.exists(
+			"Integration Request",
+			{
+				"integration_request_service": "PayU",
+				"request_id": ("in", links),
+				"request_description": "PayU payment attempt",
+				"status": AUTHORIZED_ATTEMPT_STATUS,
+			},
+		)
+	)
+
+
+def _links(payment_request: str) -> list[str]:
+	return frappe.get_all(
 		"Integration Request",
 		{
 			"integration_request_service": "PayU",
@@ -343,16 +364,20 @@ def _last_attempt(payment_request: str):
 			"reference_docname": payment_request,
 			"request_description": "PayU payment link",
 		},
-		"name",
+		pluck="name",
 		order_by="creation desc",
 	)
-	if not link:
+
+
+def _last_attempt(payment_request: str):
+	links = _links(payment_request)
+	if not links:
 		return None
 	return frappe.db.get_value(
 		"Integration Request",
 		{
 			"integration_request_service": "PayU",
-			"request_id": link,
+			"request_id": links[0],
 			"request_description": "PayU payment attempt",
 		},
 		["status", "creation"],

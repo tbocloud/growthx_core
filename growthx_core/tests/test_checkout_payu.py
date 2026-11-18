@@ -327,10 +327,12 @@ class TestCheckoutPayU(IntegrationTestCase):
 	def _erp_customer(self):
 		return frappe.db.get_value("GX Account", self.account, "customer")
 
-	def _payu_records(self, payment_request, txnid, attempt_status):
-		"""What frappe_payu stores: a link for the Payment Request and an attempt (txnid) under it."""
+	def _payu_records(self, payment_request, txnid, attempt_status, link=None):
+		"""What frappe_payu stores: a link for the Payment Request and an attempt (txnid) under it.
+		Pass `link` (the returned name) to add another attempt under the same link."""
 		data = {"reference_doctype": "Payment Request", "reference_docname": payment_request}
-		link = frappe.get_doc(
+		link = link and frappe.get_doc("Integration Request", link)
+		link = link or frappe.get_doc(
 			{
 				"doctype": "Integration Request",
 				"integration_request_service": "PayU",
@@ -354,6 +356,7 @@ class TestCheckoutPayU(IntegrationTestCase):
 		)
 		attempt.flags._name = txnid
 		attempt.insert(ignore_permissions=True)
+		return link.name
 
 	# ------------------------------------------------------------ payment safety (follow-up to #54)
 	# record_payment closes open checkouts, a PayU attempt in flight is never cancelled under the
@@ -460,6 +463,37 @@ class TestCheckoutPayU(IntegrationTestCase):
 		self.assertEqual(frappe.db.get_value("Payment Request", pr, "docstatus"), 1)
 		self._age_attempt("PAYUauth1", 60 * 24 * 3)
 		self.assertTrue(payu.attempt_in_flight(pr))
+
+	def test_create_checkout_never_starts_a_second_attempt_after_an_authorized_one(self):
+		_, body = self._checkout()
+		pr = self._with_payment_request(body)
+		start_attempt = payu.start_attempt  # the mock from setUp
+		# a recent Queued attempt: the customer retrying on PayU's page gets a new attempt
+		link = self._payu_records(pr, "PAYUretry1", "Queued")
+		status, res = self._checkout()
+		self.assertEqual((status, res["reference"]), (201, body["reference"]), res)
+		calls = start_attempt.call_count
+		# PayU has the money for this checkout: no new attempt, so no second payment
+		self._payu_records(pr, "PAYUauth2", "Authorized", link=link)
+		status, res = self._checkout()
+		self.assertEqual((status, res["error"]["code"]), (409, "payment_in_progress"), res)
+		self.assertEqual(start_attempt.call_count, calls)
+		self.assertEqual(self._checkout_docs(body["reference"]).status, "pending")
+
+	def test_an_authorized_attempt_counts_even_after_a_newer_failed_one(self):
+		_, body = self._checkout()
+		pr = self._with_payment_request(body)
+		link = self._payu_records(pr, "PAYUauth3", "Authorized")
+		self._payu_records(pr, "PAYUfail3", "Failed", link=link)
+		self._age_attempt("PAYUauth3", 10)  # the Failed one is the newest
+		self.assertEqual(payu.last_attempt_status(pr), "Failed")
+		self.assertTrue(payu.attempt_in_flight(pr))
+		status, res = self._record_payment()
+		self.assertEqual((status, res["error"]["code"]), (409, "payment_in_progress"), res)
+		self.assertEqual(self._checkout_docs(body["reference"]).status, "pending")
+		self.assertEqual(frappe.db.get_value("Payment Request", pr, "docstatus"), 1)
+		# the customer is not told the payment failed (and to try again)
+		self.assertEqual(self._status(reference=body["reference"])[1]["status"], "pending")
 
 	def test_checkout_status_is_reversed_after_the_payment_entry_is_cancelled(self):
 		_, body = self._checkout()
