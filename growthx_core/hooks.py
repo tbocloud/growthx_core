@@ -278,6 +278,9 @@ after_install = "growthx_core.setup.install.after_install"
 after_migrate = ["growthx_core.setup.install.after_migrate"]
 
 # Online checkout (PayU): a payment that settles a GX Checkout's invoice activates its plan.
+# GST invoice numbers GX/26-27/0001 (growthx_core.setup.gst): the financial year from its dates.
+naming_series_variables = {"GXFY": "growthx_core.setup.gst.naming_fiscal_year"}
+
 doc_events = {
 	"Payment Entry": {
 		"on_submit": "growthx_core.billing.payu.on_payment_entry_submit",

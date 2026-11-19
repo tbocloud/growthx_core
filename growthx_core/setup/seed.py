@@ -208,38 +208,78 @@ def lifetime_plans(price: float = 150000, gst_included: int = 1, products: str =
 	frappe.db.commit()
 
 
-def plan_items(item_group: str = "Services", uom: str = "Nos"):
+def plan_items(item_group: str = "Services", uom: str = "Nos", commit: bool = True):
 	"""A non-stock service Item for each active plan, put on its online-payment invoices
-	(growthx_core.billing.payu). A plan that already has an Item keeps it. Safe to re-run.
+	(growthx_core.billing.payu). A plan that already has an Item keeps it. With India Compliance, every
+	plan's Item also gets the SAC code (site_config growthx_sac_code) and the Item Tax Template for the
+	plan's GST rate, new and existing alike. Safe to re-run.
 
 	    bench --site <core site> execute growthx_core.setup.seed.plan_items
 	"""
 	for g, label in ((item_group, "Item Group"), (uom, "UOM")):
 		if not frappe.db.exists(label, g):
 			frappe.throw(f"{label} {g} doesn't exist (pass another one)")
-	for plan in frappe.get_all("GX Plan", {"is_active": 1}, ["name", "plan_name", "product", "item"]):
+	gst = "india_compliance" in frappe.get_installed_apps()
+	if gst:
+		from growthx_core.setup import gst as gst_setup
+
+		sac = _ensure_sac(gst_setup.sac_code())
+	for plan in frappe.get_all(
+		"GX Plan", {"is_active": 1}, ["name", "plan_name", "product", "item", "gst_rate"]
+	):
 		if plan.item and frappe.db.exists("Item", plan.item):
-			print(f"{plan.name}: keeps {plan.item}")
-			continue
-		code = f"GX-{plan.name}".upper()
-		if not frappe.db.exists("Item", code):
-			product_name = frappe.db.get_value("GX Product", plan.product, "product_name")
-			frappe.get_doc(
-				{
-					"doctype": "Item",
-					"item_code": code,
-					"item_name": f"{product_name} {plan.plan_name}"[:140],
-					"description": f"{product_name}, {plan.plan_name} plan",
-					"item_group": item_group,
-					"stock_uom": uom,
-					"is_stock_item": 0,
-					"is_sales_item": 1,
-					"is_purchase_item": 0,
-				}
-			).insert(ignore_permissions=True)
-		frappe.db.set_value("GX Plan", plan.name, "item", code)
-		print(f"{plan.name}: {code}")
-	frappe.db.commit()
+			code = plan.item
+			print(f"{plan.name}: keeps {code}")
+		else:
+			code = f"GX-{plan.name}".upper()
+			if not frappe.db.exists("Item", code):
+				product_name = frappe.db.get_value("GX Product", plan.product, "product_name")
+				frappe.get_doc(
+					{
+						"doctype": "Item",
+						"item_code": code,
+						"item_name": f"{product_name} {plan.plan_name}"[:140],
+						"description": f"{product_name}, {plan.plan_name} plan",
+						"item_group": item_group,
+						"stock_uom": uom,
+						"is_stock_item": 0,
+						"is_sales_item": 1,
+						"is_purchase_item": 0,
+						**({"gst_hsn_code": sac} if gst else {}),
+					}
+				).insert(ignore_permissions=True)
+			frappe.db.set_value("GX Plan", plan.name, "item", code)
+			print(f"{plan.name}: {code}")
+		if gst:
+			_item_gst(code, sac, plan.gst_rate)
+	if commit:
+		frappe.db.commit()
+
+
+def _ensure_sac(code: str) -> str:
+	"""India Compliance ships HSN codes; a SAC it doesn't know is added (its description is set by the
+	accountant later if needed)."""
+	if not frappe.db.exists("GST HSN Code", code):
+		frappe.get_doc({"doctype": "GST HSN Code", "hsn_code": code, "description": f"SAC {code}"}).insert(
+			ignore_permissions=True
+		)
+	return code
+
+
+def _item_gst(item_code: str, sac: str, gst_rate):
+	"""The SAC code and, for the selling company, the Item Tax Template for the plan's rate."""
+	from growthx_core.billing import payu
+	from growthx_core.setup import gst as gst_setup
+
+	template = gst_setup.item_tax_template(payu.company(), gst_rate or 0)
+	item = frappe.get_doc("Item", item_code)
+	rows = [(r.item_tax_template, r.tax_category, r.valid_from) for r in item.taxes]
+	if item.gst_hsn_code == sac and rows == [(template, None, None)]:
+		return
+	item.gst_hsn_code = sac
+	item.set("taxes", [{"item_tax_template": template}])
+	item.save(ignore_permissions=True)
+	print(f"{item_code}: SAC {sac}, {template}")
 
 
 def _upsert(doctype, name, values):

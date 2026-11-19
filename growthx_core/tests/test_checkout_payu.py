@@ -22,7 +22,17 @@ COMPANY = "GX Checkout Test Company"
 PRODUCT = "test-checkout"
 PLAN = "test-checkout-lifetime"
 ITEM = "GX-TEST-CHECKOUT-ITEM"
+IC = "india_compliance" in frappe.get_installed_apps()
 FORM = {"url": "https://test.payu.in/_payment", "params": {"key": "k", "txnid": "PAYUtest", "hash": "h"}}
+
+
+def item_gst() -> dict:
+	"""India Compliance requires an HSN/SAC code on sales items."""
+	if not IC:
+		return {}
+	from growthx_core.setup import gst
+
+	return {"gst_hsn_code": seed._ensure_sac(gst.DEFAULT_SAC)}
 
 
 def ensure_erpnext_company():
@@ -107,6 +117,7 @@ class TestCheckoutPayU(IntegrationTestCase):
 				"item_group": "Services",
 				"stock_uom": "Nos",
 				"is_stock_item": 0,
+				**item_gst(),
 			}
 		).insert()
 		self.plan = frappe.get_doc(
