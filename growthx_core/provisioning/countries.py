@@ -1,6 +1,7 @@
 """Countries a customer can choose at sign-up, and the company defaults Core sets from them.
 
-Only countries with an ERPNext chart of accounts and tax set-up (docs 09 §1). Currency, timezone
+Only countries with an ERPNext chart of accounts and tax set-up (docs 09 §1), and only those we
+sell in: India for now (UAE was removed in 2026-11; no tenant had it). Currency, timezone
 and fiscal year follow the country, so the website never sends them. Adding a country here is
 all the website needs: it reads the list from `signup.options`.
 """
@@ -16,13 +17,6 @@ COUNTRIES = {
 		timezone="Asia/Kolkata",
 		fiscal_year_start="04-01",
 		default_chart="India - Chart of Accounts",
-	),
-	"AE": frappe._dict(
-		country="United Arab Emirates",
-		currency="AED",
-		timezone="Asia/Dubai",
-		fiscal_year_start="01-01",
-		default_chart="U.A.E - Chart of Accounts",
 	),
 }
 
