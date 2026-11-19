@@ -327,10 +327,12 @@ class TestCheckoutPayU(IntegrationTestCase):
 	def _erp_customer(self):
 		return frappe.db.get_value("GX Account", self.account, "customer")
 
-	def _payu_records(self, payment_request, txnid, attempt_status):
-		"""What frappe_payu stores: a link for the Payment Request and an attempt (txnid) under it."""
+	def _payu_records(self, payment_request, txnid, attempt_status, link=None):
+		"""What frappe_payu stores: a link for the Payment Request and an attempt (txnid) under it.
+		Pass `link` (the returned name) to add another attempt under the same link."""
 		data = {"reference_doctype": "Payment Request", "reference_docname": payment_request}
-		link = frappe.get_doc(
+		link = link and frappe.get_doc("Integration Request", link)
+		link = link or frappe.get_doc(
 			{
 				"doctype": "Integration Request",
 				"integration_request_service": "PayU",
@@ -354,3 +356,201 @@ class TestCheckoutPayU(IntegrationTestCase):
 		)
 		attempt.flags._name = txnid
 		attempt.insert(ignore_permissions=True)
+		return link.name
+
+	# ------------------------------------------------------------ payment safety (follow-up to #54)
+	# record_payment closes open checkouts, a PayU attempt in flight is never cancelled under the
+	# customer, a cancelled Payment Entry is flagged, and activation uses the payment's date.
+
+	def _checkout_docs(self, reference):
+		return frappe.db.get_value(
+			"GX Checkout", reference, ["status", "sales_invoice", "payment_request"], as_dict=True
+		)
+
+	def _record_payment(self, plan=PLAN, reference="NEFT-1"):
+		from growthx_core.api.v1 import admin
+
+		return _call(
+			admin.record_payment,
+			{
+				"id": self.account,
+				"plan": plan,
+				"reference": reference,
+				"amount": 15000000,
+				"paidOn": nowdate(),
+			},
+		)
+
+	def _with_payment_request(self, body):
+		"""create_checkout makes the Payment Request through ERPNext; give the checkout one we control."""
+		row = self._checkout_docs(body["reference"])
+		if row.payment_request:
+			return row.payment_request
+		self.skipTest("this ERPNext set-up made no Payment Request")
+
+	def test_record_payment_cancels_the_open_checkout(self):
+		_, body = self._checkout()
+		row = self._checkout_docs(body["reference"])
+		status, res = self._record_payment()
+		self.assertEqual(status, 200, res)
+		self.assertEqual(frappe.db.get_value("GX Checkout", body["reference"], "status"), "cancelled")
+		self.assertEqual(frappe.db.get_value("Sales Invoice", row.sales_invoice, "docstatus"), 2)
+		if row.payment_request:
+			self.assertEqual(frappe.db.get_value("Payment Request", row.payment_request, "docstatus"), 2)
+		self.assertEqual(
+			frappe.db.get_value("GX Subscription", {"account": self.account}, ["status", "gateway"]),
+			("active", "manual"),
+		)
+
+	def test_record_payment_refuses_a_part_paid_checkout(self):
+		_, body = self._checkout()
+		self._pay(self._checkout_docs(body["reference"]).sales_invoice, amount=50000)
+		status, res = self._record_payment()
+		self.assertEqual((status, res["error"]["code"]), (409, "payment_in_progress"))
+		self.assertEqual(
+			frappe.db.get_value("GX Subscription", {"account": self.account}, "status"), "trialing"
+		)
+
+	def test_a_payu_attempt_in_flight_is_never_cancelled(self):
+		_, body = self._checkout()
+		pr = self._with_payment_request(body)
+		self._payu_records(pr, "PAYUinflight1", "Queued")
+		# record_payment waits
+		status, res = self._record_payment()
+		self.assertEqual((status, res["error"]["code"]), (409, "payment_in_progress"))
+		# so does replacing the checkout (here: the plan's price changed)
+		frappe.db.set_value("GX Plan", PLAN, "price", 120000)
+		status, res = self._checkout()
+		self.assertEqual((status, res["error"]["code"]), (409, "payment_in_progress"))
+		self.assertEqual(self._checkout_docs(body["reference"]).status, "pending")
+		self.assertEqual(
+			frappe.db.get_value("GX Subscription", {"account": self.account}, "status"), "trialing"
+		)
+
+	def _age_attempt(self, name, minutes):
+		frappe.db.set_value(
+			"Integration Request",
+			name,
+			"creation",
+			frappe.utils.add_to_date(frappe.utils.now_datetime(), minutes=-minutes),
+			update_modified=False,
+		)
+
+	def test_an_old_queued_or_finished_attempt_doesnt_block(self):
+		_, body = self._checkout()
+		pr = self._with_payment_request(body)
+		self._payu_records(pr, "PAYUold1", "Queued")
+		name = "PAYUold1"
+		self._age_attempt(name, payu.IN_FLIGHT_MINUTES + 1)
+		self.assertFalse(payu.attempt_in_flight(pr))
+		frappe.db.set_value(
+			"Integration Request", name, {"status": "Failed", "creation": frappe.utils.now_datetime()}
+		)
+		self.assertFalse(payu.attempt_in_flight(pr))
+		status, res = self._record_payment()
+		self.assertEqual(status, 200, res)
+
+	def test_an_authorized_attempt_blocks_at_any_age(self):
+		# PayU has the money; frappe_payu retries completing the Payment Request hourly.
+		_, body = self._checkout()
+		pr = self._with_payment_request(body)
+		self._payu_records(pr, "PAYUauth1", "Authorized")
+		self._age_attempt("PAYUauth1", payu.IN_FLIGHT_MINUTES + 1)
+		self.assertTrue(payu.attempt_in_flight(pr))
+		status, res = self._record_payment()
+		self.assertEqual((status, res["error"]["code"]), (409, "payment_in_progress"))
+		self.assertEqual(self._checkout_docs(body["reference"]).status, "pending")
+		self.assertEqual(frappe.db.get_value("Payment Request", pr, "docstatus"), 1)
+		self._age_attempt("PAYUauth1", 60 * 24 * 3)
+		self.assertTrue(payu.attempt_in_flight(pr))
+
+	def test_create_checkout_never_starts_a_second_attempt_after_an_authorized_one(self):
+		_, body = self._checkout()
+		pr = self._with_payment_request(body)
+		start_attempt = payu.start_attempt  # the mock from setUp
+		# a recent Queued attempt: the customer retrying on PayU's page gets a new attempt
+		link = self._payu_records(pr, "PAYUretry1", "Queued")
+		status, res = self._checkout()
+		self.assertEqual((status, res["reference"]), (201, body["reference"]), res)
+		calls = start_attempt.call_count
+		# PayU has the money for this checkout: no new attempt, so no second payment
+		self._payu_records(pr, "PAYUauth2", "Authorized", link=link)
+		status, res = self._checkout()
+		self.assertEqual((status, res["error"]["code"]), (409, "payment_in_progress"), res)
+		self.assertEqual(start_attempt.call_count, calls)
+		self.assertEqual(self._checkout_docs(body["reference"]).status, "pending")
+
+	def test_an_authorized_attempt_counts_even_after_a_newer_failed_one(self):
+		_, body = self._checkout()
+		pr = self._with_payment_request(body)
+		link = self._payu_records(pr, "PAYUauth3", "Authorized")
+		self._payu_records(pr, "PAYUfail3", "Failed", link=link)
+		self._age_attempt("PAYUauth3", 10)  # the Failed one is the newest
+		self.assertEqual(payu.last_attempt_status(pr), "Failed")
+		self.assertTrue(payu.attempt_in_flight(pr))
+		status, res = self._record_payment()
+		self.assertEqual((status, res["error"]["code"]), (409, "payment_in_progress"), res)
+		self.assertEqual(self._checkout_docs(body["reference"]).status, "pending")
+		self.assertEqual(frappe.db.get_value("Payment Request", pr, "docstatus"), 1)
+		# the customer is not told the payment failed (and to try again)
+		self.assertEqual(self._status(reference=body["reference"])[1]["status"], "pending")
+
+	def test_checkout_status_is_reversed_after_the_payment_entry_is_cancelled(self):
+		_, body = self._checkout()
+		pe = self._pay(self._checkout_docs(body["reference"]).sales_invoice)
+		self.assertEqual(self._status(reference=body["reference"])[1]["status"], "paid")
+		pe.cancel()
+		status, res = self._status(reference=body["reference"])
+		self.assertEqual((status, res["status"], res["subscription"]), (200, "reversed", None))
+		# also when the hook could not flag the checkout: the Payment Entry decides
+		frappe.db.set_value("GX Checkout", body["reference"], "status", "paid")
+		self.assertEqual(self._status(reference=body["reference"])[1]["status"], "reversed")
+
+	def test_a_cancelled_payment_entry_flags_the_checkout(self):
+		_, body = self._checkout()
+		pe = self._pay(self._checkout_docs(body["reference"]).sales_invoice)
+		self.assertEqual(self._checkout_docs(body["reference"]).status, "paid")
+		pe.cancel()
+		checkout = frappe.get_doc("GX Checkout", body["reference"])
+		self.assertEqual(checkout.status, "needs_attention")
+		self.assertIn(pe.name, checkout.error)
+		log = frappe.get_last_doc("GX Audit Log", {"reference_name": self.account})
+		self.assertEqual(log.action, "customer.online_payment_cancelled")
+		self.assertIn(pe.name, log.details)
+		# no automatic suspension
+		self.assertEqual(
+			frappe.db.get_value("GX Subscription", {"account": self.account}, "status"), "active"
+		)
+		self.assertEqual(frappe.db.get_value("GX Account", self.account, "status"), "active")
+
+	def test_activation_uses_the_payment_date(self):
+		monthly = frappe.get_doc(
+			{
+				"doctype": "GX Plan",
+				"plan_id": "test-checkout-monthly",
+				"product": PRODUCT,
+				"plan_name": "Monthly",
+				"billing_interval": "month",
+				"price": 150000,
+				"gst_included": 1,
+				"gst_rate": 18,
+				"is_active": 1,
+				"item": ITEM,
+			}
+		).insert()
+		frappe.set_user(self.user)
+		try:
+			_, body = _call(billing.create_checkout, {"planId": monthly.name})
+		finally:
+			frappe.set_user("Administrator")
+		from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
+
+		paid_on = frappe.utils.add_days(nowdate(), -3)
+		pe = get_payment_entry("Sales Invoice", self._checkout_docs(body["reference"]).sales_invoice)
+		pe.reference_no = "PAYU-TEST"
+		pe.reference_date = paid_on
+		pe.posting_date = paid_on
+		pe.insert()
+		pe.submit()
+		period_end = frappe.db.get_value("GX Subscription", {"account": self.account}, "current_period_end")
+		self.assertEqual(getdate(period_end), getdate(frappe.utils.add_months(paid_on, 1)))
