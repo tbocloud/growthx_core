@@ -1377,7 +1377,7 @@ paths:
   /growthx_core.api.v1.customer.billing_details:
     get:
       tags: [customer]
-      summary: "[PROPOSED] The billing address and GSTIN printed on the customer's tax invoices"
+      summary: "[PROPOSED] The billing name, address and GSTIN printed on the customer's tax invoices"
       description: |
         `complete` is false until the customer has saved a billing address; `billing.create_checkout` refuses
         (`422 billing_details_required`) until then. Show the form before Pay, and in Billing.
@@ -1399,7 +1399,9 @@ paths:
       tags: [customer]
       summary: "[PROPOSED] Save the billing address and (optional) GSTIN"
       description: |
-        Replaces the billing details: send every field (`addressLine2` and `gstin` may be null). The GSTIN is
+        Replaces the billing details: send every field (`billingName`, `addressLine2` and `gstin` may be null).
+        `billingName` is the customer name on the invoice, e.g. the legal name on the GST registration; null
+        means the account's company name. The GSTIN is
         checked (format, check digit, and its first two digits must be the state's GST code) and so is the
         PIN code against the state; problems come back as `422 validation_failed` with `fields`.
 
@@ -1407,7 +1409,7 @@ paths:
         SGST for Kerala and IGST for every other state.
 
         Invoices already issued keep the details they were issued with. An unpaid checkout whose invoice has a
-        different state or GSTIN is replaced by a new invoice on the next `billing.create_checkout` (or that
+        different billing name, state or GSTIN is replaced by a new invoice on the next `billing.create_checkout` (or that
         call returns `409 payment_in_progress` while a PayU payment for it may still go through).
       operationId: customerUpdateBillingDetails
       x-status: proposed
@@ -1451,8 +1453,8 @@ paths:
         **GST invoicing ([PROPOSED], not built yet):** the invoice becomes a GST tax invoice (GX/26-27/0001):
         the plan price includes 18% GST, split CGST + SGST for a customer in Kerala and IGST elsewhere, from
         `customer.billing_details`. Until those are saved, `422 billing_details_required`. An unpaid checkout
-        issued before GST invoicing, or with a different billing state or GSTIN than the customer's current
-        details, is also replaced (same `409 payment_in_progress` rule).
+        issued before GST invoicing, or with a different billing name, state or GSTIN than the customer's
+        current details, is also replaced (same `409 payment_in_progress` rule).
       operationId: createCheckout
       x-phase: 3
       x-roles: [customer]
@@ -3954,9 +3956,14 @@ components:
 
     BillingDetails:
       type: object
-      required: [complete, address, gstin, gstCategory]
+      required: [complete, billingName, address, gstin, gstCategory]
       properties:
         complete: { type: boolean, description: "False until a billing address is saved; checkout needs it" }
+        billingName:
+          type: string
+          nullable: true
+          example: Asha Prints Private Limited
+          description: The customer name on invoices; null means the account's company name
         address:
           allOf: [{ $ref: "#/components/schemas/BillingAddress" }]
           nullable: true
@@ -3969,8 +3976,14 @@ components:
 
     BillingDetailsInput:
       type: object
-      required: [addressLine1, addressLine2, city, state, pincode, gstin]
+      required: [billingName, addressLine1, addressLine2, city, state, pincode, gstin]
       properties:
+        billingName:
+          type: string
+          minLength: 1
+          maxLength: 140
+          nullable: true
+          description: "Name on the invoice, e.g. the legal name on the GST registration; null for the account's company name"
         addressLine1: { type: string, minLength: 1, maxLength: 140 }
         addressLine2: { type: string, maxLength: 140, nullable: true }
         city: { type: string, minLength: 1, maxLength: 140 }
@@ -3980,7 +3993,7 @@ components:
           type: string
           nullable: true
           pattern: "^[0-9]{2}[A-Z0-9]{13}$"
-          description: Optional (null for none). Upper case; spaces are removed.
+          description: Optional (null for none). Send upper case without spaces; anything else is a 422.
 
     PaymentProvider:
       type: string
