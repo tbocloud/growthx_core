@@ -15,6 +15,8 @@ concurrency:
 env:
   FRAPPE_VERSION: v16.35.0
   ERPNEXT_VERSION: v16.35.0
+  # GST invoices (growthx_core.setup.gst); the version Core runs on Press.
+  INDIA_COMPLIANCE_VERSION: v16.11.1
 
 jobs:
   lint:
@@ -86,10 +88,11 @@ jobs:
           bench init --skip-redis-config-generation --skip-assets \
             --frappe-branch "$FRAPPE_VERSION" --python "$(which python)" ~/frappe-bench
 
-      - name: Get ERPNext ${{ env.ERPNEXT_VERSION }} and growthx_core
+      - name: Get ERPNext ${{ env.ERPNEXT_VERSION }}, India Compliance and growthx_core
         working-directory: /home/runner/frappe-bench
         run: |
           bench get-app --branch "$ERPNEXT_VERSION" --skip-assets erpnext
+          bench get-app --branch "$INDIA_COMPLIANCE_VERSION" --skip-assets india_compliance https://github.com/resilient-tech/india-compliance
           bench get-app --skip-assets growthx_core "$GITHUB_WORKSPACE"
           bench setup requirements --dev
         env:
@@ -101,6 +104,7 @@ jobs:
           bench new-site --db-root-password root --admin-password admin test_site
           bench --site test_site install-app erpnext
           bench --site test_site install-app growthx_core
+          bench --site test_site install-app india_compliance
           bench --site test_site list-apps
         env:
           CI: 'Yes'

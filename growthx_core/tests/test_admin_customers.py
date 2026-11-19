@@ -247,9 +247,10 @@ class TestAdminCustomers(IntegrationTestCase):
 		self.assertEqual((status, body["status"], body["plan"]), (200, "active", "Lifetime"), body)
 		self.assertIsNone(body["subscriptions"][-1]["currentPeriodEnd"])
 		self.assertEqual(body["mrr"]["amount"], 0)
+		price = frappe.utils.fmt_money(150000, currency="INR")  # the site's number format (CI: 150,000)
 		self.assertEqual(
 			body["history"][-1]["details"],
-			"plan change, Test Growth → Lifetime: ₹ 1,50,000.00 for Lifetime (plan price ₹ 1,50,000.00"
+			f"plan change, Test Growth → Lifetime: {price} for Lifetime (plan price {price}"
 			" incl. GST) paid on 2026-11-01,"
 			" reference UTR200, active for life",
 		)
