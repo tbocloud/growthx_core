@@ -1345,6 +1345,90 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /growthx_core.api.v1.customer.invoice_pdf:
+    get:
+      tags: [customer]
+      summary: "[PROPOSED] One of the customer's invoices as a PDF (the GST tax invoice)"
+      description: |
+        The invoice in India Compliance's "GST Tax Invoice" print format, as a file download. Only the
+        customer's own issued invoices: `404 not_found` for anyone else's, and for `draft` or `void` ones (show
+        the download button only for `open`, `overdue` and `paid`).
+      operationId: customerInvoicePdf
+      x-status: proposed
+      x-phase: 3
+      x-roles: [customer]
+      parameters:
+        - { name: id, in: query, required: true, schema: { type: string }, description: "`id` from `customer.invoices`" }
+      responses:
+        "200":
+          description: The PDF
+          headers:
+            Content-Disposition:
+              schema: { type: string }
+              description: 'attachment; filename="GX-26-27-0001.pdf" (the invoice number with / replaced by -)'
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /growthx_core.api.v1.customer.billing_details:
+    get:
+      tags: [customer]
+      summary: "[PROPOSED] The billing address and GSTIN printed on the customer's tax invoices"
+      description: |
+        `complete` is false until the customer has saved a billing address; `billing.create_checkout` refuses
+        (`422 billing_details_required`) until then. Show the form before Pay, and in Billing.
+      operationId: customerGetBillingDetails
+      x-status: proposed
+      x-phase: 3
+      x-roles: [customer]
+      responses:
+        "200":
+          description: Billing details
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BillingDetails" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /growthx_core.api.v1.customer.update_billing_details:
+    post:
+      tags: [customer]
+      summary: "[PROPOSED] Save the billing address and (optional) GSTIN"
+      description: |
+        Replaces the billing details: send every field (`addressLine2` and `gstin` may be null). The GSTIN is
+        checked (format, check digit, and its first two digits must be the state's GST code) and so is the
+        PIN code against the state; problems come back as `422 validation_failed` with `fields`.
+
+        With a GSTIN the customer is invoiced as Registered Regular, without one as Unregistered. GST is CGST +
+        SGST for Kerala and IGST for every other state.
+
+        Invoices already issued keep the details they were issued with. An unpaid checkout whose invoice has a
+        different state or GSTIN is replaced by a new invoice on the next `billing.create_checkout` (or that
+        call returns `409 payment_in_progress` while a PayU payment for it may still go through).
+      operationId: customerUpdateBillingDetails
+      x-status: proposed
+      x-phase: 3
+      x-roles: [customer]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BillingDetailsInput" }
+      responses:
+        "200":
+          description: Saved billing details
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BillingDetails" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
   # ---------------------------------------------------------------- billing
   /growthx_core.api.v1.billing.create_checkout:
     post:
@@ -1359,9 +1443,16 @@ paths:
 
         Calling again before paying (a failed or abandoned payment) reuses the same invoice and starts a new
         PayU attempt. An unpaid checkout for another plan of the same product, or at an old price, is
-        cancelled. The payment applies to the customer's subscription for the plan's product, exactly like
+        cancelled (`409 payment_in_progress` instead while a PayU payment for it may still go through). The
+        payment applies to the customer's subscription for the plan's product, exactly like
         `admin.record_payment`. Online payment is off (`503 payment_unavailable`) until Core's site config
         names a PayU gateway account.
+
+        **GST invoicing ([PROPOSED], not built yet):** the invoice becomes a GST tax invoice (GX/26-27/0001):
+        the plan price includes 18% GST, split CGST + SGST for a customer in Kerala and IGST elsewhere, from
+        `customer.billing_details`. Until those are saved, `422 billing_details_required`. An unpaid checkout
+        issued before GST invoicing, or with a different billing state or GSTIN than the customer's current
+        details, is also replaced (same `409 payment_in_progress` rule).
       operationId: createCheckout
       x-phase: 3
       x-roles: [customer]
@@ -1393,7 +1484,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "422":
-          description: "`invalid_plan` (unknown or retired plan, interval mismatch), or `validation_failed` (no subscription for the plan's product)"
+          description: "`billing_details_required` (proposed, with GST invoicing: no billing address saved yet; show the billing details form, then call again), `invalid_plan` (unknown or retired plan, interval mismatch), or `validation_failed` (no subscription for the plan's product)"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -3524,8 +3615,9 @@ components:
                 payment_verification_failed, payment_unavailable, site_not_ready, not_retryable,
                 slot_taken, expert_busy, not_changeable, not_started,
                 idempotency_conflict, rate_limited, bad_request, method_not_allowed, invalid_tenant_key,
-                invalid_login_token, internal_error, no_account, site_not_found, not_linked, site_unavailable.
-                Proposed: duplicate_lead, invalid_otp.
+                invalid_login_token, internal_error, no_account, site_not_found, not_linked, site_unavailable,
+                payment_in_progress.
+                Proposed: duplicate_lead, invalid_otp, billing_details_required.
               example: email_taken
             message: { type: string, example: An account with this email already exists. }
             fields:
@@ -3800,13 +3892,95 @@ components:
       required: [id, number, status, subtotal, tax, total, issuedAt]
       properties:
         id: { type: string }
-        number: { type: string, example: GX-2026-00412 }
+        number: { type: string, example: GX/26-27/0001, description: "GST invoice number: GX/<financial year>/<sequence>, at most 16 characters" }
         status: { $ref: "#/components/schemas/InvoiceStatus" }
         subtotal: { $ref: "#/components/schemas/Money" }
         tax: { $ref: "#/components/schemas/Money", description: "Total GST (CGST+SGST, or IGST)" }
         total: { $ref: "#/components/schemas/Money" }
         issuedAt: { type: string, format: date-time }
         dueAt: { type: string, format: date-time, nullable: true }
+
+    IndianState:
+      type: string
+      description: State or union territory, as India Compliance names it
+      enum:
+        - Andaman and Nicobar Islands
+        - Andhra Pradesh
+        - Arunachal Pradesh
+        - Assam
+        - Bihar
+        - Chandigarh
+        - Chhattisgarh
+        - Dadra and Nagar Haveli and Daman and Diu
+        - Delhi
+        - Goa
+        - Gujarat
+        - Haryana
+        - Himachal Pradesh
+        - Jammu and Kashmir
+        - Jharkhand
+        - Karnataka
+        - Kerala
+        - Ladakh
+        - Lakshadweep Islands
+        - Madhya Pradesh
+        - Maharashtra
+        - Manipur
+        - Meghalaya
+        - Mizoram
+        - Nagaland
+        - Odisha
+        - Puducherry
+        - Punjab
+        - Rajasthan
+        - Sikkim
+        - Tamil Nadu
+        - Telangana
+        - Tripura
+        - Uttar Pradesh
+        - Uttarakhand
+        - West Bengal
+
+    BillingAddress:
+      type: object
+      required: [addressLine1, addressLine2, city, state, pincode, country]
+      properties:
+        addressLine1: { type: string, maxLength: 140, example: "2nd Floor, Lulu Cyber Tower" }
+        addressLine2: { type: string, maxLength: 140, nullable: true, example: Infopark }
+        city: { type: string, maxLength: 140, example: Kochi }
+        state: { $ref: "#/components/schemas/IndianState" }
+        pincode: { type: string, pattern: "^[1-9][0-9]{5}$", example: "682042" }
+        country: { type: string, enum: [India], description: Billing addresses in India only for now }
+
+    BillingDetails:
+      type: object
+      required: [complete, address, gstin, gstCategory]
+      properties:
+        complete: { type: boolean, description: "False until a billing address is saved; checkout needs it" }
+        address:
+          allOf: [{ $ref: "#/components/schemas/BillingAddress" }]
+          nullable: true
+        gstin: { type: string, nullable: true, example: 32AAVFT5109L1ZQ }
+        gstCategory:
+          type: string
+          enum: [registered, unregistered]
+          nullable: true
+          description: "registered (Registered Regular) with a GSTIN, unregistered without; null while incomplete"
+
+    BillingDetailsInput:
+      type: object
+      required: [addressLine1, addressLine2, city, state, pincode, gstin]
+      properties:
+        addressLine1: { type: string, minLength: 1, maxLength: 140 }
+        addressLine2: { type: string, maxLength: 140, nullable: true }
+        city: { type: string, minLength: 1, maxLength: 140 }
+        state: { $ref: "#/components/schemas/IndianState" }
+        pincode: { type: string, pattern: "^[1-9][0-9]{5}$" }
+        gstin:
+          type: string
+          nullable: true
+          pattern: "^[0-9]{2}[A-Z0-9]{13}$"
+          description: Optional (null for none). Upper case; spaces are removed.
 
     PaymentProvider:
       type: string
