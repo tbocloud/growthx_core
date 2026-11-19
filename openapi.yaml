@@ -749,7 +749,7 @@ paths:
                     no product is chosen (no site is created).
                 country:
                   type: string
-                  enum: [IN, AE]
+                  enum: [IN]
                   default: IN
                   description: |
                     Customer only. A `code` from `signup.options`. Sets the site's currency, timezone and fiscal year;
@@ -795,7 +795,7 @@ paths:
       tags: [signup]
       summary: Countries and charts of accounts for the sign-up form
       description: |
-        Countries a customer can choose (India and UAE at launch), with the currency, timezone and fiscal-year start
+        Countries a customer can choose (India only for now), with the currency, timezone and fiscal-year start
         Core sets from each, and ERPNext's charts of accounts for it. Load the form from this, so adding a country
         needs no website change. Changes rarely: the website may keep it for the page's lifetime.
       operationId: signupOptions

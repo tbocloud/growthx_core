@@ -78,18 +78,14 @@ class TestSignupV2(IntegrationTestCase):
 
 	# ---- signup.options
 
-	def test_options_lists_india_and_uae_with_erpnext_charts(self):
+	def test_options_lists_india_only_with_erpnext_charts(self):
 		status, body = _call(signup.options)
 		self.assertEqual(status, 200)
 		by_code = {c["code"]: c for c in body["countries"]}
-		self.assertEqual(set(by_code), {"IN", "AE"})
+		self.assertEqual(set(by_code), {"IN"})
 		self.assertEqual(
 			(by_code["IN"]["currency"], by_code["IN"]["timezone"], by_code["IN"]["fiscalYearStart"]),
 			("INR", "Asia/Kolkata", "04-01"),
-		)
-		self.assertEqual(
-			(by_code["AE"]["currency"], by_code["AE"]["timezone"], by_code["AE"]["fiscalYearStart"]),
-			("AED", "Asia/Dubai", "01-01"),
 		)
 		for c in by_code.values():
 			self.assertIn(c["defaultChart"], c["charts"])
@@ -142,20 +138,20 @@ class TestSignupV2(IntegrationTestCase):
 
 	def test_signup_stores_the_customers_choices_on_the_site(self):
 		status, body = self._signup(
-			"uae", subdomain="Noor-UAE-Site", country="AE", chartOfAccounts="U.A.E - Chart of Accounts"
+			"choices", subdomain="Noor-Choice-Site", country="IN", chartOfAccounts="Standard"
 		)
 		self.assertEqual(status, 201, body)
 		site = self._tenant(body)
 		self.assertEqual(
 			(site.subdomain, site.country, site.chart_of_accounts),
-			("noor-uae-site", "United Arab Emirates", "U.A.E - Chart of Accounts"),
+			("noor-choice-site", "India", "Standard"),
 		)
 		settings = runner.tenant_settings(site)
 		self.assertEqual(
 			(settings["country"], settings["currency"], settings["timezone"], settings["fiscal_year_start"]),
-			("United Arab Emirates", "AED", "Asia/Dubai", "01-01"),
+			("India", "INR", "Asia/Kolkata", "04-01"),
 		)
-		self.assertEqual(settings["chart_of_accounts"], "U.A.E - Chart of Accounts")
+		self.assertEqual(settings["chart_of_accounts"], "Standard")
 
 	def test_signup_without_choices_keeps_todays_behaviour(self):
 		status, body = self._signup("plain")
@@ -167,8 +163,9 @@ class TestSignupV2(IntegrationTestCase):
 		self.assertEqual((settings["currency"], settings["fiscal_year_start"]), ("INR", "04-01"))
 
 	def test_signup_refuses_bad_choices(self):
-		status, body = self._signup("badc", country="SA")
-		self.assertEqual((status, list(body["error"]["fields"])), (422, ["country"]))
+		for code in ("AE", "SA"):  # India only: UAE was removed
+			status, body = self._signup(f"badc{code.lower()}", country=code)
+			self.assertEqual((status, list(body["error"]["fields"])), (422, ["country"]), code)
 		status, body = self._signup("badchart", country="IN", chartOfAccounts="U.A.E - Chart of Accounts")
 		self.assertEqual((status, list(body["error"]["fields"])), (422, ["chartOfAccounts"]))
 		status, body = self._signup("reserved", subdomain="billing")
