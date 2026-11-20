@@ -19,6 +19,8 @@ from growthx_core.api.v1._core import (
 	page_params,
 	query,
 )
+from growthx_core.billing import billing_details as billing_details_store
+from growthx_core.billing import payu
 from growthx_core.provisioning import custom_domains, site_login
 
 SITE_FIELDS = [
@@ -172,3 +174,38 @@ def invoices():
 		limit_page_length=page_size,
 	)
 	return page_meta(page, page_size, frappe.db.count("Sales Invoice", filters), [s.invoice(r) for r in rows])
+
+
+# ---------------------------------------------------------------- billing details (GST invoices)
+
+BILLING_ACCOUNT_FIELDS = ["name", "account_name", "contact_email", "phone", "customer"]
+
+
+@endpoint(methods=("GET",), roles=("customer",))
+def billing_details():
+	return billing_details_store.get(current_account(BILLING_ACCOUNT_FIELDS))
+
+
+@endpoint(methods=("POST",), roles=("customer",), rate_limit=RateLimit(30, 3600, by_user=True))
+def update_billing_details():
+	data = body()
+	account = current_account(BILLING_ACCOUNT_FIELDS)
+	if not billing_details_store.available():
+		raise billing_details_store.unavailable()
+	before = billing_details_store.get(account)
+	payu.ensure_customer(account)
+	after = billing_details_store.save(account, data)
+	if after != before:
+		audit(
+			"customer.billing_details_updated",
+			"GX Account",
+			account.name,
+			_billing_summary(after) + (f" (was: {_billing_summary(before)})" if before["complete"] else ""),
+		)
+	return after
+
+
+def _billing_summary(details: dict) -> str:
+	a = details["address"]
+	name = details["billingName"] or "company name"
+	return f"{name}, {a['city']}, {a['state']} {a['pincode']}, GSTIN {details['gstin'] or 'none'}"

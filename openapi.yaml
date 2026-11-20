@@ -1377,12 +1377,11 @@ paths:
   /growthx_core.api.v1.customer.billing_details:
     get:
       tags: [customer]
-      summary: "[PROPOSED] The billing name, address and GSTIN printed on the customer's tax invoices"
+      summary: The billing name, address and GSTIN printed on the customer's tax invoices
       description: |
         `complete` is false until the customer has saved a billing address; `billing.create_checkout` refuses
         (`422 billing_details_required`) until then. Show the form before Pay, and in Billing.
       operationId: customerGetBillingDetails
-      x-status: proposed
       x-phase: 3
       x-roles: [customer]
       responses:
@@ -1397,7 +1396,7 @@ paths:
   /growthx_core.api.v1.customer.update_billing_details:
     post:
       tags: [customer]
-      summary: "[PROPOSED] Save the billing address and (optional) GSTIN"
+      summary: Save the billing address and (optional) GSTIN
       description: |
         Replaces the billing details: send every field (`billingName`, `addressLine2` and `gstin` may be null).
         `billingName` is the customer name on the invoice, e.g. the legal name on the GST registration; null
@@ -1408,11 +1407,11 @@ paths:
         With a GSTIN the customer is invoiced as Registered Regular, without one as Unregistered. GST is CGST +
         SGST for Kerala and IGST for every other state.
 
-        Invoices already issued keep the details they were issued with. An unpaid checkout whose invoice has a
+        A change is written to the customer's history (`billing_details_updated`). Invoices already issued keep
+        the details they were issued with. An unpaid checkout whose invoice has a
         different billing name, state or GSTIN is replaced by a new invoice on the next `billing.create_checkout` (or that
         call returns `409 payment_in_progress` while a PayU payment for it may still go through).
       operationId: customerUpdateBillingDetails
-      x-status: proposed
       x-phase: 3
       x-roles: [customer]
       requestBody:
@@ -1430,6 +1429,7 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
         "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/PaymentUnavailable" }
 
   # ---------------------------------------------------------------- billing
   /growthx_core.api.v1.billing.create_checkout:
@@ -1450,11 +1450,14 @@ paths:
         `admin.record_payment`. Online payment is off (`503 payment_unavailable`) until Core's site config
         names a PayU gateway account.
 
+        The customer must have saved `customer.billing_details` first: until then, `422
+        billing_details_required`.
+
         **GST invoicing ([PROPOSED], not built yet):** the invoice becomes a GST tax invoice (GX/26-27/0001):
         the plan price includes 18% GST, split CGST + SGST for a customer in Kerala and IGST elsewhere, from
-        `customer.billing_details`. Until those are saved, `422 billing_details_required`. An unpaid checkout
-        issued before GST invoicing, or with a different billing name, state or GSTIN than the customer's
-        current details, is also replaced (same `409 payment_in_progress` rule).
+        `customer.billing_details`. An unpaid checkout issued before GST invoicing, or with a different
+        billing name, state or GSTIN than the customer's current details, is also replaced (same `409
+        payment_in_progress` rule).
       operationId: createCheckout
       x-phase: 3
       x-roles: [customer]
@@ -1486,7 +1489,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "422":
-          description: "`billing_details_required` (proposed, with GST invoicing: no billing address saved yet; show the billing details form, then call again), `invalid_plan` (unknown or retired plan, interval mismatch), or `validation_failed` (no subscription for the plan's product)"
+          description: "`billing_details_required` (no billing address saved yet: show the billing details form, then call again), `invalid_plan` (unknown or retired plan, interval mismatch), or `validation_failed` (no subscription for the plan's product)"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -3618,8 +3621,8 @@ components:
                 slot_taken, expert_busy, not_changeable, not_started,
                 idempotency_conflict, rate_limited, bad_request, method_not_allowed, invalid_tenant_key,
                 invalid_login_token, internal_error, no_account, site_not_found, not_linked, site_unavailable,
-                payment_in_progress.
-                Proposed: duplicate_lead, invalid_otp, billing_details_required.
+                payment_in_progress, billing_details_required.
+                Proposed: duplicate_lead, invalid_otp.
               example: email_taken
             message: { type: string, example: An account with this email already exists. }
             fields:
@@ -4469,7 +4472,7 @@ components:
                 properties:
                   at: { type: string, format: date-time }
                   actor: { type: string }
-                  action: { type: string, enum: [extend_trial, suspend, reactivate, record_payment, online_payment, online_payment_cancelled] }
+                  action: { type: string, enum: [extend_trial, suspend, reactivate, record_payment, online_payment, online_payment_cancelled, billing_details_updated] }
                   details: { type: string, example: "trial → suspended: Chargeback" }
 
     AuditLogEntry:
