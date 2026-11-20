@@ -11,22 +11,20 @@
    subscription becomes active, exactly as with admin.record_payment.
 4. `billing.checkout_status`: the billing page asks for the result.
 
-The amount always comes from the plan, on the server. site_config:
+The amount always comes from the plan, on the server, and the invoice is a GST tax invoice for the
+customer's billing details (growthx_core.billing.tax_invoice). site_config:
     "growthx_payu_gateway_account": the PayU Payment Gateway Account, e.g. "PayU-core-test - INR - TBO".
         Without it (or without frappe_payu) checkout answers 503 payment_unavailable: online payment off.
-    "growthx_sales_taxes_template": optional Sales Taxes and Charges Template for the invoices. A plan
-        priced without GST (gst_included 0, gst_rate > 0) needs one, otherwise checkout is refused (the
-        customer would be charged without the GST).
 """
 
 import inspect
 from urllib.parse import parse_qs, urlsplit
 
 import frappe
-from frappe.utils import add_to_date, cint, flt, get_datetime, getdate, now_datetime, nowdate
+from frappe.utils import add_to_date, flt, get_datetime, getdate, now_datetime, nowdate
 
 from growthx_core.api.v1._core import ApiError, audit
-from growthx_core.billing import payments
+from growthx_core.billing import payments, tax_invoice
 
 GATEWAY = "payu"
 PAYABLE_PR_STATUSES = ("Initiated", "Requested")
@@ -59,13 +57,6 @@ def gateway_account() -> str:
 	return name
 
 
-def taxes_template() -> str | None:
-	name = frappe.conf.get("growthx_sales_taxes_template")
-	if name and not frappe.db.exists("Sales Taxes and Charges Template", name):
-		raise Unavailable(f"Sales Taxes and Charges Template {name} does not exist")
-	return name or None
-
-
 def company() -> str:
 	name = frappe.conf.get("growthx_company") or frappe.defaults.get_global_default("company")
 	if not name or not frappe.db.exists("Company", name):
@@ -83,18 +74,15 @@ def create_checkout(account, plan):
 	account_name = account.name
 	payments.check_payable(account, plan)
 	gateway = gateway_account()
-	template = taxes_template()
-	if flt(plan.gst_rate) and not cint(plan.gst_included) and not template:
-		raise Unavailable(
-			f"plan {plan.name} is priced without GST and no growthx_sales_taxes_template is set"
-		)
 	if not plan.item:
 		raise Unavailable(f"GX Plan {plan.name} has no Item for its invoices")
+	ensure_customer(account)
+	buyer = tax_invoice.buyer(account, company())
 
-	checkout = _open_checkout(account_name, plan)
+	checkout = _open_checkout(account_name, plan, tax_invoice.buyer_snapshot(buyer))
 	try:
 		if not checkout.sales_invoice:
-			invoice = _make_invoice(account, plan, template)
+			invoice = _make_invoice(account, plan, buyer)
 			checkout.db_set({"sales_invoice": invoice.name, "amount": invoice.grand_total})
 		if not checkout.payment_request:
 			checkout.db_set("payment_request", _payment_request(checkout.sales_invoice, account, gateway))
@@ -109,10 +97,11 @@ def create_checkout(account, plan):
 		raise Unavailable(f"checkout {checkout.name}: {e}\n{frappe.get_traceback()}")
 
 
-def _open_checkout(account_name: str, plan):
+def _open_checkout(account_name: str, plan, buyer: tuple):
 	"""The pending checkout for this plan if it can still be paid; older pending checkouts for the
-	product (another plan, an old price) are cancelled. Locks the account first, so two checkouts
-	started at the same time don't make two invoices."""
+	product (another plan, an old price, an invoice for other billing details or from before GST
+	invoicing) are cancelled. Locks the account first, so two checkouts started at the same time
+	don't make two invoices."""
 	frappe.db.get_value("GX Account", account_name, "name", for_update=True)
 	found = None
 	for row in frappe.get_all(
@@ -121,7 +110,7 @@ def _open_checkout(account_name: str, plan):
 		["name", "plan", "sales_invoice", "payment_request"],
 		order_by="creation desc",
 	):
-		if not found and row.plan == plan.name and _still_payable(row, plan):
+		if not found and row.plan == plan.name and _still_payable(row, plan, buyer):
 			found = row.name
 		else:
 			_cancel(row)
@@ -143,7 +132,7 @@ def _open_checkout(account_name: str, plan):
 	).insert(ignore_permissions=True)
 
 
-def _still_payable(row, plan) -> bool:
+def _still_payable(row, plan, buyer: tuple) -> bool:
 	if not row.sales_invoice:
 		return True
 	si = frappe.db.get_value(
@@ -154,6 +143,8 @@ def _still_payable(row, plan) -> bool:
 	rate = frappe.db.get_value("Sales Invoice Item", {"parent": row.sales_invoice}, "rate")
 	if flt(rate) != flt(plan.price):
 		return False  # the plan's price changed since
+	if tax_invoice.invoice_snapshot(row.sales_invoice) != buyer:
+		return False  # pre-GST, or the billing name, address, state or GSTIN changed since
 	if row.payment_request:
 		status = frappe.db.get_value("Payment Request", row.payment_request, ["docstatus", "status"])
 		if not status or status[0] != 1 or status[1] not in PAYABLE_PR_STATUSES:
@@ -202,15 +193,18 @@ def cancel_open_checkouts(account_name: str, product: str):
 		_cancel(row)
 
 
-def _make_invoice(account, plan, template):
+def _make_invoice(account, plan, buyer):
+	"""The plan's GST tax invoice (submitted), for the buyer from tax_invoice.buyer()."""
 	product_name = frappe.db.get_value("GX Product", plan.product, "product_name")
 	customer = ensure_customer(account)
+	seller = company()
+	tax_invoice.sync_customer_name(customer, buyer)
 	with _as_administrator():
 		si = frappe.get_doc(
 			{
 				"doctype": "Sales Invoice",
 				"customer": customer,
-				"company": company(),
+				"company": seller,
 				"posting_date": nowdate(),
 				"due_date": nowdate(),
 				"items": [
@@ -224,11 +218,9 @@ def _make_invoice(account, plan, template):
 				"remarks": f"GrowthX {product_name} {plan.plan_name}, paid online (PayU)",
 			}
 		)
-		if template:
-			si.taxes_and_charges = template
-			si.set("taxes", [])
-			si.set_taxes()
+		tax_invoice.apply(si, buyer, plan, seller)
 		si.insert(ignore_permissions=True)
+		tax_invoice.check(si, buyer, plan)
 		si.submit()
 	return si
 

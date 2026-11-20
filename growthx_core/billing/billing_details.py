@@ -3,7 +3,8 @@
 Stored in ERPNext, where India Compliance reads them for the invoice:
 - an Address of type Billing linked to the account's Customer: the billing name (address_title), the
   address, state and PIN, and the GSTIN with its GST category;
-- the Customer's own gstin and gst_category (Registered Regular with a GSTIN, Unregistered without).
+- the Customer's own gstin and gst_category (Registered Regular with a GSTIN, Unregistered without),
+  and its customer_name: the billing name, which ERPNext copies onto each invoice as it's made.
 
 `billingName` null means the account's company name (account_name); it is stored as the address
 title either way, and read back as null when it equals the company name.
@@ -123,6 +124,7 @@ def save(account, data: dict) -> dict:
 		customer = frappe.get_doc("Customer", account.customer)
 		customer.update(
 			{
+				"customer_name": billing_name,
 				"gstin": values["gstin"],
 				"gst_category": gst_category,
 				"customer_primary_address": doc.name,
@@ -175,6 +177,9 @@ def _validate(data: dict) -> dict:
 			errors["gstin"] = "Enter the 15-character GSTIN in capitals, without spaces."
 		elif problem := _gstin_problem(gstin):
 			errors["gstin"] = problem
+		elif gstin == _seller_gstin():
+			# India Compliance won't invoice a company's own GSTIN
+			errors["gstin"] = "This is GrowthX's own GSTIN. Enter your company's GSTIN, or leave it empty."
 		elif state and gstin[:2] != gst_states[state]:
 			registered_in = next((s for s, code in gst_states.items() if code == gstin[:2]), None)
 			errors["gstin"] = (
@@ -206,6 +211,12 @@ def _pincode_in_state(pincode: str, state: str) -> bool:
 		ranges = (ranges,)
 	first = int(pincode[:3])
 	return any(low <= first <= high for low, high in ranges)
+
+
+def _seller_gstin() -> str:
+	from growthx_core.setup import gst
+
+	return gst.SELLER.gstin
 
 
 def _gstin_problem(gstin: str) -> str | None:

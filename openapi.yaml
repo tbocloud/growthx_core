@@ -1348,13 +1348,12 @@ paths:
   /growthx_core.api.v1.customer.invoice_pdf:
     get:
       tags: [customer]
-      summary: "[PROPOSED] One of the customer's invoices as a PDF (the GST tax invoice)"
+      summary: One of the customer's invoices as a PDF (the GST tax invoice)
       description: |
         The invoice in India Compliance's "GST Tax Invoice" print format, as a file download. Only the
         customer's own issued invoices: `404 not_found` for anyone else's, and for `draft` or `void` ones (show
-        the download button only for `open`, `overdue` and `paid`).
+        the download button only for `open`, `overdue` and `paid`). Errors are JSON as usual.
       operationId: customerInvoicePdf
-      x-status: proposed
       x-phase: 3
       x-roles: [customer]
       parameters:
@@ -1372,6 +1371,11 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "422":
+          description: "`validation_failed`: no `id`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "429": { $ref: "#/components/responses/RateLimited" }
 
   /growthx_core.api.v1.customer.billing_details:
@@ -1401,15 +1405,16 @@ paths:
         Replaces the billing details: send every field (`billingName`, `addressLine2` and `gstin` may be null).
         `billingName` is the customer name on the invoice, e.g. the legal name on the GST registration; null
         means the account's company name. The GSTIN is
-        checked (format, check digit, and its first two digits must be the state's GST code) and so is the
-        PIN code against the state; problems come back as `422 validation_failed` with `fields`.
+        checked (format, check digit, and its first two digits must be the state's GST code; GrowthX's own
+        GSTIN is refused) and so is the PIN code against the state; problems come back as `422
+        validation_failed` with `fields`.
 
         With a GSTIN the customer is invoiced as Registered Regular, without one as Unregistered. GST is CGST +
         SGST for Kerala and IGST for every other state.
 
         A change is written to the customer's history (`billing_details_updated`). Invoices already issued keep
         the details they were issued with. An unpaid checkout whose invoice has a
-        different billing name, state or GSTIN is replaced by a new invoice on the next `billing.create_checkout` (or that
+        different billing name, address, state or GSTIN is replaced by a new invoice on the next `billing.create_checkout` (or that
         call returns `409 payment_in_progress` while a PayU payment for it may still go through).
       operationId: customerUpdateBillingDetails
       x-phase: 3
@@ -1453,11 +1458,13 @@ paths:
         The customer must have saved `customer.billing_details` first: until then, `422
         billing_details_required`.
 
-        **GST invoicing ([PROPOSED], not built yet):** the invoice becomes a GST tax invoice (GX/26-27/0001):
-        the plan price includes 18% GST, split CGST + SGST for a customer in Kerala and IGST elsewhere, from
-        `customer.billing_details`. An unpaid checkout issued before GST invoicing, or with a different
-        billing name, state or GSTIN than the customer's current details, is also replaced (same `409
-        payment_in_progress` rule).
+        **GST invoicing:** the invoice is a GST tax invoice (GX/26-27/0001) for `customer.billing_details`:
+        the billing name, address and GSTIN. The plan price includes the plan's GST (18%), split CGST + SGST
+        for a customer in Kerala and IGST elsewhere, so the total is always the plan price (`invoice.subtotal`
+        + `invoice.tax`). An unpaid checkout issued before GST invoicing, or with a different billing name,
+        address, state or GSTIN than the customer's current details, is also replaced (same `409
+        payment_in_progress` rule). If Core can't make the invoice exactly (GST not set up, a plan priced
+        without GST), it answers `503 payment_unavailable` and charges nothing.
       operationId: createCheckout
       x-phase: 3
       x-roles: [customer]

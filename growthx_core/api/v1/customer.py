@@ -11,6 +11,7 @@ from growthx_core.api.v1._core import (
 	body,
 	current_user,
 	endpoint,
+	file_response,
 	get_choice,
 	get_str,
 	iso,
@@ -20,7 +21,7 @@ from growthx_core.api.v1._core import (
 	query,
 )
 from growthx_core.billing import billing_details as billing_details_store
-from growthx_core.billing import payu
+from growthx_core.billing import payu, tax_invoice
 from growthx_core.provisioning import custom_domains, site_login
 
 SITE_FIELDS = [
@@ -174,6 +175,30 @@ def invoices():
 		limit_page_length=page_size,
 	)
 	return page_meta(page, page_size, frappe.db.count("Sales Invoice", filters), [s.invoice(r) for r in rows])
+
+
+# Only issued invoices have a PDF: not drafts, and not cancelled ones.
+PDF_STATUSES = INVOICE_FILTER["open"] + INVOICE_FILTER["overdue"] + INVOICE_FILTER["paid"]
+
+
+@endpoint(methods=("GET",), roles=("customer",), rate_limit=RateLimit(60, 3600, by_user=True))
+def invoice_pdf():
+	invoice = get_str(query(), "id", required=True)
+	customer = current_account(["customer"]).customer
+	name = customer and frappe.db.get_value(
+		"Sales Invoice",
+		{
+			"name": invoice,
+			"customer": customer,
+			"docstatus": 1,
+			"is_return": 0,
+			"status": ("in", PDF_STATUSES),
+		},
+		"name",
+	)
+	if not name:
+		raise not_found()
+	return file_response(tax_invoice.pdf(name), tax_invoice.filename(name), "application/pdf")
 
 
 # ---------------------------------------------------------------- billing details (GST invoices)
