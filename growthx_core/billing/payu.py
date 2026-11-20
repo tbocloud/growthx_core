@@ -100,8 +100,8 @@ def create_checkout(account, plan):
 def _open_checkout(account_name: str, plan, buyer: tuple):
 	"""The pending checkout for this plan if it can still be paid; older pending checkouts for the
 	product (another plan, an old price, an invoice for other billing details or from before GST
-	invoicing) are cancelled. Locks the account first, so two checkouts
-	started at the same time don't make two invoices."""
+	invoicing) are cancelled. Locks the account first, so two checkouts started at the same time
+	don't make two invoices."""
 	frappe.db.get_value("GX Account", account_name, "name", for_update=True)
 	found = None
 	for row in frappe.get_all(
@@ -144,7 +144,7 @@ def _still_payable(row, plan, buyer: tuple) -> bool:
 	if flt(rate) != flt(plan.price):
 		return False  # the plan's price changed since
 	if tax_invoice.invoice_snapshot(row.sales_invoice) != buyer:
-		return False  # pre-GST, or the billing name, state or GSTIN changed since
+		return False  # pre-GST, or the billing name, address, state or GSTIN changed since
 	if row.payment_request:
 		status = frappe.db.get_value("Payment Request", row.payment_request, ["docstatus", "status"])
 		if not status or status[0] != 1 or status[1] not in PAYABLE_PR_STATUSES:

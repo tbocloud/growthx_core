@@ -12,8 +12,8 @@ The plan price includes GST, so the invoice total is always the plan price:
   total isn't the plan price or the GST isn't the plan's rate. A customer must never be charged a
   different amount, or get an invoice without the GST.
 
-`buyer_snapshot` is what an unpaid invoice must still match (the billing name, place of supply and
-GSTIN); otherwise the checkout is replaced.
+`buyer_snapshot` is what an unpaid invoice must still match (the billing name, the address as printed,
+the place of supply and the GSTIN); otherwise the checkout is replaced.
 """
 
 import frappe
@@ -32,6 +32,8 @@ def _unavailable(reason: str):
 
 
 def buyer(account, company: str) -> frappe._dict:
+	from frappe.contacts.doctype.address.address import render_address
+
 	"""Who the invoice is for, and which GST applies, from the account's current billing details."""
 	from growthx_core.billing import billing_details
 	from growthx_core.setup import gst
@@ -60,6 +62,8 @@ def buyer(account, company: str) -> frappe._dict:
 	return frappe._dict(
 		customer_name=address.address_title or account.account_name,
 		customer_address=customer_address,
+		# as ERPNext prints it on the invoice (address_display)
+		address_display=render_address(customer_address, check_permissions=False),
 		company_address=company_address,
 		gstin=address.gstin or None,
 		place_of_supply=f"{codes[address.state]}-{address.state}",
@@ -69,8 +73,13 @@ def buyer(account, company: str) -> frappe._dict:
 
 
 def buyer_snapshot(details) -> tuple:
-	"""What an invoice for this buyer() says about them: billing name, place of supply, GSTIN."""
-	return (details.customer_name, details.place_of_supply, details.gstin or None)
+	"""What an invoice for this buyer() says about them: billing name, address, place of supply, GSTIN."""
+	return (
+		details.customer_name,
+		details.address_display,
+		details.place_of_supply,
+		details.gstin or None,
+	)
 
 
 def invoice_snapshot(si) -> tuple | None:
@@ -79,12 +88,18 @@ def invoice_snapshot(si) -> tuple | None:
 		si = frappe.db.get_value(
 			"Sales Invoice",
 			si,
-			["customer_name", "place_of_supply", "billing_address_gstin", "taxes_and_charges"],
+			[
+				"customer_name",
+				"address_display",
+				"place_of_supply",
+				"billing_address_gstin",
+				"taxes_and_charges",
+			],
 			as_dict=True,
 		)
 	if not si or not si.taxes_and_charges:
 		return None
-	return (si.customer_name, si.place_of_supply, si.billing_address_gstin or None)
+	return (si.customer_name, si.address_display, si.place_of_supply, si.billing_address_gstin or None)
 
 
 def sync_customer_name(customer: str, details):

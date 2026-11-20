@@ -1414,7 +1414,7 @@ paths:
 
         A change is written to the customer's history (`billing_details_updated`). Invoices already issued keep
         the details they were issued with. An unpaid checkout whose invoice has a
-        different billing name, state or GSTIN is replaced by a new invoice on the next `billing.create_checkout` (or that
+        different billing name, address, state or GSTIN is replaced by a new invoice on the next `billing.create_checkout` (or that
         call returns `409 payment_in_progress` while a PayU payment for it may still go through).
       operationId: customerUpdateBillingDetails
       x-phase: 3
@@ -1462,7 +1462,7 @@ paths:
         the billing name, address and GSTIN. The plan price includes the plan's GST (18%), split CGST + SGST
         for a customer in Kerala and IGST elsewhere, so the total is always the plan price (`invoice.subtotal`
         + `invoice.tax`). An unpaid checkout issued before GST invoicing, or with a different billing name,
-        state or GSTIN than the customer's current details, is also replaced (same `409
+        address, state or GSTIN than the customer's current details, is also replaced (same `409
         payment_in_progress` rule). If Core can't make the invoice exactly (GST not set up, a plan priced
         without GST), it answers `503 payment_unavailable` and charges nothing.
       operationId: createCheckout

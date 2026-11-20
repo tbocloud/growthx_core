@@ -103,6 +103,12 @@ def ensure_gst_company():
 	frappe.db.commit()
 
 
+def _last_error() -> str:
+	"""The newest Error Log, for assert messages: a 500's traceback is only there (e.g. on CI)."""
+	row = frappe.get_all("Error Log", fields=["method", "error"], order_by="creation desc", limit=1)
+	return f"{row[0].method}\n{row[0].error}" if row else "no Error Log"
+
+
 def _call(fn, data=None, request=None):
 	frappe.local.form_dict = frappe._dict(data or {})
 	frappe.local.request = request
@@ -667,11 +673,13 @@ class TestCheckoutPayU(IntegrationTestCase):
 
 	def test_changed_billing_details_replace_the_unpaid_checkout(self):
 		_, first = self._checkout()
-		self._billing(addressLine1="2 Test Street")  # not on the snapshot: same invoice
+		self._billing()  # saved again unchanged: same invoice
 		_, again = self._checkout()
 		self.assertEqual(again["reference"], first["reference"])
 
 		changes = (
+			{"addressLine1": "2 Test Street"},
+			{"city": "Thrissur", "pincode": "680001"},
 			{"billingName": "Checkout Solar LLP"},
 			{"gstin": KERALA_GSTIN},
 			{"state": "Tamil Nadu", "pincode": "600001", "city": "Chennai"},
@@ -689,6 +697,7 @@ class TestCheckoutPayU(IntegrationTestCase):
 		self.assertEqual(
 			(si.place_of_supply, self._taxes(si)), ("33-Tamil Nadu", [("Output Tax IGST", 22881.36)])
 		)
+		self.assertIn("Chennai", si.address_display)
 
 	def test_a_billing_change_waits_for_an_authorized_payment(self):
 		_, body = self._checkout()
@@ -722,9 +731,12 @@ class TestCheckoutPayU(IntegrationTestCase):
 	def _pdf(self, invoice, user=None):
 		frappe.set_user(user or self.user)
 		try:
-			with patch(
-				"frappe.utils.pdf.get_pdf", side_effect=lambda html, *a, **k: html.encode()
-			) as get_pdf:
+			with (
+				patch("frappe.utils.pdf.get_pdf", side_effect=lambda html, *a, **k: html.encode()) as get_pdf,
+				# CI's bench has no built assets (bench init --skip-assets): the print view's
+				# include_style('print.bundle.css') would find no assets.json
+				patch("frappe.utils.get_assets_json", return_value={}),
+			):
 				# Frappe's print view needs a request (the website router reads its environ)
 				request = EnvironBuilder(
 					path="/api/method/growthx_core.api.v1.customer.invoice_pdf"
@@ -738,7 +750,7 @@ class TestCheckoutPayU(IntegrationTestCase):
 		_, body = self._checkout()
 		si = self._invoice(body)
 		status, res, _ = self._pdf(si.name)
-		self.assertEqual(status, 200)
+		self.assertEqual(status, 200, _last_error())
 		self.assertEqual(res.mimetype, "application/pdf")
 		self.assertEqual(
 			res.headers["Content-Disposition"], f'attachment; filename="{si.name.replace("/", "-")}.pdf"'
