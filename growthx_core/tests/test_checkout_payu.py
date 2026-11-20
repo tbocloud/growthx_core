@@ -6,6 +6,7 @@ Payment Entry are real ERPNext documents.
 """
 
 import json
+import unittest
 from unittest.mock import patch
 
 import frappe
@@ -14,7 +15,7 @@ from frappe.utils import getdate, nowdate
 
 from growthx_core import accounts
 from growthx_core.api.v1 import _core, billing
-from growthx_core.billing import payu
+from growthx_core.billing import billing_details, payu
 from growthx_core.provisioning import runner
 from growthx_core.setup import seed
 
@@ -23,6 +24,15 @@ PRODUCT = "test-checkout"
 PLAN = "test-checkout-lifetime"
 ITEM = "GX-TEST-CHECKOUT-ITEM"
 IC = "india_compliance" in frappe.get_installed_apps()
+KERALA = {
+	"billingName": None,
+	"addressLine1": "1 Test Street",
+	"addressLine2": None,
+	"city": "Kochi",
+	"state": "Kerala",
+	"pincode": "682001",
+	"gstin": None,
+}
 FORM = {"url": "https://test.payu.in/_payment", "params": {"key": "k", "txnid": "PAYUtest", "hash": "h"}}
 
 
@@ -92,6 +102,7 @@ def _call(fn, data=None):
 	return response.status_code, json.loads(response.get_data())
 
 
+@unittest.skipUnless(IC, "GST invoices need India Compliance (CI installs it)")
 class TestCheckoutPayU(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
@@ -164,6 +175,9 @@ class TestCheckoutPayU(IntegrationTestCase):
 				"price": 150000,
 			}
 		).insert(ignore_permissions=True)
+		doc = frappe.get_doc("GX Account", account)
+		payu.ensure_customer(doc)
+		billing_details.save(doc, KERALA)
 		return user, account
 
 	def _checkout(self, user=None, **data):
@@ -368,6 +382,13 @@ class TestCheckoutPayU(IntegrationTestCase):
 		attempt.flags._name = txnid
 		attempt.insert(ignore_permissions=True)
 		return link.name
+
+	def test_checkout_needs_billing_details(self):
+		address = billing_details.address_name(frappe.db.get_value("GX Account", self.account, "customer"))
+		frappe.db.set_value("Address", address, "disabled", 1)
+		status, body = self._checkout()
+		self.assertEqual((status, body["error"]["code"]), (422, "billing_details_required"), body)
+		self.assertFalse(frappe.db.exists("GX Checkout", {"account": self.account}))
 
 	# ------------------------------------------------------------ payment safety (follow-up to #54)
 	# record_payment closes open checkouts, a PayU attempt in flight is never cancelled under the

@@ -21,7 +21,7 @@ from growthx_core.api.v1._core import (
 	validation_error,
 )
 from growthx_core.api.v1.customer import current_account
-from growthx_core.billing import payu
+from growthx_core.billing import billing_details, payu
 
 ACCOUNT_FIELDS = ["name", "account_name", "status", "user", "contact_email", "phone", "customer"]
 INVOICE_FIELDS = [
@@ -59,6 +59,15 @@ def create_checkout():
 			"invalid_plan",
 			"This plan is billed differently.",
 			fields={"billingInterval": "Doesn't match the plan."},
+		)
+
+	if not billing_details.available():
+		raise _unavailable(Exception("india_compliance isn't installed: GST invoices can't be made"))
+	if not billing_details.is_complete(account):
+		raise ApiError(
+			422,
+			"billing_details_required",
+			"Add your billing address before paying; it goes on your tax invoice.",
 		)
 
 	try:

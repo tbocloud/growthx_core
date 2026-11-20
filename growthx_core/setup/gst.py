@@ -13,6 +13,8 @@
    creates the next Fiscal Year). ERPNext's own .TFY. shortens the Fiscal Year's *name* instead, which
    breaks if the year is named differently. GST allows at most 16 characters.
 5. Every plan's Item gets the SAC code and the Item Tax Template for its rate (seed.plan_items).
+6. GST Settings: e-way bills and India Compliance's API features off. Core sells services only and has
+   no India Compliance account, and no e-invoicing (turnover under ₹5 crore).
 
 site_config:
     "growthx_company": the selling Company (default: the global default company).
@@ -53,6 +55,7 @@ def setup(company: str | None = None) -> str:
 	_seller(company)
 	_tax_templates(company)
 	_series()
+	_gst_settings()
 	seed.plan_items(commit=False)
 	return company
 
@@ -184,6 +187,17 @@ def _tax_templates(company: str):
 			for row in doc.taxes:
 				row.included_in_print_rate = 1
 			doc.save(ignore_permissions=True)
+
+
+GST_SETTINGS_OFF = ("enable_e_waybill", "enable_api", "enable_e_invoice")
+
+
+def _gst_settings():
+	settings = frappe.get_single("GST Settings")
+	if any(settings.get(f) for f in GST_SETTINGS_OFF):
+		for f in GST_SETTINGS_OFF:
+			settings.set(f, 0)
+		settings.save(ignore_permissions=True)
 
 
 def _series():

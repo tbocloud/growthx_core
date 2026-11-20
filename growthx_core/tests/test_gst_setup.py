@@ -80,6 +80,9 @@ class TestGstSetup(IntegrationTestCase):
 			self.assertEqual({r.account_head.split()[2] for r in doc.taxes}, accounts, category)
 			self.assertTrue(all(r.included_in_print_rate for r in doc.taxes), category)
 
+		self.assertEqual(
+			[frappe.db.get_single_value("GST Settings", f) for f in gst.GST_SETTINGS_OFF], [0, 0, 0]
+		)  # no e-way bills, India Compliance API or e-invoicing
 		field = frappe.get_meta("Sales Invoice").get_field("naming_series")
 		self.assertEqual((field.default, field.options.split("\n")[0]), (gst.SERIES, gst.SERIES))
 		prefix = parse_naming_series(
@@ -143,6 +146,8 @@ class TestGstSetup(IntegrationTestCase):
 		self.assertTrue(gst.item_tax_template(COMPANY, 18))
 
 	def test_an_existing_company_address_is_updated_not_duplicated(self):
+		while existing := gst._company_address(COMPANY):  # this test starts from a placeholder only
+			frappe.delete_doc("Address", existing, force=True)
 		placeholder = frappe.get_doc(
 			{
 				"doctype": "Address",
