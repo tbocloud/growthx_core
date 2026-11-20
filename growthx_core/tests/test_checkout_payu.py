@@ -12,9 +12,11 @@ from unittest.mock import patch
 import frappe
 from frappe.tests import IntegrationTestCase
 from frappe.utils import getdate, nowdate
+from werkzeug.test import EnvironBuilder
 
 from growthx_core import accounts
 from growthx_core.api.v1 import _core, billing
+from growthx_core.api.v1 import customer as customer_api
 from growthx_core.billing import billing_details, payu
 from growthx_core.provisioning import runner
 from growthx_core.setup import seed
@@ -33,6 +35,7 @@ KERALA = {
 	"pincode": "682001",
 	"gstin": None,
 }
+KERALA_GSTIN = "32AABCK1234M1ZT"  # a customer's; 32AAVFT5109L1ZQ is the seller's own
 FORM = {"url": "https://test.payu.in/_payment", "params": {"key": "k", "txnid": "PAYUtest", "hash": "h"}}
 
 
@@ -88,9 +91,21 @@ def ensure_erpnext_company():
 	frappe.db.commit()
 
 
-def _call(fn, data=None):
+def ensure_gst_company():
+	"""The company's GST set-up (growthx_core.setup.gst without the plan items), committed once."""
+	from growthx_core.setup import gst
+
+	with patch.dict(frappe.local.conf, {"growthx_company": COMPANY}):
+		gst._seller(COMPANY)
+		gst._tax_templates(COMPANY)
+		gst._series()
+		gst._gst_settings()
+	frappe.db.commit()
+
+
+def _call(fn, data=None, request=None):
 	frappe.local.form_dict = frappe._dict(data or {})
-	frappe.local.request = None
+	frappe.local.request = request
 	frappe.local.request_ip = "127.0.0.1"
 	with (
 		patch.object(_core, "_idempotency_key", return_value=None),
@@ -99,6 +114,8 @@ def _call(fn, data=None):
 		patch.object(frappe.db, "rollback"),  # an error response would roll back this test's data
 	):
 		response = fn()
+	if response.mimetype != "application/json":
+		return response.status_code, response  # a file download
 	return response.status_code, json.loads(response.get_data())
 
 
@@ -109,6 +126,7 @@ class TestCheckoutPayU(IntegrationTestCase):
 		super().setUpClass()
 		frappe.set_user("Administrator")
 		ensure_erpnext_company()
+		ensure_gst_company()
 
 	def setUp(self):
 		frappe.set_user("Administrator")
@@ -322,10 +340,11 @@ class TestCheckoutPayU(IntegrationTestCase):
 			self.patches[1].start()
 		self.assertEqual((status, body["error"]["code"]), (503, "payment_unavailable"))
 
-	def test_a_plan_priced_without_gst_needs_a_tax_template(self):
+	def test_a_plan_priced_without_gst_is_refused(self):
 		frappe.db.set_value("GX Plan", PLAN, "gst_included", 0)
 		status, body = self._checkout()
 		self.assertEqual((status, body["error"]["code"]), (503, "payment_unavailable"))
+		self.assertFalse(frappe.db.exists("Sales Invoice", {"customer": self._erp_customer()}))
 
 	def test_unknown_or_mismatched_plan(self):
 		status, body = self._checkout(planId="nope")
@@ -586,3 +605,163 @@ class TestCheckoutPayU(IntegrationTestCase):
 		pe.submit()
 		period_end = frappe.db.get_value("GX Subscription", {"account": self.account}, "current_period_end")
 		self.assertEqual(getdate(period_end), getdate(frappe.utils.add_months(paid_on, 1)))
+
+	# ------------------------------------------------------------ GST tax invoices
+
+	def _invoice(self, body):
+		return frappe.get_doc("Sales Invoice", self._checkout_docs(body["reference"]).sales_invoice)
+
+	def _billing(self, **over):
+		doc = frappe.get_doc("GX Account", self.account)
+		billing_details.save(doc, {**KERALA, **over})
+
+	def _taxes(self, si):
+		return [(t.account_head.rsplit(" - ", 1)[0], t.tax_amount) for t in si.taxes]
+
+	def test_a_kerala_customer_gets_cgst_and_sgst_inside_the_plan_price(self):
+		status, body = self._checkout()
+		self.assertEqual(status, 201, body)
+		si = self._invoice(body)
+		self.assertRegex(si.name, r"^GX/\d{2}-\d{2}/\d{4}$")
+		self.assertEqual(
+			(si.net_total, si.total_taxes_and_charges, si.grand_total), (127118.64, 22881.36, 150000)
+		)
+		self.assertEqual(
+			sorted(self._taxes(si)), [("Output Tax CGST", 11440.68), ("Output Tax SGST", 11440.68)]
+		)
+		self.assertEqual(
+			(si.customer_name, si.place_of_supply, si.billing_address_gstin, si.gst_category),
+			("Checkout Solar", "32-Kerala", None, "Unregistered"),
+		)
+		self.assertEqual(si.customer_address, billing_details.address_name(self._erp_customer()))
+		self.assertEqual(si.company_gstin, "32AAVFT5109L1ZQ")
+		self.assertEqual(si.items[0].item_tax_template, "GST 18% - GXCT")
+		self.assertEqual(
+			(
+				body["invoice"]["number"],
+				body["invoice"]["subtotal"]["amount"],
+				body["invoice"]["tax"]["amount"],
+			),
+			(si.name, 12711864, 2288136),
+		)
+		self.assertEqual(body["amount"]["amount"], 15000000)
+
+	def test_another_state_with_a_gstin_gets_igst_under_the_billing_name(self):
+		self._billing(
+			billingName="Checkout Solar Private Limited",
+			city="Bengaluru",
+			state="Karnataka",
+			pincode="560001",
+			gstin="29AABCG1234M1ZK",
+		)
+		status, body = self._checkout()
+		self.assertEqual(status, 201, body)
+		si = self._invoice(body)
+		self.assertEqual(self._taxes(si), [("Output Tax IGST", 22881.36)])
+		self.assertEqual(si.grand_total, 150000)
+		self.assertEqual(
+			(si.customer_name, si.place_of_supply, si.billing_address_gstin, si.gst_category),
+			("Checkout Solar Private Limited", "29-Karnataka", "29AABCG1234M1ZK", "Registered Regular"),
+		)
+		self.assertIn("Bengaluru", si.address_display)
+
+	def test_changed_billing_details_replace_the_unpaid_checkout(self):
+		_, first = self._checkout()
+		self._billing(addressLine1="2 Test Street")  # not on the snapshot: same invoice
+		_, again = self._checkout()
+		self.assertEqual(again["reference"], first["reference"])
+
+		changes = (
+			{"billingName": "Checkout Solar LLP"},
+			{"gstin": KERALA_GSTIN},
+			{"state": "Tamil Nadu", "pincode": "600001", "city": "Chennai"},
+		)
+		for over in changes:
+			old = again["reference"]
+			old_invoice = self._checkout_docs(old).sales_invoice
+			self._billing(**over)
+			status, again = self._checkout()
+			self.assertEqual(status, 201, again)
+			self.assertNotEqual(again["reference"], old, over)
+			self.assertEqual(frappe.db.get_value("GX Checkout", old, "status"), "cancelled", over)
+			self.assertEqual(frappe.db.get_value("Sales Invoice", old_invoice, "docstatus"), 2, over)
+		si = self._invoice(again)
+		self.assertEqual(
+			(si.place_of_supply, self._taxes(si)), ("33-Tamil Nadu", [("Output Tax IGST", 22881.36)])
+		)
+
+	def test_a_billing_change_waits_for_an_authorized_payment(self):
+		_, body = self._checkout()
+		pr = self._with_payment_request(body)
+		self._payu_records(pr, "PAYUauthgst", "Authorized")
+		self._billing(state="Karnataka", city="Bengaluru", pincode="560001")
+		status, res = self._checkout()
+		self.assertEqual((status, res["error"]["code"]), (409, "payment_in_progress"), res)
+		self.assertEqual(self._checkout_docs(body["reference"]).status, "pending")
+
+	def test_a_checkout_from_before_gst_invoicing_is_replaced(self):
+		_, first = self._checkout()
+		old = self._checkout_docs(first["reference"])
+		frappe.db.set_value("Sales Invoice", old.sales_invoice, "taxes_and_charges", None)
+		status, second = self._checkout()
+		self.assertEqual(status, 201, second)
+		self.assertNotEqual(second["reference"], first["reference"])
+		self.assertEqual(frappe.db.get_value("GX Checkout", first["reference"], "status"), "cancelled")
+
+	def test_an_invoice_that_isnt_the_plan_price_is_never_issued(self):
+		from growthx_core.setup import gst
+
+		wrong = gst.item_tax_template(COMPANY, 5)
+		with patch.object(gst, "item_tax_template", return_value=wrong):
+			status, body = self._checkout()
+		self.assertEqual((status, body["error"]["code"]), (503, "payment_unavailable"), body)
+		self.assertFalse(
+			frappe.db.exists("Sales Invoice", {"customer": self._erp_customer(), "docstatus": 1})
+		)
+
+	def _pdf(self, invoice, user=None):
+		frappe.set_user(user or self.user)
+		try:
+			with patch(
+				"frappe.utils.pdf.get_pdf", side_effect=lambda html, *a, **k: html.encode()
+			) as get_pdf:
+				# Frappe's print view needs a request (the website router reads its environ)
+				request = EnvironBuilder(
+					path="/api/method/growthx_core.api.v1.customer.invoice_pdf"
+				).get_request()
+				status, res = _call(customer_api.invoice_pdf, {"id": invoice}, request=request)
+			return status, res, get_pdf
+		finally:
+			frappe.set_user("Administrator")
+
+	def test_invoice_pdf_is_the_gst_tax_invoice(self):
+		_, body = self._checkout()
+		si = self._invoice(body)
+		status, res, _ = self._pdf(si.name)
+		self.assertEqual(status, 200)
+		self.assertEqual(res.mimetype, "application/pdf")
+		self.assertEqual(
+			res.headers["Content-Disposition"], f'attachment; filename="{si.name.replace("/", "-")}.pdf"'
+		)
+		html = res.get_data(as_text=True)
+		for text in (si.name, "Checkout Solar", "32AAVFT5109L1ZQ", "32-Kerala", "CGST", "SGST"):
+			self.assertIn(text, html)
+
+		self._pay(si.name)
+		self.assertEqual(self._pdf(si.name)[0], 200)  # paid
+
+	def test_invoice_pdf_only_for_the_customers_issued_invoices(self):
+		_, body = self._checkout()
+		si = self._invoice(body)
+		other, _ = self._customer("gx-checkout-pdf@example.com", "Other Solar")
+		status, res, get_pdf = self._pdf(si.name, user=other)
+		self.assertEqual((status, res["error"]["code"]), (404, "not_found"))
+		get_pdf.assert_not_called()
+		self.assertEqual(self._pdf("GX/00-00/9999")[0], 404)
+		self.assertEqual(self._pdf("")[0], 422)
+
+		with payu._as_administrator():
+			frappe.get_doc("Payment Request", self._checkout_docs(body["reference"]).payment_request).cancel()
+			si.reload()
+			si.cancel()
+		self.assertEqual(self._pdf(si.name)[0], 404)  # void

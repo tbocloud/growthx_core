@@ -11,7 +11,8 @@ from growthx_core.api.v1 import customer
 from growthx_core.billing import billing_details
 from growthx_core.tests.test_checkout_payu import IC, _call
 
-KERALA_GSTIN = "32AAVFT5109L1ZQ"
+KERALA_GSTIN = "32AABCK1234M1ZT"
+SELLER_GSTIN = "32AAVFT5109L1ZQ"
 KARNATAKA_GSTIN = "29AABCG1234M1ZK"
 
 
@@ -109,11 +110,14 @@ class TestBillingDetails(IntegrationTestCase):
 			[(lnk.link_doctype, lnk.link_name) for lnk in address.links], [("Customer", self._customer())]
 		)
 		cust = frappe.db.get_value(
-			"Customer", self._customer(), ["gstin", "gst_category", "customer_primary_address"], as_dict=True
+			"Customer",
+			self._customer(),
+			["customer_name", "gstin", "gst_category", "customer_primary_address"],
+			as_dict=True,
 		)
 		self.assertEqual(
-			(cust.gstin, cust.gst_category, cust.customer_primary_address),
-			(KERALA_GSTIN, "Registered Regular", address.name),
+			(cust.customer_name, cust.gstin, cust.gst_category, cust.customer_primary_address),
+			("Noor Solar Private Limited", KERALA_GSTIN, "Registered Regular", address.name),
 		)
 
 	def test_saving_again_updates_the_same_address(self):
@@ -129,8 +133,8 @@ class TestBillingDetails(IntegrationTestCase):
 		)
 		self.assertEqual((body["gstin"], body["gstCategory"]), (None, "unregistered"))
 		self.assertEqual(
-			frappe.db.get_value("Customer", self._customer(), ["gstin", "gst_category"]),
-			(None, "Unregistered"),
+			frappe.db.get_value("Customer", self._customer(), ["customer_name", "gstin", "gst_category"]),
+			("Noor Solar", None, "Unregistered"),
 		)
 		# null billingName is the company name on the invoice
 		self.assertEqual(frappe.db.get_value("Address", first, "address_title"), "Noor Solar")
@@ -143,7 +147,7 @@ class TestBillingDetails(IntegrationTestCase):
 			self._audit(),
 			[
 				"company name, Kochi, Kerala 682042, GSTIN none",
-				"company name, Kochi, Kerala 682042, GSTIN 32AAVFT5109L1ZQ"
+				"company name, Kochi, Kerala 682042, GSTIN 32AABCK1234M1ZT"
 				" (was: company name, Kochi, Kerala 682042, GSTIN none)",
 			],
 		)
@@ -171,6 +175,11 @@ class TestBillingDetails(IntegrationTestCase):
 				{"gstin": "32AAVFT5109L1ZA"},
 				"gstin",
 				"This isn't a valid GSTIN. Check it for typing mistakes.",
+			),
+			(
+				{"gstin": SELLER_GSTIN},
+				"gstin",
+				"This is GrowthX's own GSTIN. Enter your company's GSTIN, or leave it empty.",
 			),
 			(
 				{"gstin": "32 AAVFT5109L1ZQ"},

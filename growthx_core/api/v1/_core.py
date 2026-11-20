@@ -110,6 +110,14 @@ def json_response(data, status: int = 200, headers: dict | None = None) -> Respo
 	return response
 
 
+def file_response(content: bytes, filename: str, mimetype: str) -> Response:
+	"""A file download; an endpoint returns it as is (no JSON, no idempotency replay)."""
+	response = Response(content, status=200, mimetype=mimetype)
+	response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+	response.headers["Cache-Control"] = "no-store"
+	return response
+
+
 def error_response(status, code, message, fields=None, reference=None, headers=None, extra=None) -> Response:
 	error = {**(extra or {}), "code": code, "message": message}
 	if fields:
@@ -134,7 +142,7 @@ def endpoint(
 	idempotent: bool = False,
 ):
 	"""Declare a v1 endpoint. The wrapped function takes no arguments; it reads input with
-	`body()` / `query()` and returns either data (200) or a `(status, data)` tuple."""
+	`body()` / `query()` and returns either data (200), a `(status, data)` tuple, or a file_response()."""
 
 	limits = rate_limit if isinstance(rate_limit, tuple) else ((rate_limit,) if rate_limit else ())
 
@@ -154,6 +162,8 @@ def endpoint(
 						return json_response(cached["body"], cached["status"])
 
 				result = fn()
+				if isinstance(result, Response):
+					return result
 				status, data = result if isinstance(result, tuple) else (200, result)
 
 				if replay_key and status < 400:
