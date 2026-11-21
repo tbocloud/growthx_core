@@ -7,6 +7,7 @@ Payment Entry are real ERPNext documents.
 
 import json
 import unittest
+from contextlib import contextmanager
 from unittest.mock import patch
 
 import frappe
@@ -729,23 +730,37 @@ class TestCheckoutPayU(IntegrationTestCase):
 			frappe.db.exists("Sales Invoice", {"customer": self._erp_customer(), "docstatus": 1})
 		)
 
+	@contextmanager
+	def _print_view(self):
+		"""What Frappe's print view needs in a test. CI's bench has no built assets (bench init
+		--skip-assets), so include_style('print.bundle.css') would find no assets.json; and the website
+		router reads the request's environ. Yields the request."""
+		with patch("frappe.utils.get_assets_json", return_value={}):
+			request = EnvironBuilder(
+				path="/api/method/growthx_core.api.v1.customer.invoice_pdf"
+			).get_request()
+			previous = getattr(frappe.local, "request", None)
+			frappe.local.request = request
+			try:
+				yield request
+			finally:
+				frappe.local.request = previous
+
 	def _pdf(self, invoice, user=None):
 		frappe.set_user(user or self.user)
 		try:
 			with (
 				patch("frappe.utils.pdf.get_pdf", side_effect=lambda html, *a, **k: html.encode()) as get_pdf,
-				# CI's bench has no built assets (bench init --skip-assets): the print view's
-				# include_style('print.bundle.css') would find no assets.json
-				patch("frappe.utils.get_assets_json", return_value={}),
+				self._print_view() as request,
 			):
-				# Frappe's print view needs a request (the website router reads its environ)
-				request = EnvironBuilder(
-					path="/api/method/growthx_core.api.v1.customer.invoice_pdf"
-				).get_request()
 				status, res = _call(customer_api.invoice_pdf, {"id": invoice}, request=request)
 			return status, res, get_pdf
 		finally:
 			frappe.set_user("Administrator")
+
+	def _print_html(self, invoice, **kwargs):
+		with payu._as_administrator(), self._print_view():
+			return frappe.get_print("Sales Invoice", invoice, tax_invoice.PRINT_FORMAT, **kwargs)
 
 	def test_invoice_pdf_is_the_gst_tax_invoice(self):
 		self._billing(gstin=KERALA_GSTIN)
@@ -775,12 +790,8 @@ class TestCheckoutPayU(IntegrationTestCase):
 		self.assertNotIn("GX-LETTERHEAD-MARK", html)
 		# no logo: the format's <img src="None"> would make wkhtmltopdf fail; it's removed
 		self.assertNotRegex(html, r"<img[^>]*src=\"None\"")
-		with payu._as_administrator():
-			raw = frappe.get_print("Sales Invoice", si.name, tax_invoice.PRINT_FORMAT, no_letterhead=1)
-		self.assertRegex(raw, r"<img[^>]*src=\"None\"")
-		with payu._as_administrator():
-			with_letterhead = frappe.get_print("Sales Invoice", si.name, tax_invoice.PRINT_FORMAT)
-		self.assertIn("GX-LETTERHEAD-MARK", with_letterhead)
+		self.assertRegex(self._print_html(si.name, no_letterhead=1), r"<img[^>]*src=\"None\"")
+		self.assertIn("GX-LETTERHEAD-MARK", self._print_html(si.name))
 
 		self._pay(si.name)
 		self.assertEqual(self._pdf(si.name)[0], 200)  # paid
