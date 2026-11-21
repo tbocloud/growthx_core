@@ -14,7 +14,12 @@ The plan price includes GST, so the invoice total is always the plan price:
 
 `buyer_snapshot` is what an unpaid invoice must still match (the billing name, the address as printed,
 the place of supply and the GSTIN); otherwise the checkout is replaced.
+
+The PDF is India Compliance's "GST Tax Invoice" format, which has its own header (company, "Tax
+Invoice", number), so no letterhead is added.
 """
+
+import re
 
 import frappe
 from frappe.utils import cint, flt
@@ -23,6 +28,9 @@ PRINT_FORMAT = "GST Tax Invoice"
 # GST on each line is rounded to the paisa, so the computed tax may differ from the exact split by a
 # paisa or two.
 TAX_TOLERANCE = 0.05
+# The format shows the company logo as <img src="{{ company_logo }}">: without a logo that's src="None",
+# which wkhtmltopdf can't load ("PDF generation failed because of broken image links").
+MISSING_IMAGE = re.compile(r"""<img\b[^>]*\bsrc\s*=\s*(["'])\s*(?:None)?\s*\1[^>]*>""", re.IGNORECASE)
 
 
 def _unavailable(reason: str):
@@ -155,10 +163,19 @@ def check(si, details, plan):
 
 
 def pdf(invoice: str) -> bytes:
+	"""What frappe.get_print(as_pdf=True) does for wkhtmltopdf, with no letterhead and without images
+	that have no source."""
+	from frappe.utils.pdf import get_pdf
+
 	from growthx_core.billing.payu import _as_administrator
 
 	with _as_administrator():
-		return frappe.get_print("Sales Invoice", invoice, PRINT_FORMAT, as_pdf=True)
+		html = frappe.get_print("Sales Invoice", invoice, PRINT_FORMAT, no_letterhead=1)
+		return get_pdf(without_missing_images(html))
+
+
+def without_missing_images(html: str) -> str:
+	return MISSING_IMAGE.sub("", html)
 
 
 def filename(invoice: str) -> str:

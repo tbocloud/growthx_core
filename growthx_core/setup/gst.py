@@ -15,6 +15,9 @@
 5. Every plan's Item gets the SAC code and the Item Tax Template for its rate (seed.plan_items).
 6. GST Settings: e-way bills and India Compliance's API features off. Core sells services only and has
    no India Compliance account, and no e-invoicing (turnover under ₹5 crore).
+7. The India Address Template is India Compliance's, which prints the state code and the GSTIN (the
+   invoice prints addresses with it). India Compliance only creates it where there is none, and
+   ERPNext's setup wizard made its own first.
 
 site_config:
     "growthx_company": the selling Company (default: the global default company).
@@ -56,6 +59,7 @@ def setup(company: str | None = None) -> str:
 	_tax_templates(company)
 	_series()
 	_gst_settings()
+	_address_template()
 	seed.plan_items(commit=False)
 	return company
 
@@ -198,6 +202,20 @@ def _gst_settings():
 		for f in GST_SETTINGS_OFF:
 			settings.set(f, 0)
 		settings.save(ignore_permissions=True)
+
+
+def _address_template():
+	from india_compliance.gst_india.setup import create_address_template
+	from india_compliance.gst_india.utils import get_data_file_path
+
+	if not frappe.db.exists("Address Template", "India"):
+		create_address_template()
+		return
+	template = frappe.read_file(get_data_file_path("address_template.html"), raise_not_found=True)
+	doc = frappe.get_doc("Address Template", "India")
+	if doc.template != template:
+		doc.template = template
+		doc.save(ignore_permissions=True)
 
 
 def _series():

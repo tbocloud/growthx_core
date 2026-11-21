@@ -17,7 +17,7 @@ from werkzeug.test import EnvironBuilder
 from growthx_core import accounts
 from growthx_core.api.v1 import _core, billing
 from growthx_core.api.v1 import customer as customer_api
-from growthx_core.billing import billing_details, payu
+from growthx_core.billing import billing_details, payu, tax_invoice
 from growthx_core.provisioning import runner
 from growthx_core.setup import seed
 
@@ -100,6 +100,7 @@ def ensure_gst_company():
 		gst._tax_templates(COMPANY)
 		gst._series()
 		gst._gst_settings()
+		gst._address_template()
 	frappe.db.commit()
 
 
@@ -747,6 +748,18 @@ class TestCheckoutPayU(IntegrationTestCase):
 			frappe.set_user("Administrator")
 
 	def test_invoice_pdf_is_the_gst_tax_invoice(self):
+		self._billing(gstin=KERALA_GSTIN)
+		# a default letterhead, as ERPNext's setup wizard makes: the format has its own header
+		frappe.get_doc(
+			{
+				"doctype": "Letter Head",
+				"letter_head_name": "GX Test Letterhead",
+				"source": "HTML",
+				"content": "<p>GX-LETTERHEAD-MARK</p>",
+				"is_default": 1,
+			}
+		).insert()
+		frappe.db.set_value("Company", COMPANY, "company_logo", None)
 		_, body = self._checkout()
 		si = self._invoice(body)
 		status, res, _ = self._pdf(si.name)
@@ -756,8 +769,18 @@ class TestCheckoutPayU(IntegrationTestCase):
 			res.headers["Content-Disposition"], f'attachment; filename="{si.name.replace("/", "-")}.pdf"'
 		)
 		html = res.get_data(as_text=True)
-		for text in (si.name, "Checkout Solar", "32AAVFT5109L1ZQ", "32-Kerala", "CGST", "SGST"):
+		texts = (si.name, "Checkout Solar", "32AAVFT5109L1ZQ", "32-Kerala", "CGST", "SGST")
+		for text in (*texts, f"GSTIN: {KERALA_GSTIN}"):  # the customer's, from the address template
 			self.assertIn(text, html)
+		self.assertNotIn("GX-LETTERHEAD-MARK", html)
+		# no logo: the format's <img src="None"> would make wkhtmltopdf fail; it's removed
+		self.assertNotRegex(html, r"<img[^>]*src=\"None\"")
+		with payu._as_administrator():
+			raw = frappe.get_print("Sales Invoice", si.name, tax_invoice.PRINT_FORMAT, no_letterhead=1)
+		self.assertRegex(raw, r"<img[^>]*src=\"None\"")
+		with payu._as_administrator():
+			with_letterhead = frappe.get_print("Sales Invoice", si.name, tax_invoice.PRINT_FORMAT)
+		self.assertIn("GX-LETTERHEAD-MARK", with_letterhead)
 
 		self._pay(si.name)
 		self.assertEqual(self._pdf(si.name)[0], 200)  # paid
