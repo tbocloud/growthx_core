@@ -8,6 +8,7 @@ from growthx_core.api.v1 import _serializers as s
 from growthx_core.api.v1 import appointments as appts
 from growthx_core.api.v1._core import (
 	ApiError,
+	RateLimit,
 	audit,
 	body,
 	endpoint,
@@ -26,7 +27,7 @@ from growthx_core.api.v1._core import (
 )
 from growthx_core.billing import payments, payu
 from growthx_core.billing.payments import set_customer_status as _set_customer_status
-from growthx_core.provisioning import runner
+from growthx_core.provisioning import press, runner
 
 CUSTOMER_STATUSES = ("trial", "active", "suspended", "churned")
 SITE_STATUSES = ("requested", "provisioning", "ready", "failed", "suspended", "archived")
@@ -390,6 +391,65 @@ def archive_tenant():
 		raise ApiError(409, "not_archivable", "Only a failed site can be archived.")
 	audit("archive_tenant", "GX Tenant", tenant_id)
 	return s.admin_tenant_detail(frappe.get_doc("GX Tenant", tenant_id))
+
+
+# ---------------------------------------------------------------- Press inventory
+
+PRESS_SITES_CACHE = "gx:press-inventory"
+PRESS_SITES_CACHE_SECONDS = 60
+
+
+def _press_sites() -> list[dict]:
+	"""Press's site list, cached briefly: the page reloads it and Press allows few calls a minute."""
+	cached = frappe.cache.get_value(PRESS_SITES_CACHE)
+	if cached is not None:
+		return frappe.parse_json(cached)
+	sites = press.get_client().list_sites()
+	frappe.cache.set_value(PRESS_SITES_CACHE, frappe.as_json(sites), expires_in_sec=PRESS_SITES_CACHE_SECONDS)
+	return sites
+
+
+@endpoint(methods=("GET",), roles=("admin",), rate_limit=RateLimit(30, 60, by_user=True))
+def press_inventory():
+	"""Every site the GrowthX team has on Press, by bench: the ones Core created and the ones it
+	didn't (ERPNext sites sold directly). An unmanaged site is what an admin imports to bill it."""
+	data = query()
+	q = (get_str(data, "q", max_length=100) or "").lower()
+	try:
+		sites = _press_sites()
+	except press.PressError:
+		raise ApiError(502, "press_unavailable", "Press could not be read right now.") from None
+
+	names = [row["name"] for row in sites if row.get("name")]
+	tenants = {}
+	if names:
+		for tenant in frappe.get_all(
+			"GX Tenant",
+			filters={"press_site_id": ("in", names)},
+			fields=["name", "press_site_id", "account", "origin"],
+		):
+			tenants[tenant.press_site_id] = tenant
+	accounts = dict(
+		frappe.get_all(
+			"GX Account",
+			{"name": ("in", list({t.account for t in tenants.values()}) or [""])},
+			["name", "account_name"],
+			as_list=True,
+		)
+	)
+
+	items = []
+	for row in sites:
+		tenant = tenants.get(row.get("name"))
+		customer_name = accounts.get(tenant.account) if tenant else None
+		item = s.admin_press_site(row, tenant, customer_name)
+		if q:
+			parts = (item["name"], item["url"], item["tenantId"], customer_name)
+			if q not in " ".join(str(part or "") for part in parts).lower():
+				continue
+		items.append(item)
+	items.sort(key=lambda i: (i["bench"] or "", i["name"] or ""))
+	return {"items": items, "total": len(items)}
 
 
 # ---------------------------------------------------------------- audit log

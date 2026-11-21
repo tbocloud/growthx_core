@@ -2870,6 +2870,44 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /growthx_core.api.v1.admin.press_inventory:
+    get:
+      tags: [admin]
+      summary: Every site on Press, by bench
+      description: |
+        Read from Press (`press.api.site.all`, cached for 60 s): the sites Core provisioned and the
+        ones it didn't. `managed: false` marks a site no GX Tenant owns — an ERPNext site sold
+        directly — which is what an admin imports to bill it. `q` searches site name, URL, tenant id
+        and customer name.
+      operationId: adminPressInventory
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - name: q
+          in: query
+          description: Searches site name, URL, tenant id and customer name
+          schema: { type: string }
+      responses:
+        "200":
+          description: Sites, grouped by bench on the client
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/AdminPressSite" }
+                  total: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "502":
+          description: "`press_unavailable`: Press could not be read"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /growthx_core.api.v1.admin.appointments:
     get:
       tags: [admin]
@@ -3875,6 +3913,11 @@ components:
         ready: the site can be opened. failed: an admin has been alerted and will retry; the customer doesn't sign up again.
         suspended: payment failed after the grace period. archived: the subscription was cancelled.
 
+    PressSiteStatus:
+      type: string
+      enum: [creating, active, broken, inactive, archived]
+      description: The site's own state on Press (Press says Active, Inactive, Broken, Archived).
+
     SiteRef:
       type: object
       required: [id, status]
@@ -4616,6 +4659,24 @@ components:
                     properties:
                       attempt: { type: integer }
                       error: { type: string, nullable: true }
+
+    AdminPressSite:
+      type: object
+      description: "One site as Press lists it. `managed: false` means no GX Tenant owns it."
+      required: [name, status, managed]
+      properties:
+        name: { type: string, example: demo-laundry-2.tbogrowthx.com }
+        url: { type: string, format: uri, nullable: true }
+        status: { $ref: "#/components/schemas/PressSiteStatus" }
+        bench: { type: string, nullable: true, example: bench-0024-000002-f1 }
+        releaseGroup: { type: string, nullable: true, example: bench-0024 }
+        releaseGroupTitle: { type: string, nullable: true }
+        plan: { type: string, nullable: true, description: The site's plan on Press, not a GX Plan }
+        createdAt: { type: string, format: date-time, nullable: true }
+        managed: { type: boolean, description: True when a GX Tenant owns the site }
+        tenantId: { type: string, nullable: true }
+        origin: { type: string, enum: [provisioned, imported], nullable: true }
+        customerName: { type: string, nullable: true }
 
     AppointmentStatus:
       type: string

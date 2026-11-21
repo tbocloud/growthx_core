@@ -86,6 +86,14 @@ class PressClient:
 		"""Bring a suspended site back online."""
 		raise NotImplementedError
 
+	def list_sites(self) -> list[dict]:
+		"""Every site the GrowthX team has on Press, for the admin inventory. Read-only: it also
+		lists sites Core didn't create (ERPNext Direct), so callers must not assume a GX Tenant.
+
+		Each row: name, url, status (a `PressSite.status` value), press_status (Press's own word),
+		bench, release_group, release_group_title, plan, created_at."""
+		raise NotImplementedError
+
 	def configure_site(self, site_id: str, settings: dict, theme: bool = True) -> dict | None:
 		"""Set up a new site. Safe to run again on a configured site.
 
@@ -131,6 +139,7 @@ class FakePressClient(PressClient):
 
 	def __init__(self, fail_step: str | None = None):
 		self.fail_step = fail_step
+		self.press_sites: list[dict] = []
 
 	def _maybe_fail(self, step):
 		if self.fail_step == step:
@@ -163,6 +172,10 @@ class FakePressClient(PressClient):
 
 	def resume_site(self, site_id):
 		pass
+
+	def list_sites(self):
+		# Tests set this to act out the sites the GrowthX team has on Press (admin.press_inventory).
+		return list(self.press_sites)
 
 	def configure_site(self, site_id, settings, theme=True):
 		self._maybe_fail("configure")
@@ -336,6 +349,29 @@ class RealPressClient(PressClient):
 	def resume_site(self, site_id):
 		self._own(site_id)
 		self._call("press.api.site.activate", name=site_id)
+
+	def list_sites(self):
+		# press.api.site.all is the team's sites (archive excluded), with the bench and release group
+		# each one runs on. Same shape as the fake, so the admin inventory doesn't branch.
+		rows = self._call("press.api.site.all", timeout=60, site_filter={"status": "", "tag": ""}) or []
+		sites = []
+		for row in rows:
+			host = row.get("host_name") or row.get("name")
+			plan = row.get("plan")
+			sites.append(
+				{
+					"name": row.get("name"),
+					"url": f"https://{host}" if host else None,
+					"status": PRESS_STATUS.get(row.get("status"), "creating"),
+					"press_status": row.get("status"),
+					"bench": row.get("bench"),
+					"release_group": row.get("group"),
+					"release_group_title": row.get("title"),
+					"plan": plan.get("name") if isinstance(plan, dict) else plan,
+					"created_at": row.get("creation"),
+				}
+			)
+		return sites
 
 	def configure_site(self, site_id, settings, theme=True):
 		"""Log in as Administrator through Press, then run growthx_theme's set-up on the site.
@@ -734,6 +770,33 @@ class LocalPressClient(PressClient):
 
 	def resume_site(self, site_id):
 		pass
+
+	def list_sites(self):
+		# The sites on this bench (development only): a directory with a site_config.json.
+		try:
+			names = sorted(os.listdir(self.sites))
+		except OSError:
+			return []
+		sites = []
+		for name in names:
+			if name.startswith((".", "_")):
+				continue
+			if not os.path.exists(os.path.join(self.sites, name, "site_config.json")):
+				continue
+			sites.append(
+				{
+					"name": name,
+					"url": f"http://{name}:{self.port}",
+					"status": "active",
+					"press_status": None,
+					"bench": os.path.basename(self.bench),
+					"release_group": None,
+					"release_group_title": None,
+					"plan": None,
+					"created_at": None,
+				}
+			)
+		return sites
 
 	# Custom domains: nothing to check locally; the domain is "active" at once.
 	def check_dns(self, site_id, domain):
