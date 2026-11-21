@@ -26,7 +26,7 @@ from growthx_core.api.v1._core import (
 from growthx_core.billing import billing_details as billing_details_store
 from growthx_core.billing import payu, tax_invoice
 from growthx_core.billing.doctype.gx_subscription.gx_subscription import sync_account_status
-from growthx_core.provisioning import custom_domains, runner, site_login
+from growthx_core.provisioning import apps, custom_domains, runner, site_login
 
 SITE_FIELDS = [
 	"name",
@@ -81,8 +81,15 @@ def open_site():
 	tenant = _own_tenant(get_str(body(), "id", required=True))
 	if tenant.status != "ready" or not tenant.site_url:
 		raise ApiError(409, "site_not_ready", "Your site isn't ready yet.")
+	audit("open_site", "GX Tenant", tenant.name)  # never log a token
+	if not apps.theme_required(tenant.product):
+		# A site without growthx_theme has no single sign-on, so its own login page is the way in
+		# (the customer's user is set up there, with "Login with Email Link").
+		return {
+			"url": f"{custom_domains.public_url(tenant).rstrip('/')}/login",
+			"expiresAt": iso(now_datetime() + timedelta(seconds=site_login.TTL_SECONDS)),
+		}
 	token = site_login.issue(tenant.name, current_user())
-	audit("open_site", "GX Tenant", tenant.name)  # never log the token
 	return {
 		"url": site_login.login_url(custom_domains.public_url(tenant), token),
 		"expiresAt": iso(now_datetime() + timedelta(seconds=site_login.TTL_SECONDS)),
