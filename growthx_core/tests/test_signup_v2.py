@@ -171,6 +171,15 @@ class TestSignupV2(IntegrationTestCase):
 		status, body = self._signup("reserved", subdomain="billing")
 		self.assertEqual((status, list(body["error"]["fields"])), (422, ["subdomain"]))
 
+	def test_signup_refuses_angle_brackets_in_the_company(self):
+		# the company is the name on invoices until a billing name is set, which refuses them too
+		for company in ("<b>Noor</b> Solar", "Noor > Solar"):
+			status, body = self._signup("brackets", company=company)
+			self.assertEqual(
+				(status, body["error"]["fields"]), (422, {"company": "Company can't contain < or >."})
+			)
+		self.assertFalse(frappe.db.exists("User", "gx-signup-v2-brackets@example.com"))
+
 	# An error response rolls back the request's transaction, and this test's plan with it: after
 	# one, only calls that fail before the plan is looked up can follow in the same test.
 
