@@ -2,8 +2,9 @@ from datetime import date, timedelta
 
 import frappe
 from frappe.query_builder.functions import Count
-from frappe.utils import fmt_money, get_datetime, now_datetime, nowdate
+from frappe.utils import add_months, add_years, fmt_money, get_datetime, now_datetime, nowdate
 
+from growthx_core import accounts
 from growthx_core.api.v1 import _serializers as s
 from growthx_core.api.v1 import appointments as appts
 from growthx_core.api.v1._core import (
@@ -13,6 +14,7 @@ from growthx_core.api.v1._core import (
 	body,
 	endpoint,
 	get_choice,
+	get_email,
 	get_sort,
 	get_str,
 	iso,
@@ -28,6 +30,7 @@ from growthx_core.api.v1._core import (
 from growthx_core.billing import payments, payu
 from growthx_core.billing.payments import set_customer_status as _set_customer_status
 from growthx_core.provisioning import press, runner
+from growthx_core.setup.defaults import default_link
 
 CUSTOMER_STATUSES = ("trial", "active", "suspended", "churned")
 SITE_STATUSES = ("requested", "provisioning", "ready", "failed", "suspended", "archived")
@@ -429,7 +432,7 @@ def press_inventory():
 			fields=["name", "press_site_id", "account", "origin"],
 		):
 			tenants[tenant.press_site_id] = tenant
-	accounts = dict(
+	customer_names = dict(
 		frappe.get_all(
 			"GX Account",
 			{"name": ("in", list({t.account for t in tenants.values()}) or [""])},
@@ -441,7 +444,7 @@ def press_inventory():
 	items = []
 	for row in sites:
 		tenant = tenants.get(row.get("name"))
-		customer_name = accounts.get(tenant.account) if tenant else None
+		customer_name = customer_names.get(tenant.account) if tenant else None
 		item = s.admin_press_site(row, tenant, customer_name)
 		if q:
 			parts = (item["name"], item["url"], item["tenantId"], customer_name)
@@ -450,6 +453,124 @@ def press_inventory():
 		items.append(item)
 	items.sort(key=lambda i: (i["bench"] or "", i["name"] or ""))
 	return {"items": items, "total": len(items)}
+
+
+def _imported_account(email: str, company: str, full_name: str | None) -> str:
+	"""The GX Account an imported site is billed to: the one this email already has, or a new
+	Customer and account. Its user signs in on the site itself, so it gets no portal password."""
+	existing = frappe.db.get_value("GX Account", {"contact_email": email}, "name")
+	if existing:
+		return existing
+	user = frappe.db.get_value("User", {"email": email}, "name")
+	if user:
+		doc = frappe.get_doc("User", user)
+		doc.append_roles(accounts.CUSTOMER_ROLE)
+		doc.save(ignore_permissions=True)
+	else:
+		user = accounts.create_user(
+			email, full_name or company, frappe.generate_hash(length=32), accounts.CUSTOMER_ROLE
+		)
+		accounts.mark_no_password(user)
+	customer = frappe.get_doc(
+		{
+			"doctype": "Customer",
+			"customer_name": company,
+			"customer_type": "Company",
+			"customer_group": default_link("Customer Group"),
+			"territory": default_link("Territory"),
+			"email_id": email,
+		}
+	).insert(ignore_permissions=True)
+	return (
+		frappe.get_doc(
+			{
+				"doctype": "GX Account",
+				"account_name": company,
+				"user": user,
+				"contact_email": email,
+				"customer": customer.name,
+				"status": "active",
+			}
+		)
+		.insert(ignore_permissions=True)
+		.name
+	)
+
+
+def _first_period_end(interval: str):
+	"""A lifetime plan never renews, so it has no period end."""
+	if interval == "one_time":
+		return None
+	return add_years(nowdate(), 1) if interval == "year" else add_months(nowdate(), 1)
+
+
+@endpoint(methods=("POST",), roles=("admin",), rate_limit=RateLimit(10, 60, by_user=True), idempotent=True)
+def adopt_site():
+	"""Take an ERPNext site GrowthX doesn't manage (sold directly) into GrowthX, so it can be billed:
+	its customer, an active subscription on `plan`, and the tenant. Nothing is created, installed or
+	themed on the site, and the plan is billing only: an imported site keeps signing its own users in."""
+	data = body()
+	site = get_str(data, "site", required=True, label="Site")
+	plan_id = get_str(data, "plan", required=True, label="Plan")
+	email = get_email(data)
+	company = get_str(data, "accountName", label="Company")
+	full_name = get_str(data, "fullName", label="Name")
+
+	if tenant := frappe.db.get_value("GX Tenant", {"press_site_id": site}, "name"):
+		raise ApiError(409, "already_managed", f"GrowthX already manages this site ({tenant}).")
+	if not frappe.db.exists("GX Plan", plan_id):
+		raise not_found()
+	plan = frappe.get_doc("GX Plan", plan_id)
+	if not plan.is_active:
+		raise validation_error({"plan": "This plan is not on sale."})
+
+	try:
+		sites = _press_sites()
+	except press.PressError:
+		raise ApiError(502, "press_unavailable", "Press could not be read right now.") from None
+	row = next((r for r in sites if r.get("name") == site), None)
+	if not row:
+		raise validation_error({"site": "Press has no site with that name."})
+	if row.get("status") != "active":
+		raise ApiError(
+			409, "not_importable", f"Only an active site can be imported (this one is {row['status']})."
+		)
+
+	company = company or site.split(".")[0]
+	account = _imported_account(email, company, full_name)
+	if existing := accounts.live_site(account, plan.product):
+		raise ApiError(409, "already_added", f"This customer already has a {plan.product} site ({existing}).")
+
+	subscription = frappe.get_doc(
+		{
+			"doctype": "GX Subscription",
+			"account": account,
+			"plan": plan.name,
+			"status": "active",
+			"price": plan.price,
+			"gst_included": plan.gst_included,
+			"gst_rate": plan.gst_rate,
+			"current_period_end": _first_period_end(plan.billing_interval),
+		}
+	).insert(ignore_permissions=True)
+	tenant = frappe.get_doc(
+		{
+			"doctype": "GX Tenant",
+			"account": account,
+			"product": plan.product,
+			"subscription": subscription.name,
+			"display_name": company,
+			"origin": "imported",
+			"status": "ready",
+			"ready_at": now_datetime(),
+			"subdomain": site.split(".")[0],
+			"press_site_id": site,
+			"site_url": row.get("url") or f"https://{site}",
+		}
+	).insert(ignore_permissions=True)
+	subscription.db_set("tenant", tenant.name, update_modified=False)
+	audit("adopt_site", "GX Tenant", tenant.name, f"{site} on {plan.plan_name}")
+	return s.admin_tenant_detail(frappe.get_doc("GX Tenant", tenant.name))
 
 
 # ---------------------------------------------------------------- audit log

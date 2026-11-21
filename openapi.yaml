@@ -2908,6 +2908,54 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /growthx_core.api.v1.admin.adopt_site:
+    post:
+      tags: [admin]
+      summary: Import an ERPNext site into GrowthX
+      description: |
+        For a site `admin.press_inventory` lists as `managed: false`: the customer, an active subscription on `plan`
+        and the tenant (`origin: imported`) are created here, so GrowthX can bill the site. Nothing is created,
+        installed or themed on the site itself — it keeps signing its own users in, and the plan is billing only.
+        An account that already has this plan's product is refused.
+      operationId: adminAdoptSite
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [site, plan, email]
+              properties:
+                site: { type: string, description: The site name Press lists, e.g. acme.tbogrowthx.com }
+                plan: { type: string, description: GX Plan id }
+                email: { type: string, format: email, description: The customer's email; an existing account with it is reused }
+                accountName: { type: string, description: Company name, default the site name's first label }
+                fullName: { type: string, description: Contact name, for a new customer }
+      responses:
+        "200":
+          description: The imported tenant
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminTenantDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`already_managed` (a tenant owns the site), `already_added` (the customer has this product), `not_importable` (the site is not active)"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "502":
+          description: "`press_unavailable`: Press could not be read"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /growthx_core.api.v1.admin.appointments:
     get:
       tags: [admin]
