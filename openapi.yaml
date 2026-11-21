@@ -1076,6 +1076,57 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /growthx_core.api.v1.customer.add_site:
+    post:
+      tags: [customer]
+      summary: Add another app to the account (a new site)
+      description: |
+        For a signed-in customer who already has an account: starts a trial of the app's plan (see `trialDays` on the
+        plan) and provisions another site for the same account. `customer.sites` then lists both.
+        `409 already_added`: the account already has this app (one site per app; an archived site doesn't count).
+        `409 subdomain_taken`: someone else has the subdomain. `422 validation_failed` with `fields.productSlug`: unknown
+        app, or not on sale. Poll `customer.site` while the status is `requested` or `provisioning`.
+      operationId: addCustomerSite
+      x-phase: 2
+      x-roles: [customer]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [productSlug]
+              properties:
+                productSlug: { type: string, example: laundry }
+                planId: { type: string, description: "Optional; defaults to the app's plan, by `billingInterval`" }
+                billingInterval: { type: string, enum: [month, year, one_time] }
+                subdomain:
+                  type: string
+                  example: noor-laundry
+                  description: "Optional; made from the account's name when left out"
+                country: { type: string, description: "Optional ISO country code; defaults to IN" }
+                chartOfAccounts: { type: string }
+      responses:
+        "201":
+          description: The site; provisioning starts after the response
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [site]
+                properties:
+                  site: { $ref: "#/components/schemas/Site" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: "`already_added` or `subdomain_taken`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
   /growthx_core.api.v1.customer.site:
     get:
       tags: [customer]

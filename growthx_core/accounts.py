@@ -130,12 +130,36 @@ def create_customer_account(
 	if not plan:
 		return user, None
 
+	tenant = start_site(
+		account=account.name,
+		plan=plan,
+		display_name=company,
+		subdomain=subdomain,
+		country=country,
+		chart_of_accounts=chart_of_accounts,
+	)
+	return user, tenant
+
+
+def start_site(
+	*,
+	account: str,
+	plan,
+	display_name: str | None = None,
+	subdomain: str | None = None,
+	country: str | None = None,
+	chart_of_accounts: str | None = None,
+) -> str:
+	"""Start a site for `account` on `plan`: its trial subscription, the tenant and the provisioning
+	job. Returns the tenant name; the caller commits (`customer.add_site` for an app an existing
+	customer adds to their account)."""
+	name = display_name or frappe.db.get_value("GX Account", account, "account_name")
 	# OI-2 is open (trial from sign-up, or from when the site is ready). Until the Lead decides,
 	# the trial starts at sign-up.
 	subscription = frappe.get_doc(
 		{
 			"doctype": "GX Subscription",
-			"account": account.name,
+			"account": account,
 			"plan": plan.name,
 			"status": "trialing",
 			"price": plan.price,
@@ -148,11 +172,11 @@ def create_customer_account(
 	tenant = frappe.get_doc(
 		{
 			"doctype": "GX Tenant",
-			"account": account.name,
+			"account": account,
 			"product": plan.product,
 			"subscription": subscription.name,
-			"display_name": company,
-			"subdomain": runner.site_subdomain(subdomain) if subdomain else runner.make_subdomain(company),
+			"display_name": name,
+			"subdomain": runner.site_subdomain(subdomain) if subdomain else runner.make_subdomain(name),
 			"country": country,
 			"chart_of_accounts": chart_of_accounts,
 			"status": "requested",
@@ -164,7 +188,7 @@ def create_customer_account(
 	subscription.db_set("tenant", tenant.name, update_modified=False)
 
 	runner.enqueue(tenant.name)
-	return user, tenant.name
+	return tenant.name
 
 
 def _notify_partner(account):

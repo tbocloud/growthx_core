@@ -3,7 +3,9 @@ from datetime import timedelta
 import frappe
 from frappe.utils import now_datetime
 
+from growthx_core import accounts
 from growthx_core.api.v1 import _serializers as s
+from growthx_core.api.v1 import auth
 from growthx_core.api.v1._core import (
 	ApiError,
 	RateLimit,
@@ -19,10 +21,11 @@ from growthx_core.api.v1._core import (
 	page_meta,
 	page_params,
 	query,
+	validation_error,
 )
 from growthx_core.billing import billing_details as billing_details_store
 from growthx_core.billing import payu, tax_invoice
-from growthx_core.provisioning import custom_domains, site_login
+from growthx_core.provisioning import custom_domains, runner, site_login
 
 SITE_FIELDS = [
 	"name",
@@ -83,6 +86,30 @@ def open_site():
 		"url": site_login.login_url(custom_domains.public_url(tenant), token),
 		"expiresAt": iso(now_datetime() + timedelta(seconds=site_login.TTL_SECONDS)),
 	}
+
+
+@endpoint(methods=("POST",), roles=("customer",), idempotent=True, rate_limit=RateLimit(10, 60, by_user=True))
+def add_site():
+	"""Add another GrowthX app to this account: a new site on a trial of that app's plan."""
+	data = body()
+	account = current_account()
+	# Same choices and checks as a sign-up (auth._signup_plan/_signup_site): the app must be on sale,
+	# and the site gets the country's chart of accounts and the customer's subdomain.
+	plan = auth._signup_plan(data)
+	if not plan:
+		raise validation_error({"productSlug": "Choose an app to add."})
+	if frappe.db.exists(
+		"GX Tenant", {"account": account, "product": plan.product, "status": ("!=", "archived")}
+	):
+		message = "You already have this app."
+		raise ApiError(409, "already_added", message, fields={"productSlug": message})
+	site = auth._signup_site(data)
+	# Last, because it calls Press (10 name checks a minute for the whole team).
+	if site["subdomain"] and runner.press_name_taken(site["subdomain"]):
+		raise auth._subdomain_taken()
+	tenant = accounts.start_site(account=account, plan=plan, **site)
+	audit("add_site", "GX Tenant", tenant)
+	return 201, {"site": s.site(frappe.get_doc("GX Tenant", tenant))}
 
 
 @endpoint(methods=("GET",), roles=("customer",))
