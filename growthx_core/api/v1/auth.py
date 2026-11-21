@@ -169,6 +169,9 @@ def signup():
 	password = _password(data) if not google or data.get("password") else frappe.generate_hash(length=32)
 	phone = get_str(data, "phone", max_length=20, label="Phone")
 	company = get_str(data, "company", required=account_type == "customer", label="Company")
+	if company and any(c in company for c in "<>"):
+		# it's the name on the customer's invoices until they set a billing name, which refuses these too
+		raise validation_error({"company": "Company can't contain < or >."})
 	client = _client(data)
 	site = _signup_site(data) if account_type == "customer" else {}
 	if not google or data.get("password"):

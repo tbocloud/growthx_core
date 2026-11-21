@@ -716,7 +716,7 @@ paths:
                     password". Unknown, expired or used: 400 `google_signup_expired` (go through Google again). A
                     form error (422, 409) keeps the token, so the user can fix the form and resubmit.
                 name: { type: string, maxLength: 140 }
-                company: { type: string, maxLength: 140, description: Required when accountType is customer }
+                company: { type: string, maxLength: 140, description: "Required when accountType is customer. Can't contain < or > (422 validation_failed)" }
                 email: { type: string, format: email, description: Required without googleSignupToken }
                 emailCode:
                   type: string

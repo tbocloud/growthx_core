@@ -2,7 +2,9 @@
 	GrowthX's GST tax invoice (growthx_core.billing.tax_invoice). One heading, in the page itself: no
 	letterhead, logo or repeated page header, so a one-line invoice is one page.
 	The supplier and recipient addresses are as stored on the invoice when it was made, printed with the
-	India Address Template (state, state code, GSTIN).
+	India Address Template (state, state code, GSTIN). The customer's name is escaped; the addresses are
+	the template's HTML, and billing details refuse < and > in every field (as sign-up does in the
+	company name).
 -#}
 <div class="gx-invoice">
 	<table class="gx-top">
@@ -23,7 +25,7 @@
 		<tr>
 			<td class="gx-buyer">
 				<div class="gx-label">Billed to</div>
-				<div><b>{{ doc.customer_name }}</b></div>
+				<div><b>{{ doc.customer_name | e }}</b></div>
 				<div class="gx-address">{{ doc.address_display or "" }}</div>
 			</td>
 			<td class="gx-supply">
@@ -65,7 +67,19 @@
 			<td>Taxable value</td>
 			<td class="gx-num">{{ doc.get_formatted("net_total") }}</td>
 		</tr>
-		{%- for tax in doc.taxes if tax.tax_amount %}
+		{#- CGST, SGST, IGST, then any others as on the invoice (India Compliance's In-State template
+			lists SGST first) #}
+		{%- set gst_order = ["cgst", "sgst", "igst"] %}
+		{%- set taxes = [] %}
+		{%- for tax_type in gst_order %}
+			{%- for tax in doc.taxes if tax.tax_amount and tax.gst_tax_type == tax_type %}
+				{%- set _ = taxes.append(tax) %}
+			{%- endfor %}
+		{%- endfor %}
+		{%- for tax in doc.taxes if tax.tax_amount and tax.gst_tax_type not in gst_order %}
+			{%- set _ = taxes.append(tax) %}
+		{%- endfor %}
+		{%- for tax in taxes %}
 		<tr>
 			<td>{{ tax.description }}{% if tax.rate %} @ {{ "%g"|format(tax.rate) }}%{% endif %}</td>
 			<td class="gx-num">{{ tax.get_formatted("tax_amount", doc) }}</td>

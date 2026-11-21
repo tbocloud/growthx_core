@@ -816,6 +816,11 @@ class TestCheckoutPayU(IntegrationTestCase):
 			"Amount due",
 		):
 			self.assertIn(text, " ".join(html.split()))
+		# CGST before SGST, the usual order (India Compliance's In-State template lists SGST first)
+		self.assertLess(html.index("CGST @ 9%"), html.index("SGST @ 9%"))
+		self.assertEqual(
+			[t.gst_tax_type for t in si.taxes], ["sgst", "cgst"], "the template's order changed; drop this"
+		)
 		# one heading, in the page: no letterhead, logo, or page header that wkhtmltopdf would repeat.
 		# (Counted in the format's own HTML: Frappe v16.35's print view also names the format,
 		# "GrowthX Tax Invoice", in its "Get PDF" link, which isn't printed.)
@@ -838,6 +843,17 @@ class TestCheckoutPayU(IntegrationTestCase):
 		self.assertEqual(status, 200)
 		self.assertIn("Paid", res.get_data(as_text=True))
 		self.assertNotIn("Amount due", res.get_data(as_text=True))
+
+	def test_invoice_pdf_escapes_the_customer_name(self):
+		# sign-up and billing details refuse < and >; an account from before they did
+		_, body = self._checkout()
+		si = self._invoice(body)
+		frappe.db.set_value("Sales Invoice", si.name, "customer_name", "<i>Solar</i> & Co")
+		status, res, _ = self._pdf(si.name)
+		self.assertEqual(status, 200, _last_error())
+		html = res.get_data(as_text=True)
+		self.assertIn("&lt;i&gt;Solar&lt;/i&gt; &amp; Co", html)
+		self.assertNotIn("<i>Solar", html)
 
 	def test_invoice_pdf_only_for_the_customers_issued_invoices(self):
 		_, body = self._checkout()
