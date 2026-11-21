@@ -114,6 +114,27 @@ class TestGstSetup(IntegrationTestCase):
 			frappe.db.get_value("Item Tax Template", item.taxes[0].item_tax_template, "gst_rate"), 18
 		)
 
+	def test_the_india_address_template_prints_the_gstin(self):
+		from india_compliance.gst_india.utils import get_data_file_path
+
+		wizard = "{{ address_line1 }}<br>{{ city }}<br>{{ country }}<br>"  # ERPNext's, roughly
+		if frappe.db.exists("Address Template", "India"):
+			frappe.db.set_value("Address Template", "India", "template", wizard)
+		else:
+			frappe.get_doc(
+				{"doctype": "Address Template", "country": "India", "is_default": 1, "template": wizard}
+			).insert()
+		gst.setup()
+		self.assertEqual(
+			frappe.db.get_value("Address Template", "India", "template"),
+			frappe.read_file(get_data_file_path("address_template.html")),
+		)
+		from frappe.contacts.doctype.address.address import render_address
+
+		html = render_address(gst._company_address(COMPANY), check_permissions=False)
+		self.assertIn("GSTIN: 32AAVFT5109L1ZQ", html)
+		self.assertIn("State Code: 32", html)
+
 	def test_running_again_changes_nothing(self):
 		gst.setup()
 		counts = lambda: (  # noqa: E731
@@ -125,6 +146,7 @@ class TestGstSetup(IntegrationTestCase):
 		modified = lambda: [  # noqa: E731
 			frappe.db.get_value("Company", COMPANY, "modified"),
 			frappe.db.get_value("Address", gst._company_address(COMPANY), "modified"),
+			frappe.db.get_value("Address Template", "India", "modified"),
 			frappe.db.get_value(
 				"Item", frappe.db.get_value("GX Plan", "test-gst-lifetime", "item"), "modified"
 			),
