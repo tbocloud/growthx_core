@@ -16,10 +16,12 @@ class RecordingPress(FakePressClient):
 	def __init__(self):
 		super().__init__()
 		self.configured = []
+		self.themes = []
 		self.installed = []
 
 	def configure_site(self, site_id, settings, theme=True):
 		self.configured.append((site_id, settings))
+		self.themes.append(theme)
 
 	def install_app(self, site_id, app):
 		self.installed.append((site_id, app))
@@ -237,6 +239,14 @@ class TestProvisioningSSO(TenantSSOTestCase):
 		self.assertEqual(settings["owner_name"], "Sso Owner")
 		self.assertFalse(settings["reset_owner_password"])
 		self.assertNotIn("password", {k for k in settings if k != "reset_owner_password"})
+		self.assertEqual(press.themes, [True])
+
+	def test_configure_step_without_the_theme_uses_erpnext_setup(self):
+		frappe.db.set_value("GX Product", PRODUCT, "install_theme", 0)
+		tenant = self.make_tenant(status="provisioning")
+		press = RecordingPress()
+		runner._configure(tenant, None, press)
+		self.assertEqual(press.themes, [False])
 
 	def test_new_sites_get_growthx_theme(self):
 		tenant = self.make_tenant(status="provisioning")
