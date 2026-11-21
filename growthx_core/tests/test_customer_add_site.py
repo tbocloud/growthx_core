@@ -117,3 +117,29 @@ class TestCustomerAddSite(IntegrationTestCase):
 		status, body = self._add(subdomain="add-site-taken")
 		self.assertEqual(status, 409)
 		self.assertEqual(body["error"]["code"], "subdomain_taken")
+
+	def test_open_my_app_without_the_theme_opens_the_sites_own_login(self):
+		# Laundry: no growthx_theme, so the single-sign-on path would 404 — its login page instead.
+		frappe.db.set_value("GX Product", PRODUCT, "install_theme", 0)
+		self._own_site()
+		tenant = frappe.get_doc("GX Tenant", {"account": self.account.name})
+		frappe.db.set_value("GX Tenant", tenant.name, "site_url", "https://add-site-sso.tbogrowthx.com")
+		with patch.object(customer.site_login, "issue") as issue:
+			status, body = _call(customer.open_site, {"id": tenant.name})
+		self.assertEqual(status, 200)
+		self.assertEqual(body["url"], "https://add-site-sso.tbogrowthx.com/login")
+		self.assertTrue(body["expiresAt"])
+		issue.assert_not_called()
+
+	def test_open_my_app_with_the_theme_is_a_single_use_link(self):
+		self._own_site()
+		tenant = frappe.get_doc("GX Tenant", {"account": self.account.name})
+		frappe.db.set_value("GX Tenant", tenant.name, "site_url", "https://add-site-sso.tbogrowthx.com")
+		status, body = _call(customer.open_site, {"id": tenant.name})
+		self.assertEqual(status, 200)
+		self.assertTrue(
+			body["url"].startswith(
+				"https://add-site-sso.tbogrowthx.com/api/method/growthx_theme.sso.login?token="
+			),
+			body,
+		)
