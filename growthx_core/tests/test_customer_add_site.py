@@ -26,7 +26,12 @@ class TestCustomerAddSite(IntegrationTestCase):
 	def setUp(self):
 		frappe.set_user("Administrator")
 		self.product = frappe.get_doc(
-			{"doctype": "GX Product", "slug": PRODUCT, "product_name": "Add Site", "availability": "available"}
+			{
+				"doctype": "GX Product",
+				"slug": PRODUCT,
+				"product_name": "Add Site",
+				"availability": "available",
+			}
 		).insert()
 		frappe.get_doc(
 			{
