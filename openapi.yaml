@@ -1127,6 +1127,35 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
 
+  /growthx_core.api.v1.customer.delete_account:
+    post:
+      tags: [customer]
+      summary: Close the account (delete it)
+      description: |
+        Cancels the account's subscriptions, archives its sites (Press backs each one up before deleting it)
+        and blocks signing in; every session is revoked. Tax invoices are kept — GST keeps them, and they
+        carry the customer's name. `422 validation_failed` with `fields.confirm` when the typed confirmation
+        isn't the account's email address.
+      operationId: deleteCustomerAccount
+      x-phase: 2
+      x-roles: [customer]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm]
+              properties:
+                confirm: { type: string, description: "The customer types their email address to confirm", example: noor@noorsolar.com }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
   /growthx_core.api.v1.customer.site:
     get:
       tags: [customer]

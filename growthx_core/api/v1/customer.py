@@ -3,7 +3,7 @@ from datetime import timedelta
 import frappe
 from frappe.utils import now_datetime
 
-from growthx_core import accounts
+from growthx_core import accounts, tokens
 from growthx_core.api.v1 import _serializers as s
 from growthx_core.api.v1 import auth
 from growthx_core.api.v1._core import (
@@ -25,6 +25,7 @@ from growthx_core.api.v1._core import (
 )
 from growthx_core.billing import billing_details as billing_details_store
 from growthx_core.billing import payu, tax_invoice
+from growthx_core.billing.doctype.gx_subscription.gx_subscription import sync_account_status
 from growthx_core.provisioning import custom_domains, runner, site_login
 
 SITE_FIELDS = [
@@ -110,6 +111,36 @@ def add_site():
 	tenant = accounts.start_site(account=account, plan=plan, **site)
 	audit("add_site", "GX Tenant", tenant)
 	return 201, {"site": s.site(frappe.get_doc("GX Tenant", tenant))}
+
+
+@endpoint(
+	methods=("POST",), roles=("customer",), idempotent=True, rate_limit=RateLimit(5, 3600, by_user=True)
+)
+def delete_account():
+	"""Close the customer's account: cancel its subscriptions, archive its sites (Press backs each one
+	up first) and block signing in. Tax invoices are kept: GST needs them, and they carry the name."""
+	account = current_account(["name", "contact_email", "user"])
+	confirm = get_str(body(), "confirm", required=True, max_length=140)
+	if confirm.strip().lower() != (account.contact_email or "").lower():
+		message = "Type your email address to confirm."
+		raise validation_error({"confirm": message})
+
+	for name in frappe.get_all(
+		"GX Subscription",
+		filters={"account": account.name, "status": ("in", ("trialing", "active", "past_due", "suspended"))},
+		pluck="name",
+	):
+		frappe.db.set_value("GX Subscription", name, "status", "canceled")
+	sync_account_status(account.name)
+	for name in frappe.get_all(
+		"GX Tenant", filters={"account": account.name, "status": ("!=", "archived")}, pluck="name"
+	):
+		runner.archive(name)
+
+	tokens.revoke_all(account.user)
+	frappe.db.set_value("User", account.user, "enabled", 0)
+	audit("delete_account", "GX Account", account.name)
+	return {"ok": True}
 
 
 @endpoint(methods=("GET",), roles=("customer",))
