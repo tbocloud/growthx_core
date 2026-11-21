@@ -18,7 +18,7 @@ class RecordingPress(FakePressClient):
 		self.configured = []
 		self.installed = []
 
-	def configure_site(self, site_id, settings):
+	def configure_site(self, site_id, settings, theme=True):
 		self.configured.append((site_id, settings))
 
 	def install_app(self, site_id, app):

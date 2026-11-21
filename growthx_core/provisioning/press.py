@@ -13,6 +13,7 @@ import re
 import shlex
 import subprocess
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from urllib.parse import urlsplit
 
 import frappe
@@ -85,7 +86,7 @@ class PressClient:
 		"""Bring a suspended site back online."""
 		raise NotImplementedError
 
-	def configure_site(self, site_id: str, settings: dict) -> dict | None:
+	def configure_site(self, site_id: str, settings: dict, theme: bool = True) -> dict | None:
 		"""Set up a new site. Safe to run again on a configured site.
 
 		`settings`: company_name, country, currency, timezone, plus for single sign-on:
@@ -95,6 +96,8 @@ class PressClient:
 		- core_url, tenant_key: stored on the site for growthx_theme's sso.login.
 		Also enables "Login with Email Link" as the fallback way in.
 		Returns the GrowthX service user's {"apiKey", "apiSecret"} when the site has one.
+		`theme` is False for a product that doesn't install growthx_theme (GX Product.install_theme):
+		the site then gets ERPNext's own set-up wizard instead, and has no single sign-on.
 		The vertical's own set-up (solar) is being agreed with Nahala."""
 		raise NotImplementedError
 
@@ -161,7 +164,7 @@ class FakePressClient(PressClient):
 	def resume_site(self, site_id):
 		pass
 
-	def configure_site(self, site_id, settings):
+	def configure_site(self, site_id, settings, theme=True):
 		self._maybe_fail("configure")
 
 	def health_check(self, site_url):
@@ -334,18 +337,95 @@ class RealPressClient(PressClient):
 		self._own(site_id)
 		self._call("press.api.site.activate", name=site_id)
 
-	def configure_site(self, site_id, settings):
+	def configure_site(self, site_id, settings, theme=True):
 		"""Log in as Administrator through Press, then run growthx_theme's set-up on the site.
 
 		The tenant key goes to the site directly over HTTPS, never through Press's update_config,
 		whose values can end up in Press-side logs."""
 		self._own(site_id)
 		login = self._call("press.api.site.login", name=site_id, reason="GrowthX provisioning")
+		cookies = {"sid": login["sid"]}
+		if not theme:
+			self._configure_erpnext(site_id, settings, cookies)
+			return None
 		try:
 			r = requests.post(
 				f"https://{site_id}/api/method/growthx_theme.setup.configure",
 				json={"settings": settings},
-				cookies={"sid": login["sid"]},
+				cookies=cookies,
+				timeout=300,  # the setup wizard takes a minute or two
+				allow_redirects=False,
+			)
+		except requests.RequestException as e:
+			raise PressError(f"Configuring {site_id}: site unreachable ({type(e).__name__})") from None
+		if r.status_code != 200:
+			raise PressError(f"Configuring {site_id}: HTTP {r.status_code} {_error_text(r)}")
+		return r.json().get("message")
+
+	def _configure_erpnext(self, site_id, settings, cookies):
+		"""A product without growthx_theme: ERPNext's own setup wizard (company, chart of accounts,
+		fiscal year), the customer's user, and "Login with Email Link" as the way in. A site without
+		the theme has no single sign-on, so this is what makes it usable."""
+		if not self._site_call(
+			site_id,
+			cookies,
+			"frappe.client.get_single_value",
+			{"doctype": "System Settings", "fieldname": "setup_complete"},
+		):
+			start, end = fiscal_year(settings.get("fiscal_year_start") or "04-01", date.today())
+			self._site_call(
+				site_id,
+				cookies,
+				"frappe.desk.page.setup_wizard.setup_wizard.setup_complete",
+				{
+					"args": json.dumps(
+						{
+							"language": "English",
+							"country": settings.get("country") or "India",
+							"currency": settings.get("currency") or "INR",
+							"timezone": settings.get("timezone") or "Asia/Kolkata",
+							"company_name": settings.get("company_name") or site_id,
+							"chart_of_accounts": settings.get("chart_of_accounts") or "Standard",
+							"fy_start_date": start.isoformat(),
+							"fy_end_date": end.isoformat(),
+						}
+					)
+				},
+			)
+		email = settings.get("owner_email")
+		if email:
+			first, _, last = (settings.get("owner_name") or email).partition(" ")
+			user = {
+				"doctype": "User",
+				"email": email,
+				"first_name": first,
+				"last_name": last or None,
+				"send_welcome_email": 0,
+				"roles": [{"role": "System Manager"}],
+			}
+			try:
+				self._site_call(site_id, cookies, "frappe.client.insert", {"doc": json.dumps(user)})
+			except PressError:
+				pass  # the user is there already (a retry): the rest of the set-up still runs
+		self._site_call(
+			site_id,
+			cookies,
+			"frappe.client.set_value",
+			{
+				"doctype": "System Settings",
+				"name": "System Settings",
+				"fieldname": "login_with_email_link",
+				"value": 1,
+			},
+		)
+
+	def _site_call(self, site_id, cookies, method, params):
+		"""Call a whitelisted method on the site as the Administrator session Press just gave us."""
+		try:
+			r = requests.post(
+				f"https://{site_id}/api/method/{method}",
+				json=params,
+				cookies=cookies,
 				timeout=300,  # the setup wizard takes a minute or two
 				allow_redirects=False,
 			)
@@ -432,6 +512,16 @@ def _exc_type(response) -> str | None:
 		return response.json().get("exc_type")
 	except (ValueError, AttributeError):
 		return None
+
+
+def fiscal_year(start: str, today: date) -> tuple[date, date]:
+	"""The fiscal year containing `today` for a year that starts on `start` ("MM-DD"): India 04-01
+	(April to March), UAE 01-01 (the calendar year). As growthx_theme.setup.fiscal_year."""
+	month, day = (int(part) for part in start.split("-"))
+	first = date(today.year, month, day)
+	if first > today:
+		first = date(today.year - 1, month, day)
+	return first, date(first.year + 1, month, day) - timedelta(days=1)
 
 
 def _app_name(row) -> str:
@@ -601,8 +691,13 @@ class LocalPressClient(PressClient):
 		if app not in installed:
 			self._frappe("--site", site_id, "install-app", app)
 
-	def configure_site(self, site_id, settings):
+	def configure_site(self, site_id, settings, theme=True):
 		"""Run growthx_theme's set-up on the site, the same code Core calls on Press sites."""
+		if not theme:
+			raise PressError(
+				f"{site_id} has no growthx_theme: Core sets up such sites on Press only (see "
+				"RealPressClient._configure_erpnext)"
+			)
 		public = {k: v for k, v in settings.items() if k != "tenant_key"}
 		code = f"""
 import json, os, frappe
