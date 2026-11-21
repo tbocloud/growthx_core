@@ -6,6 +6,7 @@ Payment Entry are real ERPNext documents.
 """
 
 import json
+import re
 import unittest
 from contextlib import contextmanager
 from unittest.mock import patch
@@ -817,7 +818,8 @@ class TestCheckoutPayU(IntegrationTestCase):
 		):
 			self.assertIn(text, " ".join(html.split()))
 		# one heading, in the page: no letterhead, logo, or page header that wkhtmltopdf would repeat
-		self.assertEqual(html.count("Tax Invoice"), 1)
+		headings = [html[max(m.start() - 200, 0) : m.end() + 50] for m in re.finditer("Tax Invoice", html)]
+		self.assertEqual(len(headings), 1, headings)
 		for text in ("GX-LETTERHEAD-MARK", "<img", 'id="header-html"', 'id="footer-html"'):
 			self.assertNotIn(text, html)
 		# (India Compliance's format, by contrast, puts its heading in the repeated page header)
