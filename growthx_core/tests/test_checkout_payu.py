@@ -816,9 +816,19 @@ class TestCheckoutPayU(IntegrationTestCase):
 			"Amount due",
 		):
 			self.assertIn(text, " ".join(html.split()))
-		# one heading, in the page: no letterhead, logo, or page header that wkhtmltopdf would repeat
-		self.assertEqual(html.count("Tax Invoice"), 1)
-		for text in ("GX-LETTERHEAD-MARK", "<img", 'id="header-html"', 'id="footer-html"'):
+		# one heading, in the page: no letterhead, logo, or page header that wkhtmltopdf would repeat.
+		# (Counted in the format's own HTML: Frappe v16.35's print view also names the format,
+		# "GrowthX Tax Invoice", in its "Get PDF" link, which isn't printed.)
+		invoice = html[html.index('<div class="gx-invoice">') :]
+		self.assertEqual(invoice.count("Tax Invoice"), 1, invoice)
+		for text in (
+			"GX-LETTERHEAD-MARK",
+			'class="letter-head"',
+			'class="print-heading"',
+			"<img",
+			'id="header-html"',
+			'id="footer-html"',
+		):
 			self.assertNotIn(text, html)
 		# (India Compliance's format, by contrast, puts its heading in the repeated page header)
 		self.assertIn('id="header-html"', self._print_html(si.name, "GST Tax Invoice"))
