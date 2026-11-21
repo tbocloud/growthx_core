@@ -330,7 +330,14 @@ class TestRealPress(IntegrationTestCase):
 		# an outgoing Email Account; its settings are Core's own.
 		frappe.db.set_value("GX Product", PRODUCT, "install_theme", 0)
 		tenant = self._tenant(press_site_id="test-acme-solar.tbogrowthx.com")
-		mail = {"email_id": "noreply@example.com", "smtp_server": "smtp.example.com", "smtp_port": "465"}
+		mail = {
+			"email_id": "noreply@example.com",
+			"smtp_server": "smtp.example.com",
+			"smtp_port": "465",
+			"default_outgoing": 1,
+			"enable_outgoing": 1,
+			"enable_incoming": 0,
+		}
 		post, _calls = self._site_post()
 		with (
 			patch.object(press.requests, "post", side_effect=post) as requests_post,
@@ -342,8 +349,9 @@ class TestRealPress(IntegrationTestCase):
 		]
 		self.assertIn("Email Account", [doc["doctype"] for doc in docs])
 		email_account = next(doc for doc in docs if doc["doctype"] == "Email Account")
-		self.assertEqual(email_account["smtp_server"], "smtp.example.com")
-		self.assertEqual(email_account["default_outgoing"], 1)
+		# Every setting Core's own account carries reaches the site, unchanged: a missing
+		# `default_outgoing` (or `login_id_is_different`) is a site nobody can sign in to.
+		self.assertEqual({key: value for key, value in email_account.items() if key != "doctype"}, mail)
 
 	def test_configure_without_the_theme_is_safe_to_retry(self):
 		frappe.db.set_value("GX Product", PRODUCT, "install_theme", 0)
