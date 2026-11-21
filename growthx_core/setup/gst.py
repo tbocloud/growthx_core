@@ -18,6 +18,8 @@
 7. The India Address Template is India Compliance's, which prints the state code and the GSTIN (the
    invoice prints addresses with it). India Compliance only creates it where there is none, and
    ERPNext's setup wizard made its own first.
+8. The Sales Invoice default print format is GrowthX's "GrowthX Tax Invoice" (growthx_core.billing,
+   synced by migrate), the one customers download, so the desk prints the same invoice.
 
 site_config:
     "growthx_company": the selling Company (default: the global default company).
@@ -60,6 +62,7 @@ def setup(company: str | None = None) -> str:
 	_series()
 	_gst_settings()
 	_address_template()
+	_print_format()
 	seed.plan_items(commit=False)
 	return company
 
@@ -216,6 +219,25 @@ def _address_template():
 	if doc.template != template:
 		doc.template = template
 		doc.save(ignore_permissions=True)
+
+
+def _print_format():
+	from growthx_core.billing.tax_invoice import PRINT_FORMAT
+
+	if not frappe.db.exists("Print Format", PRINT_FORMAT):
+		frappe.throw(f"Print Format {PRINT_FORMAT} is missing; run bench migrate first.")
+	if frappe.get_meta("Sales Invoice").default_print_format != PRINT_FORMAT:
+		frappe.make_property_setter(
+			{
+				"doctype": "Sales Invoice",
+				"doctype_or_field": "DocType",
+				"property": "default_print_format",
+				"value": PRINT_FORMAT,
+			},
+			validate_fields_for_doctype=False,
+			is_system_generated=False,
+		)
+		frappe.clear_cache(doctype="Sales Invoice")
 
 
 def _series():

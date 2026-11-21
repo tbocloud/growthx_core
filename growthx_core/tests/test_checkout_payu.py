@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import frappe
 from frappe.tests import IntegrationTestCase
-from frappe.utils import getdate, nowdate
+from frappe.utils import fmt_money, getdate, nowdate
 from werkzeug.test import EnvironBuilder
 
 from growthx_core import accounts
@@ -102,6 +102,7 @@ def ensure_gst_company():
 		gst._series()
 		gst._gst_settings()
 		gst._address_template()
+		gst._print_format()
 	frappe.db.commit()
 
 
@@ -758,13 +759,14 @@ class TestCheckoutPayU(IntegrationTestCase):
 		finally:
 			frappe.set_user("Administrator")
 
-	def _print_html(self, invoice, **kwargs):
+	def _print_html(self, invoice, print_format):
 		with payu._as_administrator(), self._print_view():
-			return frappe.get_print("Sales Invoice", invoice, tax_invoice.PRINT_FORMAT, **kwargs)
+			return frappe.get_print("Sales Invoice", invoice, print_format)
 
 	def test_invoice_pdf_is_the_gst_tax_invoice(self):
 		self._billing(gstin=KERALA_GSTIN)
-		# a default letterhead, as ERPNext's setup wizard makes: the format has its own header
+		# as on core-test: a default letterhead (ERPNext's setup wizard makes one), no company logo, and
+		# headers repeated on every PDF page
 		frappe.get_doc(
 			{
 				"doctype": "Letter Head",
@@ -775,6 +777,8 @@ class TestCheckoutPayU(IntegrationTestCase):
 			}
 		).insert()
 		frappe.db.set_value("Company", COMPANY, "company_logo", None)
+		frappe.db.set_single_value("Print Settings", "repeat_header_footer", 1)
+		self.addCleanup(frappe.clear_document_cache, "Print Settings", "Print Settings")  # rolled back
 		_, body = self._checkout()
 		si = self._invoice(body)
 		status, res, _ = self._pdf(si.name)
@@ -784,17 +788,46 @@ class TestCheckoutPayU(IntegrationTestCase):
 			res.headers["Content-Disposition"], f'attachment; filename="{si.name.replace("/", "-")}.pdf"'
 		)
 		html = res.get_data(as_text=True)
-		texts = (si.name, "Checkout Solar", "32AAVFT5109L1ZQ", "32-Kerala", "CGST", "SGST")
-		for text in (*texts, f"GSTIN: {KERALA_GSTIN}"):  # the customer's, from the address template
-			self.assertIn(text, html)
-		self.assertNotIn("GX-LETTERHEAD-MARK", html)
-		# no logo: the format's <img src="None"> would make wkhtmltopdf fail; it's removed
-		self.assertNotRegex(html, r"<img[^>]*src=\"None\"")
-		self.assertRegex(self._print_html(si.name, no_letterhead=1), r"<img[^>]*src=\"None\"")
-		self.assertIn("GX-LETTERHEAD-MARK", self._print_html(si.name))
+
+		# the supplier: our name, address, state with its code, and GSTIN, at the top
+		seller = html[html.index('class="gx-seller"') : html.index('class="gx-title"')]
+		for text in (
+			COMPANY,
+			"Hilite Business Park",
+			"Calicut",
+			"Kerala, State Code: 32",
+			"PIN Code: 673014",
+			"GSTIN: 32AAVFT5109L1ZQ",
+		):
+			self.assertIn(text, seller)
+		# the recipient, and the GST against its amount
+		row = '{}</td> <td class="gx-num">{}'.format
+		inr = lambda amount: fmt_money(amount, currency="INR")  # noqa: E731
+		for text in (
+			si.name,
+			"Checkout Solar",
+			f"GSTIN: {KERALA_GSTIN}",
+			"32-Kerala",
+			"998315",
+			row("Taxable value", inr(127118.64)),
+			row("CGST @ 9%", inr(11440.68)),
+			row("SGST @ 9%", inr(11440.68)),
+			row("Total", inr(150000)),
+			"Amount due",
+		):
+			self.assertIn(text, " ".join(html.split()))
+		# one heading, in the page: no letterhead, logo, or page header that wkhtmltopdf would repeat
+		self.assertEqual(html.count("Tax Invoice"), 1)
+		for text in ("GX-LETTERHEAD-MARK", "<img", 'id="header-html"', 'id="footer-html"'):
+			self.assertNotIn(text, html)
+		# (India Compliance's format, by contrast, puts its heading in the repeated page header)
+		self.assertIn('id="header-html"', self._print_html(si.name, "GST Tax Invoice"))
 
 		self._pay(si.name)
-		self.assertEqual(self._pdf(si.name)[0], 200)  # paid
+		status, res, _ = self._pdf(si.name)
+		self.assertEqual(status, 200)
+		self.assertIn("Paid", res.get_data(as_text=True))
+		self.assertNotIn("Amount due", res.get_data(as_text=True))
 
 	def test_invoice_pdf_only_for_the_customers_issued_invoices(self):
 		_, body = self._checkout()
