@@ -134,7 +134,8 @@ class TestGoogleSignin(IntegrationTestCase):
 		accounts.create_customer_account(
 			email=deleted, full_name="Deleted Customer", company="Deleted Co", password="x" * 20
 		)
-		frappe.db.set_value("GX Account", {"user": deleted}, "status", "churned")
+		before = frappe.db.get_value("GX Account", {"user": deleted})  # the link to the user is unique
+		frappe.db.set_value("GX Account", before, "status", "churned")
 		frappe.db.set_value("User", deleted, "enabled", 0)
 
 		with _google(email=deleted):
@@ -149,10 +150,10 @@ class TestGoogleSignin(IntegrationTestCase):
 		self.assertEqual(status, 201, body)
 		self.assertEqual(body["user"]["email"], deleted)
 		self.assertEqual(frappe.db.get_value("User", deleted, "enabled"), 1)
-		self.assertEqual(
-			sorted(frappe.get_all("GX Account", filters={"user": deleted}, pluck="status")),
-			["churned", "trial"],
-		)
+		# The same account, back on a trial, on the same Customer so its invoices still match.
+		account = frappe.get_doc("GX Account", before)
+		self.assertEqual((account.status, account.account_name), ("trial", "New Co"))
+		self.assertTrue(frappe.db.exists("Customer", account.customer))
 
 	def test_a_blocked_account_with_a_live_account_still_cannot_sign_in(self):
 		blocked = "gx-google-blocked@example.com"

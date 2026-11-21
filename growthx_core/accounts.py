@@ -120,39 +120,60 @@ def create_customer_account(
 	user = create_user(email, full_name, password, CUSTOMER_ROLE, phone)
 	partner = referrals.resolve(referral_code, email)
 
-	customer = frappe.get_doc(
-		{
-			"doctype": "Customer",
-			"customer_name": company,
-			"customer_type": "Company",
-			"customer_group": default_link("Customer Group"),
-			"territory": default_link("Territory"),
-			"email_id": email,
-			"mobile_no": phone,
-		}
-	)
-	if partner and partner.sales_partner:
-		# Sales Invoices for this customer then carry the partner, so ERPNext computes commission.
-		customer.default_sales_partner = partner.sales_partner
-		customer.default_commission_rate = frappe.db.get_value(
-			"Sales Partner", partner.sales_partner, "commission_rate"
+	# A deleted account signing up again: `user` keeps its one GX Account (the link is unique), so
+	# reset it to a fresh trial on the same Customer instead of inserting a second one.
+	reviving = frappe.db.get_value("GX Account", {"user": user}, ["name", "customer"], as_dict=True)
+	if reviving:
+		customer = reviving.customer
+		if customer and frappe.db.exists("Customer", customer):
+			frappe.db.set_value("Customer", customer, {"email_id": email, "mobile_no": phone})
+		account = frappe.get_doc("GX Account", reviving.name)
+		account.update(
+			{
+				"account_name": company,
+				"contact_email": email,
+				"phone": phone,
+				"referred_by": partner.name if partner else None,
+				"referral_code": referral_code.strip().upper() if partner and referral_code else None,
+				"referred_at": now_datetime() if partner else None,
+				"status": "trial",
+			}
 		)
-	customer.insert(ignore_permissions=True)
+		account.save(ignore_permissions=True)
+	else:
+		customer = frappe.get_doc(
+			{
+				"doctype": "Customer",
+				"customer_name": company,
+				"customer_type": "Company",
+				"customer_group": default_link("Customer Group"),
+				"territory": default_link("Territory"),
+				"email_id": email,
+				"mobile_no": phone,
+			}
+		)
+		if partner and partner.sales_partner:
+			# Sales Invoices for this customer then carry the partner, so ERPNext computes commission.
+			customer.default_sales_partner = partner.sales_partner
+			customer.default_commission_rate = frappe.db.get_value(
+				"Sales Partner", partner.sales_partner, "commission_rate"
+			)
+		customer.insert(ignore_permissions=True)
 
-	account = frappe.get_doc(
-		{
-			"doctype": "GX Account",
-			"account_name": company,
-			"user": user,
-			"contact_email": email,
-			"phone": phone,
-			"customer": customer.name,
-			"referred_by": partner.name if partner else None,
-			"referral_code": referral_code.strip().upper() if partner and referral_code else None,
-			"referred_at": now_datetime() if partner else None,
-			"status": "trial",
-		}
-	).insert(ignore_permissions=True)
+		account = frappe.get_doc(
+			{
+				"doctype": "GX Account",
+				"account_name": company,
+				"user": user,
+				"contact_email": email,
+				"phone": phone,
+				"customer": customer.name,
+				"referred_by": partner.name if partner else None,
+				"referral_code": referral_code.strip().upper() if partner and referral_code else None,
+				"referred_at": now_datetime() if partner else None,
+				"status": "trial",
+			}
+		).insert(ignore_permissions=True)
 
 	if account.referred_by:
 		_notify_partner(account)
