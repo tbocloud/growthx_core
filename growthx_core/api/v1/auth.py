@@ -143,6 +143,9 @@ def send_signup_code():
 
 
 def _email_taken(email: str) -> bool:
+	# An email a deleted account left behind (disabled user, only churned accounts) is free again.
+	if accounts.reusable_user(email):
+		return False
 	return bool(frappe.db.exists("User", {"email": email}) or frappe.db.exists("User", email))
 
 

@@ -11,8 +11,38 @@ CUSTOMER_ROLE = "GrowthX Customer"
 PARTNER_ROLE = "GrowthX Partner"
 
 
+def reusable_user(email: str) -> str | None:
+	"""The user a deleted account left behind: disabled, and every account it has is `churned`.
+	Deleting an account blocks signing in, but does not keep the email for good, so the same
+	address may sign up again."""
+	user = frappe.db.get_value("User", {"email": email}, ["name", "enabled"], as_dict=True)
+	if not user or user.enabled:
+		return None
+	statuses = frappe.get_all("GX Account", filters={"user": user.name}, pluck="status")
+	if not statuses or any(status != "churned" for status in statuses):
+		return None
+	return user.name
+
+
 def create_user(email: str, full_name: str, password: str, role: str, phone: str | None = None) -> str:
 	first, _, last = full_name.partition(" ")
+	existing = reusable_user(email)
+	if existing:
+		user = frappe.get_doc("User", existing)
+		user.update(
+			{
+				"first_name": first,
+				"last_name": last or None,
+				"mobile_no": phone,
+				"user_type": "Website User",
+				"enabled": 1,
+			}
+		)
+		user.new_password = password
+		user.append_roles(role)
+		user.flags.no_welcome_mail = True
+		user.save(ignore_permissions=True)
+		return user.name
 	user = frappe.get_doc(
 		{
 			"doctype": "User",
