@@ -95,6 +95,8 @@ class TestAdminAdoptSite(IntegrationTestCase):
 
 	def _adopt(self, rows=None, **body):
 		data = {"site": SITE, "plan": PLAN, "email": EMAIL, "accountName": "Direct Co", **body}
+		# Press's list is cached for 60 s, and each call here has its own list.
+		frappe.cache.delete_value(admin.PRESS_SITES_CACHE)
 		with self._client(rows):
 			return _call(admin.adopt_site, data)
 
@@ -128,7 +130,7 @@ class TestAdminAdoptSite(IntegrationTestCase):
 		self.assertEqual(sub.status, "active")
 		self.assertIsNone(sub.trial_ends_at)  # a direct site is billed, not tried
 		self.assertEqual(sub.tenant, tenant.name)
-		self.assertEqual(getdate(sub.current_period_end), add_months(nowdate(), 1))
+		self.assertEqual(getdate(sub.current_period_end), getdate(add_months(nowdate(), 1)))
 
 		self.assertTrue(
 			frappe.db.exists("GX Audit Log", {"action": "adopt_site", "reference_name": tenant.name})
@@ -161,7 +163,7 @@ class TestAdminAdoptSite(IntegrationTestCase):
 		status, _body = self._adopt()
 		self.assertEqual(status, 200)
 		self.assertEqual(self._tenant().account, account.name)
-		self.assertEqual(frappe.get_all("GX Account", {"contact_email": EMAIL}), [account.name])
+		self.assertEqual(frappe.get_all("GX Account", {"contact_email": EMAIL}, pluck="name"), [account.name])
 
 	def test_a_site_growthx_already_manages_is_refused(self):
 		self._adopt()
