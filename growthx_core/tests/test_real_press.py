@@ -325,6 +325,26 @@ class TestRealPress(IntegrationTestCase):
 		hsn = [c.kwargs["json"]["value"] for c in set_values if c.kwargs["json"]["doctype"] == "GST Settings"]
 		self.assertEqual(hsn, [0, 1])  # off for the vertical's own set-up, then back on
 
+	def test_configure_without_the_theme_gives_the_site_outgoing_email(self):
+		# "Login with Email Link" is the only way into a site without growthx_theme, so it needs
+		# an outgoing Email Account; its settings are Core's own.
+		frappe.db.set_value("GX Product", PRODUCT, "install_theme", 0)
+		tenant = self._tenant(press_site_id="test-acme-solar.tbogrowthx.com")
+		mail = {"email_id": "noreply@example.com", "smtp_server": "smtp.example.com", "smtp_port": "465"}
+		post, _calls = self._site_post()
+		with (
+			patch.object(press.requests, "post", side_effect=post) as requests_post,
+			patch.object(runner, "mail_account", return_value=mail),
+		):
+			runner.configure(tenant, self.client)
+		docs = [
+			json.loads(c.kwargs["json"]["doc"]) for c in requests_post.call_args_list if "insert" in c.args[0]
+		]
+		self.assertIn("Email Account", [doc["doctype"] for doc in docs])
+		email_account = next(doc for doc in docs if doc["doctype"] == "Email Account")
+		self.assertEqual(email_account["smtp_server"], "smtp.example.com")
+		self.assertEqual(email_account["default_outgoing"], 1)
+
 	def test_configure_without_the_theme_is_safe_to_retry(self):
 		frappe.db.set_value("GX Product", PRODUCT, "install_theme", 0)
 		tenant = self._tenant(press_site_id="test-acme-solar.tbogrowthx.com")
