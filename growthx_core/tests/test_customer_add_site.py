@@ -17,7 +17,11 @@ def _call(fn, data=None):
 	frappe.local.form_dict = frappe._dict(data or {})
 	frappe.local.request = None
 	frappe.local.request_ip = "127.0.0.1"
-	with patch.object(_core, "_idempotency_key", return_value=None):  # no request headers here
+	with (
+		patch.object(_core, "_idempotency_key", return_value=None),  # no request headers here
+		patch.object(_core, "_require_auth"),  # the caller is the signed-in customer
+		patch.object(frappe.db, "rollback"),  # an error response would roll back this test's data
+	):
 		response = fn()
 	return response.status_code, json.loads(response.get_data())
 
@@ -76,7 +80,7 @@ class TestCustomerAddSite(IntegrationTestCase):
 				"subdomain": f"add-site-{frappe.generate_hash(length=6)}",
 				"status": "ready",
 			}
-		).insert(ignore_mandatory=True)
+		).insert(ignore_permissions=True, ignore_mandatory=True)
 
 	def test_an_existing_customer_adds_another_app(self):
 		status, body = self._add(subdomain="add-site-orders")
@@ -109,7 +113,7 @@ class TestCustomerAddSite(IntegrationTestCase):
 				"subdomain": "add-site-taken",
 				"status": "archived",
 			}
-		).insert(ignore_mandatory=True)
+		).insert(ignore_permissions=True, ignore_mandatory=True)
 		status, body = self._add(subdomain="add-site-taken")
 		self.assertEqual(status, 409)
 		self.assertEqual(body["error"]["code"], "subdomain_taken")
