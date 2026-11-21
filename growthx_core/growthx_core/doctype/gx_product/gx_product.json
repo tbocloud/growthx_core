@@ -15,6 +15,7 @@
   "press_release_group",
   "apps_section",
   "apps",
+  "install_theme",
   "section_break_1",
   "summary"
  ],
@@ -72,11 +73,18 @@
    "label": "Apps on customer sites"
   },
   {
-   "description": "Default apps for every new site of this product, installed in this order after frappe and erpnext (always installed first). Add or remove rows to change what new sites get; existing sites keep theirs. growthx_theme is required (\"Open my app\" sign-in). Every app must also be in the product's Press release group.",
+   "description": "Default apps for every new site of this product, installed in this order after frappe and erpnext (always installed first). Add or remove rows to change what new sites get; existing sites keep theirs. Every app must also be in the product's Press release group.",
    "fieldname": "apps",
    "fieldtype": "Table",
    "label": "Apps",
    "options": "GX Product App"
+  },
+  {
+   "default": "1",
+   "description": "Install growthx_theme on new sites (the \"Open my app\" single sign-on). Turn off when the product's app signs customers in itself, e.g. Laundry.",
+   "fieldname": "install_theme",
+   "fieldtype": "Check",
+   "label": "Install growthx_theme"
   },
   {
    "fieldname": "section_break_1",
@@ -91,7 +99,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-10-24 10:00:00.000000",
+ "modified": "2026-11-21 13:20:00.000000",
  "modified_by": "Administrator",
  "module": "GrowthX Core",
  "name": "GX Product",

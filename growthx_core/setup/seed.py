@@ -81,6 +81,14 @@ PRODUCTS = [
 		product_name="GrowthX Laundry",
 		category="Laundry & dry cleaning",
 		summary="Track every order from pickup to delivery.",
+		availability="available",
+		# The Laundry app signs its own users in, so these sites don't get growthx_theme.
+		apps=[
+			{"app_name": "india_compliance", "repository": "https://github.com/frappe/india_compliance.git"},
+			{"app_name": "laundry", "repository": "https://github.com/crenya/laundry.git"},
+		],
+		install_theme=0,
+		press_release_group="laundry",  # development placeholder; real Press needs its group ID
 		sort_order=7,
 	),
 	dict(
@@ -288,7 +296,7 @@ def _upsert(doctype, name, values):
 		# Apps, the release group, whether a plan is offered and whether a product is on sale are managed
 		# by admins after the first seed; never overwrite their edits (a re-run must not bring retired
 		# plans back, or put a launched product back to coming soon).
-		admin_managed = ("apps", "press_release_group", "is_active", "availability")
+		admin_managed = ("apps", "press_release_group", "is_active", "availability", "install_theme")
 		doc.update({k: v for k, v in values.items() if k not in admin_managed})
 		doc.save(ignore_permissions=True)
 	else:

@@ -4,7 +4,7 @@
 import frappe
 from frappe.model.document import Document
 
-from growthx_core.provisioning.apps import copy_product_apps, validate_app_rows
+from growthx_core.provisioning.apps import copy_product_apps, theme_required, validate_app_rows
 
 
 class GXTenant(Document):
@@ -13,7 +13,11 @@ class GXTenant(Document):
 
 	def validate(self):
 		if self.get("apps") or self.is_new():
-			validate_app_rows(self, f"Site {self.display_name or self.name}")
+			validate_app_rows(
+				self,
+				f"Site {self.display_name or self.name}",
+				require_theme=theme_required(self.product),
+			)
 
 	@frappe.whitelist()
 	def archive_failed_site(self):

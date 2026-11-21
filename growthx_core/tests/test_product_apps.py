@@ -95,6 +95,44 @@ class TestProductApps(IntegrationTestCase):
 		with self.assertRaisesRegex(frappe.ValidationError, "growthx_theme"):
 			self.product.save()
 
+	def test_a_product_can_install_only_its_own_app(self):
+		"""Laundry ships plain ERPNext: no growthx_theme, so no single sign-on from GrowthX."""
+
+		def product(**extra):
+			return frappe.get_doc(
+				{
+					"doctype": "GX Product",
+					"slug": "gx-apps-no-theme",
+					"product_name": "No Theme",
+					"availability": "available",
+					"apps": [
+						{"app_name": "india_compliance"},
+						{"app_name": "laundry", "repository": "https://github.com/crenya/laundry.git"},
+					],
+					**extra,
+				}
+			)
+
+		with self.assertRaisesRegex(frappe.ValidationError, "growthx_theme"):
+			product().insert()  # still required by default
+
+		inserted = product(install_theme=0).insert()
+		self.assertEqual(self._apps(inserted), ["india_compliance", "laundry"])
+
+		tenant = frappe.get_doc(
+			{
+				"doctype": "GX Tenant",
+				"account": self.account.name,
+				"product": inserted.name,
+				"display_name": "No Theme",
+				"subdomain": runner.make_subdomain("No Theme"),
+			}
+		).insert()
+		self.assertEqual(self._apps(tenant), ["india_compliance", "laundry"])
+		self.assertEqual(site_apps(tenant), ["frappe", "erpnext", "india_compliance", "laundry"])
+		tenant.apps = []
+		tenant.save()  # this product's sites don't need the theme
+
 	def test_bad_rows_are_refused(self):
 		for bad in ("erpnext", "frappe", "solar", "https://github.com/tbocloud/solar_operations.git", ""):
 			product = frappe.get_doc("GX Product", PRODUCT)
