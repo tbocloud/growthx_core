@@ -3,17 +3,21 @@
 Admins manage it in the desk:
 - GX Product → Apps: the default apps for every new site of that product (e.g. Solar:
   growthx_theme, solar). Add or remove rows to change what new sites get.
+- GX Product → Install growthx_theme: untick it for a product whose app signs customers in
+  itself (e.g. Laundry), so those sites get frappe, erpnext and their app only.
 - GX Tenant → Apps: copied from the product when the site is requested. Change it for one
   customer before the site is created (or before a retry) to give that site different apps.
 
-frappe and erpnext are always installed first and are not listed. growthx_theme can't be removed:
-it carries the "Open my app" sign-in. Every app must also be in the product's Press release group.
+frappe and erpnext are always installed first and are not listed. growthx_theme carries the
+"Open my app" sign-in, so it is required unless the product opts out. Every app must also be in
+the product's Press release group.
 """
 
 import re
 
 import frappe
 from frappe import _
+from frappe.utils import cint
 
 BASE_APPS = ("frappe", "erpnext")
 THEME_APP = "growthx_theme"
@@ -21,10 +25,21 @@ THEME_REPO = "https://github.com/tbocloud/growthx_theme.git"
 APP_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
-def validate_app_rows(doc, label: str):
-	"""Clean and check `doc.apps`. Adds growthx_theme to an empty table; refuses a table without it."""
+def theme_required(product: str | None) -> bool:
+	"""Whether sites of `product` get growthx_theme. True unless an admin turned it off for that
+	product (`GX Product.install_theme`)."""
+	if not product or not frappe.get_meta("GX Product").has_field("install_theme"):
+		return True
+	install_theme = frappe.db.get_value("GX Product", product, "install_theme")
+	return True if install_theme is None else bool(cint(install_theme))
+
+
+def validate_app_rows(doc, label: str, require_theme: bool = True):
+	"""Clean and check `doc.apps`. Adds growthx_theme to an empty table; refuses a table without it
+	when the product installs it."""
 	if not doc.get("apps"):
-		doc.append("apps", {"app_name": THEME_APP, "repository": THEME_REPO})
+		if require_theme:
+			doc.append("apps", {"app_name": THEME_APP, "repository": THEME_REPO})
 
 	seen = set()
 	for row in doc.apps:
@@ -44,7 +59,7 @@ def validate_app_rows(doc, label: str):
 			frappe.throw(_("Row {0}: {1} is listed twice.").format(row.idx, row.app_name))
 		seen.add(row.app_name)
 
-	if THEME_APP not in seen:
+	if require_theme and THEME_APP not in seen:
 		frappe.throw(
 			_('{0} needs {1}: it carries the "Open my app" sign-in on every customer site.').format(
 				label, frappe.bold(THEME_APP)
@@ -75,7 +90,9 @@ def site_apps(tenant) -> list[str]:
 			filters={"parenttype": "GX Product", "parent": tenant.product},
 			pluck="app_name",
 			order_by="idx",
-		) or [THEME_APP]
+		)
+	if not names and theme_required(tenant.get("product")):
+		names = [THEME_APP]
 	return [*BASE_APPS, *[name for name in names if name not in BASE_APPS]]
 
 
