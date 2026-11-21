@@ -128,6 +128,43 @@ class TestGoogleSignin(IntegrationTestCase):
 			status, body = _call(auth.google, {"code": "4/abc"})
 		self.assertEqual((status, body["error"]["code"]), (403, "email_not_verified"))
 
+	def test_a_deleted_accounts_email_signs_up_again(self):
+		# Deleting an account blocks signing in (auth.delete_account) but leaves the email free.
+		deleted = "gx-google-deleted@example.com"
+		accounts.create_customer_account(
+			email=deleted, full_name="Deleted Customer", company="Deleted Co", password="x" * 20
+		)
+		frappe.db.set_value("GX Account", {"user": deleted}, "status", "churned")
+		frappe.db.set_value("User", deleted, "enabled", 0)
+
+		with _google(email=deleted):
+			status, body = _call(auth.google, {"code": "4/abc"})
+		self.assertEqual(status, 202, body)
+		self.assertEqual(body["email"], deleted)
+
+		status, body = _call(
+			auth.signup,
+			{"accountType": "customer", "googleSignupToken": body["signupToken"], "company": "New Co"},
+		)
+		self.assertEqual(status, 201, body)
+		self.assertEqual(body["user"]["email"], deleted)
+		self.assertEqual(frappe.db.get_value("User", deleted, "enabled"), 1)
+		self.assertEqual(
+			sorted(frappe.get_all("GX Account", filters={"user": deleted}, pluck="status")),
+			["churned", "trial"],
+		)
+
+	def test_a_blocked_account_with_a_live_account_still_cannot_sign_in(self):
+		blocked = "gx-google-blocked@example.com"
+		accounts.create_customer_account(
+			email=blocked, full_name="Blocked Customer", company="Blocked Co", password="x" * 20
+		)
+		frappe.db.set_value("User", blocked, "enabled", 0)  # blocked, but its account is not deleted
+
+		with _google(email=blocked):
+			status, body = _call(auth.google, {"code": "4/abc"})
+		self.assertEqual((status, body["error"]["code"]), (403, "account_unavailable"))
+
 	def test_staff_account_cannot_sign_in(self):
 		with _google(email="admin@example.com"):
 			frappe.set_user("Administrator")
