@@ -366,32 +366,22 @@ class RealPressClient(PressClient):
 		"""A product without growthx_theme: ERPNext's own setup wizard (company, chart of accounts,
 		fiscal year), the customer's user, and "Login with Email Link" as the way in. A site without
 		the theme has no single sign-on, so this is what makes it usable."""
-		if not self._site_call(
-			site_id,
-			cookies,
-			"frappe.client.get_single_value",
-			{"doctype": "System Settings", "fieldname": "setup_complete"},
-		):
-			start, end = fiscal_year(settings.get("fiscal_year_start") or "04-01", date.today())
-			self._site_call(
-				site_id,
-				cookies,
-				"frappe.desk.page.setup_wizard.setup_wizard.setup_complete",
-				{
-					"args": json.dumps(
-						{
-							"language": "English",
-							"country": settings.get("country") or "India",
-							"currency": settings.get("currency") or "INR",
-							"timezone": settings.get("timezone") or "Asia/Kolkata",
-							"company_name": settings.get("company_name") or site_id,
-							"chart_of_accounts": settings.get("chart_of_accounts") or "Standard",
-							"fy_start_date": start.isoformat(),
-							"fy_end_date": end.isoformat(),
-						}
-					)
-				},
-			)
+		if not self._setup_complete(site_id, cookies):
+			# india_compliance refuses a sales Item without an HSN code, and a vertical's own
+			# set-up (laundry's service items) creates items in the wizard's last hook.
+			hsn_checked = self._hsn_checked(site_id, cookies)
+			if hsn_checked:
+				self._set_hsn_checked(site_id, cookies, 0)
+			try:
+				self._run_erpnext_wizard(site_id, settings, cookies)
+			except PressError:
+				# The wizard's stages still run to the end when a vertical's last hook fails
+				# (e.g. laundry's), so the site is set up: keep that instead of failing the step.
+				if not self._setup_complete(site_id, cookies):
+					raise
+			finally:
+				if hsn_checked:
+					self._set_hsn_checked(site_id, cookies, 1)
 		email = settings.get("owner_email")
 		if email:
 			first, _, last = (settings.get("owner_name") or email).partition(" ")
@@ -419,6 +409,66 @@ class RealPressClient(PressClient):
 			},
 		)
 
+	def _setup_complete(self, site_id, cookies) -> bool:
+		return bool(
+			self._site_call(
+				site_id,
+				cookies,
+				"frappe.client.get_single_value",
+				{"doctype": "System Settings", "field": "setup_complete"},
+			)
+		)
+
+	def _hsn_checked(self, site_id, cookies) -> bool:
+		"""Whether india_compliance insists on an HSN code for a sales item. A site without GST
+		Settings (no india_compliance) counts as off."""
+		try:
+			return bool(
+				self._site_call(
+					site_id,
+					cookies,
+					"frappe.client.get_single_value",
+					{"doctype": "GST Settings", "field": "validate_hsn_code"},
+				)
+			)
+		except PressError:
+			return False
+
+	def _set_hsn_checked(self, site_id, cookies, value: int):
+		self._site_call(
+			site_id,
+			cookies,
+			"frappe.client.set_value",
+			{
+				"doctype": "GST Settings",
+				"name": "GST Settings",
+				"fieldname": "validate_hsn_code",
+				"value": value,
+			},
+		)
+
+	def _run_erpnext_wizard(self, site_id, settings, cookies):
+		start, end = fiscal_year(settings.get("fiscal_year_start") or "04-01", date.today())
+		self._site_call(
+			site_id,
+			cookies,
+			"frappe.desk.page.setup_wizard.setup_wizard.setup_complete",
+			{
+				"args": json.dumps(
+					{
+						"language": "English",
+						"country": settings.get("country") or "India",
+						"currency": settings.get("currency") or "INR",
+						"timezone": settings.get("timezone") or "Asia/Kolkata",
+						"company_name": settings.get("company_name") or site_id,
+						"chart_of_accounts": settings.get("chart_of_accounts") or "Standard",
+						"fy_start_date": start.isoformat(),
+						"fy_end_date": end.isoformat(),
+					}
+				)
+			},
+		)
+
 	def _site_call(self, site_id, cookies, method, params):
 		"""Call a whitelisted method on the site as the Administrator session Press just gave us."""
 		try:
@@ -432,7 +482,7 @@ class RealPressClient(PressClient):
 		except requests.RequestException as e:
 			raise PressError(f"Configuring {site_id}: site unreachable ({type(e).__name__})") from None
 		if r.status_code != 200:
-			raise PressError(f"Configuring {site_id}: HTTP {r.status_code} {_error_text(r)}")
+			raise PressError(f"Configuring {site_id}: {method} HTTP {r.status_code} {_error_text(r)}")
 		return r.json().get("message")
 
 	def health_check(self, site_url):

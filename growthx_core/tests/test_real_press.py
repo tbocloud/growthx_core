@@ -251,31 +251,43 @@ class TestRealPress(IntegrationTestCase):
 		self.assertEqual(tenant.service_api_key, "ak")
 		self.assertEqual(get_decrypted_password("GX Tenant", tenant.name, "service_api_secret"), "as")
 
-	def _site_post(self, setup_complete=0, insert_status=200):
-		"""Answers the calls configure_site makes on the tenant itself; records their methods."""
-		methods = []
+	def _site_post(
+		self, setup_complete=0, insert_status=200, hsn_checked=0, wizard_status=200, after_wizard=1
+	):
+		"""Answers the calls configure_site makes on the tenant itself; records them as
+		(method, doctype, field). `after_wizard` is what setup_complete reads as once the wizard
+		has been called."""
+		calls = []
+		state = {"wizard_called": False}
 
 		def post(url, **kwargs):
 			method = url.rsplit("/", 1)[-1]
-			methods.append(method)
+			params = kwargs.get("json") or {}
+			calls.append((method, params.get("doctype"), params.get("field")))
 			if method == "frappe.client.get_single_value":
-				return _response(message=setup_complete)
+				if params.get("doctype") == "GST Settings":
+					return _response(message=hsn_checked)
+				return _response(message=after_wizard if state["wizard_called"] else setup_complete)
 			if method == "frappe.client.insert" and insert_status != 200:
 				return _response(insert_status, body={"exc_type": "DuplicateEntryError"})
+			if method == "frappe.desk.page.setup_wizard.setup_wizard.setup_complete":
+				state["wizard_called"] = True
+				return _response(wizard_status, body={"exc_type": "MandatoryError"})
 			return _response(message=None)
 
-		return post, methods
+		return post, calls
 
 	def test_configure_without_the_theme_runs_erpnext_setup(self):
 		# Laundry: no growthx_theme, so growthx_theme.setup.configure would 404
 		frappe.db.set_value("GX Product", PRODUCT, "install_theme", 0)
 		tenant = self._tenant(press_site_id="test-acme-solar.tbogrowthx.com")
-		post, methods = self._site_post()
+		post, calls = self._site_post()
 		with patch.object(press.requests, "post", side_effect=post) as requests_post:
 			runner.configure(tenant, self.client)
 		self.assertEqual(
-			methods,
+			[c[0] for c in calls],
 			[
+				"frappe.client.get_single_value",
 				"frappe.client.get_single_value",
 				"frappe.desk.page.setup_wizard.setup_wizard.setup_complete",
 				"frappe.client.insert",
@@ -283,20 +295,43 @@ class TestRealPress(IntegrationTestCase):
 			],
 		)
 		self.assertNotIn("growthx_theme", requests_post.call_args_list[0].args[0])
-		wizard = json.loads(requests_post.call_args_list[1].kwargs["json"]["args"])
+		self.assertEqual(calls[0][2], "setup_complete")
+		self.assertEqual(calls[1][1:], ("GST Settings", "validate_hsn_code"))
+		wizard = json.loads(requests_post.call_args_list[2].kwargs["json"]["args"])
 		self.assertEqual(wizard["company_name"], "Press Test")
 		self.assertEqual(wizard["country"], "India")
-		owner = requests_post.call_args_list[2].kwargs["json"]["doc"]
+		owner = requests_post.call_args_list[3].kwargs["json"]["doc"]
 		self.assertEqual(json.loads(owner)["email"], EMAIL)
 		# The key belongs to growthx_theme's service user: there is none here.
 		self.assertFalse(tenant.service_api_key)
 
+	def test_configure_without_the_theme_keeps_a_site_whose_last_hook_failed(self):
+		# Laundry's after_setup_wizard fails on india_compliance's HSN rule, after the wizard's
+		# stages ran: the site is set up, so the step must not fail.
+		frappe.db.set_value("GX Product", PRODUCT, "install_theme", 0)
+		tenant = self._tenant(press_site_id="test-acme-solar.tbogrowthx.com")
+		post, calls = self._site_post(wizard_status=500, after_wizard=1)
+		with patch.object(press.requests, "post", side_effect=post):
+			runner.configure(tenant, self.client)  # must not raise
+		self.assertIn("frappe.client.insert", [c[0] for c in calls])
+
+	def test_configure_without_the_theme_turns_hsn_checking_off_for_the_wizard(self):
+		frappe.db.set_value("GX Product", PRODUCT, "install_theme", 0)
+		tenant = self._tenant(press_site_id="test-acme-solar.tbogrowthx.com")
+		post, calls = self._site_post(hsn_checked=1)
+		with patch.object(press.requests, "post", side_effect=post) as requests_post:
+			runner.configure(tenant, self.client)
+		set_values = [c for c in requests_post.call_args_list if "set_value" in c.args[0]]
+		hsn = [c.kwargs["json"]["value"] for c in set_values if c.kwargs["json"]["doctype"] == "GST Settings"]
+		self.assertEqual(hsn, [0, 1])  # off for the vertical's own set-up, then back on
+
 	def test_configure_without_the_theme_is_safe_to_retry(self):
 		frappe.db.set_value("GX Product", PRODUCT, "install_theme", 0)
 		tenant = self._tenant(press_site_id="test-acme-solar.tbogrowthx.com")
-		post, methods = self._site_post(setup_complete=1, insert_status=417)
+		post, calls = self._site_post(setup_complete=1, insert_status=417)
 		with patch.object(press.requests, "post", side_effect=post):
 			runner.configure(tenant, self.client)  # must not raise
+		methods = [c[0] for c in calls]
 		self.assertNotIn("frappe.desk.page.setup_wizard.setup_wizard.setup_complete", methods)
 		self.assertIn("frappe.client.set_value", methods)
 
