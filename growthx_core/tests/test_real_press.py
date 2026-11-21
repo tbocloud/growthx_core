@@ -251,6 +251,64 @@ class TestRealPress(IntegrationTestCase):
 		self.assertEqual(tenant.service_api_key, "ak")
 		self.assertEqual(get_decrypted_password("GX Tenant", tenant.name, "service_api_secret"), "as")
 
+	def _site_post(self, setup_complete=0, insert_status=200):
+		"""Answers the calls configure_site makes on the tenant itself; records their methods."""
+		methods = []
+
+		def post(url, **kwargs):
+			method = url.rsplit("/", 1)[-1]
+			methods.append(method)
+			if method == "frappe.client.get_single_value":
+				return _response(message=setup_complete)
+			if method == "frappe.client.insert" and insert_status != 200:
+				return _response(insert_status, body={"exc_type": "DuplicateEntryError"})
+			return _response(message=None)
+
+		return post, methods
+
+	def test_configure_without_the_theme_runs_erpnext_setup(self):
+		# Laundry: no growthx_theme, so growthx_theme.setup.configure would 404
+		frappe.db.set_value("GX Product", PRODUCT, "install_theme", 0)
+		tenant = self._tenant(press_site_id="test-acme-solar.tbogrowthx.com")
+		post, methods = self._site_post()
+		with patch.object(press.requests, "post", side_effect=post) as requests_post:
+			runner.configure(tenant, self.client)
+		self.assertEqual(
+			methods,
+			[
+				"frappe.client.get_single_value",
+				"frappe.desk.page.setup_wizard.setup_wizard.setup_complete",
+				"frappe.client.insert",
+				"frappe.client.set_value",
+			],
+		)
+		self.assertNotIn("growthx_theme", requests_post.call_args_list[0].args[0])
+		wizard = json.loads(requests_post.call_args_list[1].kwargs["json"]["args"])
+		self.assertEqual(wizard["company_name"], "Press Test")
+		self.assertEqual(wizard["country"], "India")
+		owner = requests_post.call_args_list[2].kwargs["json"]["doc"]
+		self.assertEqual(json.loads(owner)["email"], EMAIL)
+		# The key belongs to growthx_theme's service user: there is none here.
+		self.assertFalse(tenant.service_api_key)
+
+	def test_configure_without_the_theme_is_safe_to_retry(self):
+		frappe.db.set_value("GX Product", PRODUCT, "install_theme", 0)
+		tenant = self._tenant(press_site_id="test-acme-solar.tbogrowthx.com")
+		post, methods = self._site_post(setup_complete=1, insert_status=417)
+		with patch.object(press.requests, "post", side_effect=post):
+			runner.configure(tenant, self.client)  # must not raise
+		self.assertNotIn("frappe.desk.page.setup_wizard.setup_wizard.setup_complete", methods)
+		self.assertIn("frappe.client.set_value", methods)
+
+	def test_fiscal_year_contains_today(self):
+		from datetime import date
+
+		start, end = press.fiscal_year("04-01", date(2026, 11, 21))
+		self.assertEqual((start, end), (date(2026, 4, 1), date(2027, 3, 31)))
+		start, end = press.fiscal_year("04-01", date(2026, 2, 1))
+		self.assertEqual((start, end), (date(2025, 4, 1), date(2026, 3, 31)))
+		self.assertEqual(press.fiscal_year("01-01", date(2026, 2, 1))[0], date(2026, 1, 1))
+
 	# ------------------------------------------------------------ broken site, archive, retry
 
 	def test_broken_site_is_archived_and_retry_waits_for_the_name(self):

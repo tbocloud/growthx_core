@@ -20,7 +20,7 @@ from frappe.utils import cint, now_datetime
 
 from growthx_core.api.v1._serializers import STEP_LABELS
 from growthx_core.provisioning import countries, site_login
-from growthx_core.provisioning.apps import site_apps
+from growthx_core.provisioning.apps import site_apps, theme_required
 from growthx_core.provisioning.press import SUBDOMAIN, PressClient, PressError, get_client
 
 STEPS = ["create_site", "wait_for_site", "install_apps", "configure", "health_check"]
@@ -321,7 +321,11 @@ def _configure(tenant, step, client: PressClient):
 
 def configure(tenant, client: PressClient, reset_owner_password: bool = False):
 	"""Set up the tenant's site, and keep the API key of the GrowthX service user it creates."""
-	result = client.configure_site(tenant.press_site_id, tenant_settings(tenant, reset_owner_password))
+	result = client.configure_site(
+		tenant.press_site_id,
+		tenant_settings(tenant, reset_owner_password),
+		theme=theme_required(tenant.product),
+	)
 	if result and result.get("apiKey"):
 		tenant.service_api_key = result["apiKey"]
 		tenant.service_api_secret = result["apiSecret"]
