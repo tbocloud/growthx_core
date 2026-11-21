@@ -141,6 +141,25 @@ def admin_tenant_detail(tenant_doc) -> dict:
 	return {**admin_tenant(tenant_doc), "steps": _steps(tenant_doc, admin=True)}
 
 
+def admin_press_site(row: dict, tenant=None, customer_name: str | None = None) -> dict:
+	"""One site as Press lists it. `managed` is False for a site no GX Tenant owns: an ERPNext
+	site sold directly, which an admin can import."""
+	return {
+		"name": row.get("name"),
+		"url": row.get("url"),
+		"status": row.get("status"),
+		"bench": row.get("bench"),
+		"releaseGroup": row.get("release_group"),
+		"releaseGroupTitle": row.get("release_group_title"),
+		"plan": row.get("plan"),
+		"createdAt": iso(row.get("created_at")),
+		"managed": bool(tenant),
+		"tenantId": tenant.name if tenant else None,
+		"origin": tenant.origin if tenant else None,
+		"customerName": customer_name,
+	}
+
+
 def subscription(s, product_name: str | None = None, plan_name: str | None = None) -> dict:
 	return {
 		"id": s.name,

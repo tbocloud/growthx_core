@@ -22,6 +22,7 @@ Each decision below was checked against the Frappe/ERPNext **v16** source (Frapp
 | 10 | Idempotency | `Idempotency-Key` header (UUID, 24 h window) on `auth.signup`, `billing.create_checkout` and `admin.retry_provisioning`. A reused key with a different body returns `409 idempotency_conflict`. | |
 | 11 | Versioning | Additive changes stay in v1. Breaking changes go into a new `growthx_core.api.v2` module, and both run in parallel during migration. | |
 | 12 | CSRF, Next.js → core leg (OI-6, part) | Doesn't apply: requests carry a bearer token, not a cookie. **v1 endpoints reject Frappe cookie sessions** and send no CORS headers for browser origins. The browser → Next.js leg (token vs custom header) is still Web's and the Lead's decision. | Answers the questions in §2.0.4. |
+| 13 | **Press inventory** (21 Nov 2026) | `admin.press_inventory` reads Press (`press.api.site.all`: the team's sites, cached 60 s) and marks each site `managed` when a `GX Tenant` owns it. A site no tenant owns is an ERPNext site sold directly, which an admin imports to bill it: `GX Tenant.origin = imported`, no provisioning, no theme — so `customer.open_site` sends the customer to `<site>/login`. | Nobody is given Press access, so the admin portal has to show what runs on each bench. `site.all` is team-scoped, so it can never list another team's sites. |
 
 ### Changes to the web app's current shapes
 - **Login and sign-up** also return `refreshToken` and `refreshExpiresAt`. The Next.js server refreshes before `expiresAt`. They take an optional `client: web | mobile`.
