@@ -15,22 +15,21 @@ The plan price includes GST, so the invoice total is always the plan price:
 `buyer_snapshot` is what an unpaid invoice must still match (the billing name, the address as printed,
 the place of supply and the GSTIN); otherwise the checkout is replaced.
 
-The PDF is India Compliance's "GST Tax Invoice" format, which has its own header (company, "Tax
-Invoice", number), so no letterhead is added.
+The PDF is GrowthX's own print format, "GrowthX Tax Invoice" (billing/print_format), also the Sales
+Invoice default in the desk (setup.gst). India Compliance's "GST Tax Invoice" doesn't print the
+supplier's address (it expects a letterhead to), shows the company logo even when there is none, and
+puts its heading in the page header, which wkhtmltopdf repeats on every page. Ours has one heading in
+the page: the company with its address, state, state code and GSTIN, "Tax Invoice", the number and
+the date. No letterhead.
 """
-
-import re
 
 import frappe
 from frappe.utils import cint, flt
 
-PRINT_FORMAT = "GST Tax Invoice"
+PRINT_FORMAT = "GrowthX Tax Invoice"
 # GST on each line is rounded to the paisa, so the computed tax may differ from the exact split by a
 # paisa or two.
 TAX_TOLERANCE = 0.05
-# The format shows the company logo as <img src="{{ company_logo }}">: without a logo that's src="None",
-# which wkhtmltopdf can't load ("PDF generation failed because of broken image links").
-MISSING_IMAGE = re.compile(r"""<img\b[^>]*\bsrc\s*=\s*(["'])\s*(?:None)?\s*\1[^>]*>""", re.IGNORECASE)
 
 
 def _unavailable(reason: str):
@@ -163,19 +162,13 @@ def check(si, details, plan):
 
 
 def pdf(invoice: str) -> bytes:
-	"""What frappe.get_print(as_pdf=True) does for wkhtmltopdf, with no letterhead and without images
-	that have no source."""
+	"""What frappe.get_print(as_pdf=True) does for wkhtmltopdf, with no letterhead."""
 	from frappe.utils.pdf import get_pdf
 
 	from growthx_core.billing.payu import _as_administrator
 
 	with _as_administrator():
-		html = frappe.get_print("Sales Invoice", invoice, PRINT_FORMAT, no_letterhead=1)
-		return get_pdf(without_missing_images(html))
-
-
-def without_missing_images(html: str) -> str:
-	return MISSING_IMAGE.sub("", html)
+		return get_pdf(frappe.get_print("Sales Invoice", invoice, PRINT_FORMAT, no_letterhead=1))
 
 
 def filename(invoice: str) -> str:

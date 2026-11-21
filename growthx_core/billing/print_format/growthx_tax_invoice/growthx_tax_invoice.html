@@ -1,0 +1,92 @@
+{#-
+	GrowthX's GST tax invoice (growthx_core.billing.tax_invoice). One heading, in the page itself: no
+	letterhead, logo or repeated page header, so a one-line invoice is one page.
+	The supplier and recipient addresses are as stored on the invoice when it was made, printed with the
+	India Address Template (state, state code, GSTIN).
+-#}
+<div class="gx-invoice">
+	<table class="gx-top">
+		<tr>
+			<td class="gx-seller">
+				<div class="gx-company">{{ doc.company }}</div>
+				<div class="gx-address">{{ doc.company_address_display or "" }}</div>
+			</td>
+			<td class="gx-title">
+				<div class="gx-heading">Tax Invoice</div>
+				<div><b>{{ doc.name }}</b></div>
+				<div>Date: {{ doc.get_formatted("posting_date") }}</div>
+			</td>
+		</tr>
+	</table>
+
+	<table class="gx-parties">
+		<tr>
+			<td class="gx-buyer">
+				<div class="gx-label">Billed to</div>
+				<div><b>{{ doc.customer_name }}</b></div>
+				<div class="gx-address">{{ doc.address_display or "" }}</div>
+			</td>
+			<td class="gx-supply">
+				<div class="gx-label">Place of supply</div>
+				<div>{{ doc.place_of_supply or "" }}</div>
+				<div class="gx-label gx-label-gap">Reverse charge</div>
+				<div>{{ "Yes" if doc.is_reverse_charge else "No" }}</div>
+			</td>
+		</tr>
+	</table>
+
+	<table class="gx-items">
+		<thead>
+			<tr>
+				<th>#</th>
+				<th>Description</th>
+				<th>SAC</th>
+				<th class="gx-num">Qty</th>
+				<th class="gx-num">Rate</th>
+				<th class="gx-num">Taxable value</th>
+			</tr>
+		</thead>
+		<tbody>
+			{%- for row in doc.items %}
+			<tr>
+				<td>{{ row.idx }}</td>
+				<td>{{ row.description or row.item_name }}</td>
+				<td>{{ row.gst_hsn_code or "" }}</td>
+				<td class="gx-num">{{ "%g"|format(row.qty) }}</td>
+				<td class="gx-num">{{ row.get_formatted("net_rate", doc) }}</td>
+				<td class="gx-num">{{ row.get_formatted("net_amount", doc) }}</td>
+			</tr>
+			{%- endfor %}
+		</tbody>
+	</table>
+
+	<table class="gx-totals">
+		<tr>
+			<td>Taxable value</td>
+			<td class="gx-num">{{ doc.get_formatted("net_total") }}</td>
+		</tr>
+		{%- for tax in doc.taxes if tax.tax_amount %}
+		<tr>
+			<td>{{ tax.description }}{% if tax.rate %} @ {{ "%g"|format(tax.rate) }}%{% endif %}</td>
+			<td class="gx-num">{{ tax.get_formatted("tax_amount", doc) }}</td>
+		</tr>
+		{%- endfor %}
+		{%- if doc.rounding_adjustment %}
+		<tr>
+			<td>Rounding adjustment</td>
+			<td class="gx-num">{{ doc.get_formatted("rounding_adjustment") }}</td>
+		</tr>
+		{%- endif %}
+		<tr class="gx-grand">
+			<td>Total</td>
+			<td class="gx-num">{{ doc.get_formatted("rounded_total" if doc.rounded_total else "grand_total") }}</td>
+		</tr>
+	</table>
+
+	<p class="gx-words">Amount in words: {{ doc.in_words or "" }}</p>
+	<p class="gx-status">
+		{%- if doc.docstatus == 1 and not doc.outstanding_amount %}Paid
+		{%- else %}Amount due: {{ doc.get_formatted("outstanding_amount") }}{% endif -%}
+	</p>
+	<p class="gx-note">This is a computer-generated invoice and needs no signature.</p>
+</div>

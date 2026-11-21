@@ -1435,7 +1435,8 @@ paths:
       tags: [customer]
       summary: One of the customer's invoices as a PDF (the GST tax invoice)
       description: |
-        The invoice in India Compliance's "GST Tax Invoice" print format, as a file download. Only the
+        The GST tax invoice (GrowthX's "GrowthX Tax Invoice" print format: GrowthX's name, address and GSTIN,
+        the customer's billing details, place of supply, SAC and the GST), as a file download. Only the
         customer's own issued invoices: `404 not_found` for anyone else's, and for `draft` or `void` ones (show
         the download button only for `open`, `overdue` and `paid`). Errors are JSON as usual.
       operationId: customerInvoicePdf

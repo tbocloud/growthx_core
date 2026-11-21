@@ -135,6 +135,26 @@ class TestGstSetup(IntegrationTestCase):
 		self.assertIn("GSTIN: 32AAVFT5109L1ZQ", html)
 		self.assertIn("State Code: 32", html)
 
+	def test_the_sales_invoice_default_print_format_is_growthxs(self):
+		from growthx_core.billing import tax_invoice
+
+		frappe.make_property_setter(  # as India Compliance's install leaves it
+			{
+				"doctype": "Sales Invoice",
+				"doctype_or_field": "DocType",
+				"property": "default_print_format",
+				"value": "GST Tax Invoice",
+			},
+			validate_fields_for_doctype=False,
+		)
+		frappe.clear_cache(doctype="Sales Invoice")
+		gst.setup()
+		self.assertEqual(frappe.get_meta("Sales Invoice").default_print_format, tax_invoice.PRINT_FORMAT)
+		self.assertEqual(
+			frappe.db.get_value("Print Format", tax_invoice.PRINT_FORMAT, ["standard", "doc_type"]),
+			("Yes", "Sales Invoice"),
+		)
+
 	def test_running_again_changes_nothing(self):
 		gst.setup()
 		counts = lambda: (  # noqa: E731
@@ -142,11 +162,19 @@ class TestGstSetup(IntegrationTestCase):
 			frappe.db.count("Sales Taxes and Charges Template", {"company": COMPANY}),
 			frappe.db.count("Item Tax Template", {"company": COMPANY}),
 			frappe.db.count("Property Setter", {"doc_type": "Sales Invoice", "field_name": "naming_series"}),
+			frappe.db.count(
+				"Property Setter", {"doc_type": "Sales Invoice", "property": "default_print_format"}
+			),
 		)
 		modified = lambda: [  # noqa: E731
 			frappe.db.get_value("Company", COMPANY, "modified"),
 			frappe.db.get_value("Address", gst._company_address(COMPANY), "modified"),
 			frappe.db.get_value("Address Template", "India", "modified"),
+			frappe.db.get_value(
+				"Property Setter",
+				{"doc_type": "Sales Invoice", "property": "default_print_format"},
+				"modified",
+			),
 			frappe.db.get_value(
 				"Item", frappe.db.get_value("GX Plan", "test-gst-lifetime", "item"), "modified"
 			),
