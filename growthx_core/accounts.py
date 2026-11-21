@@ -24,6 +24,13 @@ def reusable_user(email: str) -> str | None:
 	return user.name
 
 
+def live_site(account: str, product: str) -> str | None:
+	"""The account's site for `product` that isn't archived, or None."""
+	return frappe.db.get_value(
+		"GX Tenant", {"account": account, "product": product, "status": ("!=", "archived")}, "name"
+	)
+
+
 def create_user(email: str, full_name: str, password: str, role: str, phone: str | None = None) -> str:
 	first, _, last = full_name.partition(" ")
 	existing = reusable_user(email)
@@ -181,6 +188,11 @@ def create_customer_account(
 	if not plan:
 		return user, None
 
+	# Signing up again: the account already has this app's site, so bring that one back instead of
+	# creating a second site the customer never asked for.
+	if reviving and (existing := live_site(account.name, plan.product)):
+		return user, existing
+
 	tenant = start_site(
 		account=account.name,
 		plan=plan,
@@ -204,6 +216,9 @@ def start_site(
 	"""Start a site for `account` on `plan`: its trial subscription, the tenant and the provisioning
 	job. Returns the tenant name; the caller commits (`customer.add_site` for an app an existing
 	customer adds to their account)."""
+	existing = live_site(account, plan.product)
+	if existing:
+		frappe.throw(frappe._("This account already has a {0} site ({1}).").format(plan.product, existing))
 	name = display_name or frappe.db.get_value("GX Account", account, "account_name")
 	# OI-2 is open (trial from sign-up, or from when the site is ready). Until the Lead decides,
 	# the trial starts at sign-up.

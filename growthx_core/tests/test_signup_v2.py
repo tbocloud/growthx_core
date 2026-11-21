@@ -235,6 +235,26 @@ class TestSignupV2(IntegrationTestCase):
 		self.assertNotIn("Email Link", html)  # customer sites can't send it yet
 		self.assertNotIn("email and the password", google_html)
 
+	def test_ready_email_for_a_site_without_the_theme_uses_its_own_login(self):
+		# Laundry installs no growthx_theme, so there is no "Open app" sign-in: the customer signs in
+		# on the site with "Login with Email Link".
+		frappe.get_doc(
+			{"doctype": "GX Product", "slug": "test-no-theme", "product_name": "No Theme", "install_theme": 0}
+		).insert()
+		site = frappe._dict(
+			display_name="Noor Laundry",
+			name="GXT-1",
+			site_url="https://noor-laundry.tbogrowthx.com",
+			product="test-no-theme",
+		)
+		with patch.dict(frappe.conf, {"growthx_web_url": "https://tbogrowthx.com"}):
+			html = runner._ready_email(site, "noor@example.com", google=True)
+		self.assertIn('href="https://noor-laundry.tbogrowthx.com/login"', html)
+		self.assertIn("Login with Email Link", html)
+		self.assertIn("noor@example.com", html)
+		self.assertNotIn("Open app", html)
+		self.assertNotIn("Continue with Google", html)
+
 	def test_ready_email_goes_to_the_account_and_knows_google(self):
 		from growthx_core import accounts
 

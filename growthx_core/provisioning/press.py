@@ -408,6 +408,23 @@ class RealPressClient(PressClient):
 				"value": 1,
 			},
 		)
+		self._ensure_mail_account(site_id, settings, cookies)
+
+	def _ensure_mail_account(self, site_id, settings, cookies):
+		"""Give the site GrowthX's outgoing email, so the "Login with Email Link" email can be sent.
+		A site without the theme has no single sign-on, so without this it has no way in."""
+		mail = settings.get("mail")
+		if not mail:
+			return
+		try:
+			self._site_call(
+				site_id,
+				cookies,
+				"frappe.client.insert",
+				{"doc": json.dumps({"doctype": "Email Account", **mail})},
+			)
+		except PressError:
+			pass  # the account is there already (a retry): the rest of the set-up still runs
 
 	def _setup_complete(self, site_id, cookies) -> bool:
 		return bool(

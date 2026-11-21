@@ -321,15 +321,43 @@ def _configure(tenant, step, client: PressClient):
 
 def configure(tenant, client: PressClient, reset_owner_password: bool = False):
 	"""Set up the tenant's site, and keep the API key of the GrowthX service user it creates."""
-	result = client.configure_site(
-		tenant.press_site_id,
-		tenant_settings(tenant, reset_owner_password),
-		theme=theme_required(tenant.product),
-	)
+	settings = tenant_settings(tenant, reset_owner_password)
+	theme = theme_required(tenant.product)
+	if not theme:
+		# A site without growthx_theme signs customers in with "Login with Email Link", so it needs
+		# outgoing email. Only such a site is given it (the theme path gets no smtp credentials).
+		settings["mail"] = mail_account()
+	result = client.configure_site(tenant.press_site_id, settings, theme=theme)
 	if result and result.get("apiKey"):
 		tenant.service_api_key = result["apiKey"]
 		tenant.service_api_secret = result["apiSecret"]
 		tenant.save(ignore_permissions=True)
+
+
+def mail_account() -> dict | None:
+	"""Core's default outgoing Email Account as the fields of an Email Account on a tenant site, or
+	None when Core has none."""
+	name = frappe.db.get_value("Email Account", {"default_outgoing": 1, "enable_outgoing": 1}, "name")
+	if not name:
+		return None
+	account = frappe.get_doc("Email Account", name)
+	login_id = account.get("login_id") or account.email_id
+	return {
+		"email_id": account.email_id,
+		"login_id": login_id,
+		# Without this Email Account clears login_id, and Resend refuses to sign in by address.
+		"login_id_is_different": int(login_id != account.email_id),
+		"password": account.get_password("password", raise_exception=False),
+		"smtp_server": account.smtp_server,
+		"smtp_port": account.smtp_port,
+		"use_tls": cint(account.use_tls),
+		"use_ssl_for_outgoing": cint(account.get("use_ssl_for_outgoing")),
+		"no_smtp_authentication": cint(account.no_smtp_authentication),
+		"default_outgoing": 1,
+		"enable_outgoing": 1,
+		"enable_incoming": 0,
+		"awaiting_password": 0,
+	}
 
 
 def tenant_settings(tenant, reset_owner_password: bool = False) -> dict:
@@ -428,6 +456,8 @@ def _ready_email(tenant, login_email: str, google: bool) -> str:
 
 	esc = frappe.utils.escape_html
 	login_url, forgot_url = web_url("/login"), web_url("/forgot-password")
+	if not theme_required(tenant.product):
+		return _ready_email_for_a_site_without_the_theme(tenant, login_email, login_url)
 	if google:
 		how = (
 			"<b>Continue with Google</b>, using this Google account. You can also set a password: "
@@ -452,6 +482,27 @@ def _ready_email(tenant, login_email: str, google: bool) -> str:
 		# Customer sites can't send email yet, so no "Login with Email Link" (launch checklist item 19:
 		# point to "Sign in with GrowthX" on the site once it exists).
 		"<p>There's no separate password for your site: always open it from GrowthX.</p>",
+	]
+	return "".join(lines)
+
+
+def _ready_email_for_a_site_without_the_theme(tenant, login_email: str, login_url: str) -> str:
+	"""A site without growthx_theme has no single sign-on, so the customer signs in on the site
+	itself with "Login with Email Link" (provisioning gives such a site outgoing email)."""
+	esc = frappe.utils.escape_html
+	site_url = (tenant.site_url or "").rstrip("/")
+	site_login_url = f"{site_url}/login"
+	lines = [
+		f"<p>Welcome to GrowthX! Your site <b>{esc(tenant.display_name or tenant.name)}</b> is ready.</p>",
+		f'<p>Site address: <a href="{esc(site_url)}">{esc(site_url)}</a></p>',
+		f"<p>Your login email: <b>{esc(login_email)}</b></p>",
+		'<p>How you sign in: <b>"Login with Email Link"</b> on your site. There is no password to '
+		"remember: we email you a link that signs you in.</p>",
+		"<p><b>To open your site:</b></p><ol>"
+		f'<li>Go to <a href="{esc(site_login_url)}">{esc(site_login_url)}</a>.</li>'
+		f"<li>Enter <b>{esc(login_email)}</b> and click <b>Login with Email Link</b>.</li>"
+		"<li>Open the link we email you.</li></ol>",
+		f'<p>Your subscription and invoices are at <a href="{esc(login_url)}">{esc(login_url)}</a>.</p>',
 	]
 	return "".join(lines)
 

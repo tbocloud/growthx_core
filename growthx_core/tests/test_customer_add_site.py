@@ -6,6 +6,7 @@ from unittest.mock import patch
 import frappe
 from frappe.tests import IntegrationTestCase
 
+from growthx_core import accounts
 from growthx_core.api.v1 import _core, customer
 
 PRODUCT = "test-add-site"
@@ -130,6 +131,26 @@ class TestCustomerAddSite(IntegrationTestCase):
 		self.assertEqual(body["url"], "https://add-site-sso.tbogrowthx.com/login")
 		self.assertTrue(body["expiresAt"])
 		issue.assert_not_called()
+
+	def test_signing_up_again_brings_back_the_site_instead_of_a_second_one(self):
+		# A deleted customer signs up again: the account keeps its site, so sign-up must reuse it
+		# (and the same app can't be started twice anyway).
+		self._own_site()
+		existing = frappe.db.get_value("GX Tenant", {"account": self.account.name})
+		frappe.db.set_value("GX Account", self.account.name, "status", "churned")
+		frappe.db.set_value("User", self.account.user, "enabled", 0)
+
+		_user, tenant = accounts.create_customer_account(
+			email=EMAIL,
+			full_name="Add Site",
+			company="Add Site",
+			password="x" * 20,
+			plan=frappe.get_doc("GX Plan", PLAN),
+		)
+		self.assertEqual(tenant, existing)
+		self.assertEqual(frappe.db.count("GX Tenant", {"account": self.account.name, "product": PRODUCT}), 1)
+		with self.assertRaises(frappe.ValidationError):
+			accounts.start_site(account=self.account.name, plan=frappe.get_doc("GX Plan", PLAN))
 
 	def test_open_my_app_with_the_theme_is_a_single_use_link(self):
 		self._own_site()
