@@ -337,7 +337,7 @@ POST {GROWTHX_API_URL}.customer.open_site        {"id": "GXT-00004"}
 - The tenant site (`growthx_theme`) redeems the token with Core, server to server, logs the customer in **as their own user** and redirects to the desk (`/desk`; in Frappe v16 `/app` redirects there too). The token doesn't stay in the address bar.
 - The customer never sees the tenant's login page and has no tenant password.
 - An expired (over 60 s), reused or wrong-site link ends on the tenant's `/login` page with "This link has expired. Open your app again from GrowthX." The fix for the user is to click "Open my app" again.
-- If GrowthX is down, the customer can still get in with **"Login with Email Link"** on the tenant's login page. That mail goes out through the tenant's own outgoing `Email Account`, which `configure` copies from Core's (`runner.mail_account()`) for theme-less products; a site with `growthx_theme` has none, so email-link login does not work there yet.
+- If GrowthX is down, the customer can still get in with **"Login with Email Link"** on the tenant's login page. That mail goes out through the tenant's own outgoing `Email Account`, which `configure` copies from Core's (`runner.mail_account()`) for every product, theme or not.
 
 ### 5.6 Subscriptions and invoices
 

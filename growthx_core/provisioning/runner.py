@@ -322,11 +322,10 @@ def _configure(tenant, step, client: PressClient):
 def configure(tenant, client: PressClient, reset_owner_password: bool = False):
 	"""Set up the tenant's site, and keep the API key of the GrowthX service user it creates."""
 	settings = tenant_settings(tenant, reset_owner_password)
+	# Every site signs customers in with "Login with Email Link" (growthx_theme turns it on too),
+	# so every site gets outgoing email: without an Email Account the link is never sent.
+	settings["mail"] = mail_account()
 	theme = theme_required(tenant.product)
-	if not theme:
-		# A site without growthx_theme signs customers in with "Login with Email Link", so it needs
-		# outgoing email. Only such a site is given it (the theme path gets no smtp credentials).
-		settings["mail"] = mail_account()
 	result = client.configure_site(tenant.press_site_id, settings, theme=theme)
 	if result and result.get("apiKey"):
 		tenant.service_api_key = result["apiKey"]

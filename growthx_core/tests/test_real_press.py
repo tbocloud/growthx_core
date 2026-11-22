@@ -353,6 +353,28 @@ class TestRealPress(IntegrationTestCase):
 		# `default_outgoing` (or `login_id_is_different`) is a site nobody can sign in to.
 		self.assertEqual({key: value for key, value in email_account.items() if key != "doctype"}, mail)
 
+	def test_configure_with_the_theme_gives_the_site_outgoing_email(self):
+		# growthx_theme turns on "Login with Email Link" but makes no Email Account, so the link
+		# would never be sent: the theme path makes one too, from Core's own settings.
+		tenant = self._tenant(press_site_id="test-acme-solar.tbogrowthx.com")
+		mail = {
+			"email_id": "noreply@example.com",
+			"smtp_server": "smtp.example.com",
+			"smtp_port": "465",
+			"default_outgoing": 1,
+			"enable_outgoing": 1,
+			"enable_incoming": 0,
+		}
+		post, calls = self._site_post()
+		with (
+			patch.object(press.requests, "post", side_effect=post) as requests_post,
+			patch.object(runner, "mail_account", return_value=mail),
+		):
+			runner.configure(tenant, self.client)
+		self.assertEqual([c[0] for c in calls], ["growthx_theme.setup.configure", "frappe.client.insert"])
+		doc = json.loads(requests_post.call_args_list[-1].kwargs["json"]["doc"])
+		self.assertEqual(doc, {"doctype": "Email Account", **mail})
+
 	def test_configure_without_the_theme_is_safe_to_retry(self):
 		frappe.db.set_value("GX Product", PRODUCT, "install_theme", 0)
 		tenant = self._tenant(press_site_id="test-acme-solar.tbogrowthx.com")
