@@ -240,6 +240,7 @@ def plan_items(item_group: str = "Services", uom: str = "Nos", commit: bool = Tr
 			frappe.throw(f"{label} {g} doesn't exist (pass another one)")
 	gst = "india_compliance" in frappe.get_installed_apps()
 	if gst:
+		from growthx_core.billing.payu import Unavailable
 		from growthx_core.setup import gst as gst_setup
 
 		sac = _ensure_sac(gst_setup.sac_code())
@@ -270,7 +271,12 @@ def plan_items(item_group: str = "Services", uom: str = "Nos", commit: bool = Tr
 			frappe.db.set_value("GX Plan", plan.name, "item", code)
 			print(f"{plan.name}: {code}")
 		if gst:
-			_item_gst(code, sac, plan.gst_rate)
+			try:
+				_item_gst(code, sac, plan.gst_rate)
+			except Unavailable:
+				# No Company on this site (a test bench): the Item is still made, and a later run
+				# adds the SAC code and the tax template once a Company is configured.
+				pass
 	if commit:
 		frappe.db.commit()
 

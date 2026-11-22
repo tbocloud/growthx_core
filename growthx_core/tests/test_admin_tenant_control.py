@@ -9,7 +9,7 @@ from frappe.tests import IntegrationTestCase
 from frappe.utils import add_months, add_years, getdate, nowdate
 
 from growthx_core.api.v1 import _core, admin
-from growthx_core.provisioning import press
+from growthx_core.provisioning import press, runner
 
 PRODUCT = "test-control"
 OTHER_PRODUCT = "test-control-other"
@@ -258,7 +258,7 @@ class TestAdminTenantControl(IntegrationTestCase):
 	def test_terminating_a_provisioned_site_archives_it_on_press_and_cancels_billing(self):
 		tenant_id = self._tenant()
 		client = self._archiving_client()
-		with patch.object(press, "get_client", return_value=client):
+		with patch.object(runner, "get_client", return_value=client):
 			status, body = _call(admin.terminate_tenant, {"id": tenant_id})
 		self.assertEqual(status, 200)
 		self.assertEqual(body["status"], "archived")
@@ -272,7 +272,7 @@ class TestAdminTenantControl(IntegrationTestCase):
 	def test_terminating_an_imported_site_leaves_the_site_alone(self):
 		tenant_id = self._tenant(origin="imported")
 		client = self._archiving_client()
-		with patch.object(press, "get_client", return_value=client):
+		with patch.object(runner, "get_client", return_value=client):
 			status, body = _call(admin.terminate_tenant, {"id": tenant_id})
 		self.assertEqual(status, 200)
 		self.assertEqual(body["status"], "archived")
