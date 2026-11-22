@@ -9,7 +9,7 @@ from frappe.tests import IntegrationTestCase
 from frappe.utils import add_months, add_years, getdate, nowdate
 
 from growthx_core.api.v1 import _core, admin
-from growthx_core.provisioning import press
+from growthx_core.provisioning import press, runner
 
 PRODUCT = "test-control"
 OTHER_PRODUCT = "test-control-other"
@@ -30,6 +30,11 @@ def _call(fn, data=None):
 		patch.object(frappe.db, "rollback"),  # an error response would roll back this test's data
 	):
 		response = fn()
+	if response.status_code >= 500:
+		print(
+			"ERROR LOG:",
+			frappe.get_all("Error Log", fields=["method", "error"], order_by="creation desc", limit=1),
+		)
 	return response.status_code, json.loads(response.get_data())
 
 
@@ -63,6 +68,25 @@ class TestAdminTenantControl(IntegrationTestCase):
 		_plan(YEARLY, PRODUCT, "Yearly", interval="year", price=9999)
 		_plan(LIFETIME, PRODUCT, "Lifetime", interval="one_time", price=150000, gst_included=1)
 		_plan(OTHER_PLAN, OTHER_PRODUCT, "Monthly")
+		self._billing_prerequisites()
+
+	def _billing_prerequisites(self):
+		"""What `seed.plan_items` needs to make a plan's Item (a fresh test bench has neither)."""
+		if not frappe.db.exists("Item Group", "All Item Groups"):
+			frappe.get_doc(
+				{"doctype": "Item Group", "item_group_name": "All Item Groups", "is_group": 1}
+			).insert()
+		if not frappe.db.exists("Item Group", "Services"):
+			frappe.get_doc(
+				{
+					"doctype": "Item Group",
+					"item_group_name": "Services",
+					"parent_item_group": "All Item Groups",
+					"is_group": 0,
+				}
+			).insert()
+		if not frappe.db.exists("UOM", "Nos"):
+			frappe.get_doc({"doctype": "UOM", "uom_name": "Nos"}).insert()
 
 	def tearDown(self):
 		frappe.set_user("Administrator")
@@ -100,7 +124,7 @@ class TestAdminTenantControl(IntegrationTestCase):
 			{
 				"doctype": "GX Subscription",
 				"account": account.name,
-				"plan": plan.name,
+				"plan": plan_doc.name,
 				"product": plan_doc.product,
 				"status": "active",
 				"tenant": None,
@@ -253,7 +277,7 @@ class TestAdminTenantControl(IntegrationTestCase):
 	def test_terminating_a_provisioned_site_archives_it_on_press_and_cancels_billing(self):
 		tenant_id = self._tenant()
 		client = self._archiving_client()
-		with patch.object(press, "get_client", return_value=client):
+		with patch.object(runner, "get_client", return_value=client):
 			status, body = _call(admin.terminate_tenant, {"id": tenant_id})
 		self.assertEqual(status, 200)
 		self.assertEqual(body["status"], "archived")
@@ -267,7 +291,7 @@ class TestAdminTenantControl(IntegrationTestCase):
 	def test_terminating_an_imported_site_leaves_the_site_alone(self):
 		tenant_id = self._tenant(origin="imported")
 		client = self._archiving_client()
-		with patch.object(press, "get_client", return_value=client):
+		with patch.object(runner, "get_client", return_value=client):
 			status, body = _call(admin.terminate_tenant, {"id": tenant_id})
 		self.assertEqual(status, 200)
 		self.assertEqual(body["status"], "archived")
