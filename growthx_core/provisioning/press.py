@@ -174,7 +174,7 @@ class FakePressClient(PressClient):
 		pass
 
 	def list_sites(self):
-		# Tests set this to act out the sites the GrowthX team has on Press (admin.press_inventory).
+		# Tests set this to act out the sites the GrowthX team has on Press.
 		return list(self.press_sites)
 
 	def configure_site(self, site_id, settings, theme=True):

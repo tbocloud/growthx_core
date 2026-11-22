@@ -2870,54 +2870,15 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
-  /growthx_core.api.v1.admin.press_inventory:
-    get:
-      tags: [admin]
-      summary: Every site on Press, by bench
-      description: |
-        Read from Press (`press.api.site.all`, cached for 60 s): the sites Core provisioned and the
-        ones it didn't. `managed: false` marks a site no GX Tenant owns — an ERPNext site sold
-        directly — which is what an admin imports to bill it. `q` searches site name, URL, tenant id
-        and customer name.
-      operationId: adminPressInventory
-      x-phase: 2
-      x-roles: [admin]
-      parameters:
-        - name: q
-          in: query
-          description: Searches site name, URL, tenant id and customer name
-          schema: { type: string }
-      responses:
-        "200":
-          description: Sites, grouped by bench on the client
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [items, total]
-                properties:
-                  items:
-                    type: array
-                    items: { $ref: "#/components/schemas/AdminPressSite" }
-                  total: { type: integer }
-        "401": { $ref: "#/components/responses/Unauthenticated" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "502":
-          description: "`press_unavailable`: Press could not be read"
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
-
-  /growthx_core.api.v1.admin.adopt_site:
+  /growthx_core.api.v1.admin.create_plan:
     post:
       tags: [admin]
-      summary: Import an ERPNext site into GrowthX
+      summary: Add a plan to the catalogue
       description: |
-        For a site `admin.press_inventory` lists as `managed: false`: the customer, an active subscription on `plan`
-        and the tenant (`origin: imported`) are created here, so GrowthX can bill the site. Nothing is created,
-        installed or themed on the site itself — it keeps signing its own users in, and the plan is billing only.
-        An account that already has this plan's product is refused.
-      operationId: adminAdoptSite
+        Creates a GX Plan and its billing Item (with the SAC code and tax template when India
+        Compliance is installed). `id` is the plan id; without one it is made from the app, the name
+        and the interval. Prices are in paise, like the rest of this API.
+      operationId: adminCreatePlan
       x-phase: 2
       x-roles: [admin]
       parameters:
@@ -2928,16 +2889,61 @@ paths:
           application/json:
             schema:
               type: object
-              required: [site, plan, email]
+              required: [product, planName, interval, price]
               properties:
-                site: { type: string, description: The site name Press lists, e.g. acme.tbogrowthx.com }
-                plan: { type: string, description: GX Plan id }
-                email: { type: string, format: email, description: The customer's email; an existing account with it is reused }
-                accountName: { type: string, description: Company name, default the site name's first label }
-                fullName: { type: string, description: Contact name, for a new customer }
+                id: { type: string, description: "Plan id, e.g. laundry-growth" }
+                product: { type: string, description: "GX Product slug" }
+                planName: { type: string, example: Growth }
+                interval: { $ref: "#/components/schemas/BillingInterval" }
+                price: { type: integer, description: "In paise, e.g. 149900 for ₹1,499" }
+                trialDays: { type: integer, default: 0 }
+                gstIncluded: { type: boolean, default: false }
+                gstRate: { type: number, default: 18 }
+                description: { type: string }
+                features: { type: string, description: "One feature per line" }
+                highlighted: { type: boolean, default: false }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminPlan" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: "`plan_exists`: a plan with that id is already there"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.assign_plan:
+    post:
+      tags: [admin]
+      summary: Bill a site on another plan
+      description: |
+        Changes the plan of a site's subscription: the new plan's price, GST and interval apply from
+        now. The plan must be of the same app — another app means other apps on the site, which is a
+        new site. Billing only: nothing on the site changes. Terminated sites, sites without a
+        subscription and canceled subscriptions can't change plan.
+      operationId: adminAssignPlan
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, plan]
+              properties:
+                id: { type: string, description: Tenant id }
+                plan: { type: string, description: Plan id }
       responses:
         "200":
-          description: The imported tenant
+          description: The site, now on that plan
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AdminTenantDetail" }
@@ -2945,13 +2951,46 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
-          description: "`already_managed` (a tenant owns the site), `already_added` (the customer has this product), `not_importable` (the site is not active)"
+          description: "`tenant_archived`, `invalid_transition`, `no_subscription`: the site was terminated or isn't live yet, or has no subscription to change"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
-        "502":
-          description: "`press_unavailable`: Press could not be read"
+
+  /growthx_core.api.v1.admin.terminate_tenant:
+    post:
+      tags: [admin]
+      summary: Terminate a site and its billing
+      description: |
+        For good: a site Core built is backed up and then deleted on Press; an imported ERPNext site is
+        the customer's own, so it keeps running and only billing stops. The tenant becomes `archived`
+        and its subscription `canceled`. A site still being set up can't be terminated, and an archive
+        already done is refused (`already_archived`).
+      operationId: adminTerminateTenant
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string, description: Tenant id }
+      responses:
+        "200":
+          description: Terminated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminTenantDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`already_archived`, `invalid_transition`: terminated already, or still being set up"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -3953,6 +3992,16 @@ components:
           items: { type: string }
         highlighted: { type: boolean }
 
+    AdminPlan:
+      allOf:
+        - $ref: "#/components/schemas/Plan"
+        - type: object
+          required: [gstRate, active]
+          properties:
+            gstRate: { type: number, example: 18 }
+            active: { type: boolean, description: "Whether the plan is on sale" }
+            item: { type: string, nullable: true, description: "The billing Item on its invoices" }
+
     SiteStatus:
       type: string
       enum: [requested, provisioning, ready, failed, suspended, archived]
@@ -3960,11 +4009,6 @@ components:
         requested: queued after sign-up. provisioning: Press is creating or configuring the site.
         ready: the site can be opened. failed: an admin has been alerted and will retry; the customer doesn't sign up again.
         suspended: payment failed after the grace period. archived: the subscription was cancelled.
-
-    PressSiteStatus:
-      type: string
-      enum: [creating, active, broken, inactive, archived]
-      description: The site's own state on Press (Press says Active, Inactive, Broken, Archived).
 
     SiteRef:
       type: object
@@ -4685,6 +4729,12 @@ components:
         customerId: { type: string }
         customerName: { type: string }
         productSlug: { type: string }
+        origin:
+          type: string
+          enum: [provisioned, imported]
+          description: "`provisioned`: a site Core built for a GrowthX app. `imported`: the customer's own ERPNext site, billed on the direct product."
+        plan: { type: string, nullable: true, description: "The subscription's plan id" }
+        planName: { type: string, nullable: true }
         siteUrl: { type: string, format: uri, nullable: true }
         status: { $ref: "#/components/schemas/SiteStatus" }
         lastError: { type: string, nullable: true, description: Admin-only detail }
@@ -4707,24 +4757,6 @@ components:
                     properties:
                       attempt: { type: integer }
                       error: { type: string, nullable: true }
-
-    AdminPressSite:
-      type: object
-      description: "One site as Press lists it. `managed: false` means no GX Tenant owns it."
-      required: [name, status, managed]
-      properties:
-        name: { type: string, example: demo-laundry-2.tbogrowthx.com }
-        url: { type: string, format: uri, nullable: true }
-        status: { $ref: "#/components/schemas/PressSiteStatus" }
-        bench: { type: string, nullable: true, example: bench-0024-000002-f1 }
-        releaseGroup: { type: string, nullable: true, example: bench-0024 }
-        releaseGroupTitle: { type: string, nullable: true }
-        plan: { type: string, nullable: true, description: The site's plan on Press, not a GX Plan }
-        createdAt: { type: string, format: date-time, nullable: true }
-        managed: { type: boolean, description: True when a GX Tenant owns the site }
-        tenantId: { type: string, nullable: true }
-        origin: { type: string, enum: [provisioned, imported], nullable: true }
-        customerName: { type: string, nullable: true }
 
     AppointmentStatus:
       type: string
