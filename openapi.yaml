@@ -68,6 +68,8 @@ tags:
   - name: billing
   - name: partner
   - name: admin
+  - name: support
+    description: Customer support tickets (role customer). The team's side is under admin.
   - name: tenant
     description: Server-to-server calls from tenant sites (growthx_theme). Not for Web or Flutter.
   - name: content
@@ -2974,6 +2976,153 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
 
+  /growthx_core.api.v1.admin.staff:
+    get:
+      tags: [admin]
+      summary: Team members (admins and content editors)
+      description: |
+        Everyone with the GrowthX Admin or Content Editor role (a user with both is `admin`), sorted by
+        name, in one page. `signIn` says whether they have a password (people who joined with Microsoft
+        or Google may not) and which social providers are linked. Administrator and Guest are never listed.
+      operationId: adminStaff
+      x-phase: 2
+      x-roles: [admin]
+      responses:
+        "200":
+          description: Team
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/StaffMember" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /growthx_core.api.v1.admin.add_staff:
+    post:
+      tags: [admin]
+      summary: Add a team member
+      description: |
+        A new email gets an account with no password and an email (valid 24 hours) to set one; `invited`
+        is false if that email could not be sent (they can use "Forgot password"). An existing user (e.g.
+        a customer) keeps their roles and gains the team role. `already_staff` if they already have
+        either team role; `user_disabled` if the existing account is disabled.
+      operationId: adminAddStaff
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, name, role]
+              properties:
+                email: { type: string, format: email }
+                name: { type: string }
+                role: { $ref: "#/components/schemas/StaffRole" }
+      responses:
+        "201":
+          description: Added
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/StaffMember"
+                  - type: object
+                    required: [invited]
+                    properties:
+                      invited: { type: boolean }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: "`already_staff` or `user_disabled`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.update_staff:
+    post:
+      tags: [admin]
+      summary: Change a team member's role or enable/disable them
+      description: |
+        Send `role` and/or `enabled`. Disabling or demoting revokes all their tokens. You can't disable
+        or demote yourself (`self_lockout`), and the last enabled admin can't be disabled or demoted
+        (`last_admin`). `404` for anyone who isn't on the team (and for Administrator/Guest).
+      operationId: adminUpdateStaff
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string, description: "The member's id (their email)" }
+                role: { $ref: "#/components/schemas/StaffRole" }
+                enabled: { type: boolean }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StaffMember" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`self_lockout`, `last_admin`, or `shared_account` (disabling someone who also has a customer or partner role; remove them from the team instead)"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.remove_staff:
+    post:
+      tags: [admin]
+      summary: Remove a team member
+      description: |
+        Takes both team roles off the user and revokes their tokens. The user and any customer or
+        partner role stay. Same guards as `admin.update_staff` (`self_lockout`, `last_admin`).
+      operationId: adminRemoveStaff
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string, description: "The member's id (their email)" }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`self_lockout` or `last_admin`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
   /growthx_core.api.v1.admin.audit_log:
     get:
       tags: [admin]
@@ -4039,6 +4188,351 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /growthx_core.api.v1.support.create:
+    post:
+      tags: [support]
+      summary: Open a support ticket
+      description: |
+        A customer opens a ticket (the Support page). Saved as a GX Support Ticket with the first message, and emailed to
+        support@tbogrowthx.com (site_config `growthx_support_email`). `urgent` priority is the team's to set.
+        No attachments: messages are plain text.
+      operationId: supportCreateTicket
+      x-phase: 2
+      x-roles: [customer]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subject, message]
+              properties:
+                subject: { type: string, maxLength: 140 }
+                message: { type: string, minLength: 1, maxLength: 5000, description: Plain text }
+                category: { $ref: "#/components/schemas/TicketCategory" }
+                priority: { type: string, enum: [low, normal, high], default: normal }
+                tenantId: { type: string, description: One of the caller's own sites }
+      responses:
+        "201":
+          description: The ticket with its first message
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TicketDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.support.tickets:
+    get:
+      tags: [support]
+      summary: The caller's tickets
+      description: |
+        Only tickets of the caller's own account, most recent activity first.
+      operationId: supportListTickets
+      x-phase: 2
+      x-roles: [customer]
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/TicketStatus" }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Tickets
+          content:
+            application/json:
+              schema: 
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/Ticket" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.support.ticket:
+    get:
+      tags: [support]
+      summary: One ticket and its conversation
+      description: |
+        The conversation without the team's internal notes. Another account's ticket is `404`.
+      operationId: supportGetTicket
+      x-phase: 2
+      x-roles: [customer]
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: The ticket
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TicketDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /growthx_core.api.v1.support.reply:
+    post:
+      tags: [support]
+      summary: Reply to a ticket
+      description: |
+        Adds a customer message. A resolved or pending ticket becomes `open`; the assignee (or the support inbox) is emailed. A closed ticket gives `409 ticket_closed`.
+      operationId: supportReplyTicket
+      x-phase: 2
+      x-roles: [customer]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, message]
+              properties:
+                id: { type: string }
+                message: { type: string, minLength: 1, maxLength: 5000, description: Plain text }
+      responses:
+        "200":
+          description: The updated ticket
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TicketDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`ticket_closed`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.support.close:
+    post:
+      tags: [support]
+      summary: Close a ticket
+      description: |
+        The customer closes their own ticket. `409 invalid_transition` when it is already closed.
+      operationId: supportCloseTicket
+      x-phase: 2
+      x-roles: [customer]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string }
+      responses:
+        "200":
+          description: The closed ticket
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TicketDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`invalid_transition`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /growthx_core.api.v1.admin.support_summary:
+    get:
+      tags: [admin]
+      summary: Support counts and staff
+      description: |
+        Counts per status, open tickets with nobody assigned, open urgent ones, and the GrowthX Admin users a ticket can be assigned to.
+      operationId: adminSupportSummary
+      x-phase: 2
+      x-roles: [admin]
+      responses:
+        "200":
+          description: Counts
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminSupportSummary" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /growthx_core.api.v1.admin.support_tickets:
+    get:
+      tags: [admin]
+      summary: Support inbox
+      description: |
+        All tickets. `assignee` is a user id, `me` or `unassigned`. `q` searches subject, ticket number, customer email and company.
+      operationId: adminListSupportTickets
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/TicketStatus" }
+        - name: priority
+          in: query
+          schema: { $ref: "#/components/schemas/TicketPriority" }
+        - name: category
+          in: query
+          schema: { $ref: "#/components/schemas/TicketCategory" }
+        - name: assignee
+          in: query
+          schema: { type: string }
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: sort
+          in: query
+          schema: { type: string, enum: [activity, -activity, createdAt, -createdAt, priority, -priority], default: -activity }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Tickets
+          content:
+            application/json:
+              schema: 
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/AdminTicket" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.support_ticket:
+    get:
+      tags: [admin]
+      summary: A ticket with internal notes
+      description: |
+        The whole conversation including internal notes (`internal: true`).
+      operationId: adminGetSupportTicket
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: The ticket
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminTicketDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /growthx_core.api.v1.admin.support_reply:
+    post:
+      tags: [admin]
+      summary: Reply to the customer
+      description: |
+        The customer sees and is emailed this reply. Sets the ticket to `pending_customer`, records the first response time and assigns the replier when nobody is. Audit-logged. `409 ticket_closed` on a closed ticket.
+      operationId: adminReplySupportTicket
+      x-phase: 2
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, message]
+              properties:
+                id: { type: string }
+                message: { type: string, minLength: 1, maxLength: 5000, description: Plain text }
+      responses:
+        "200":
+          description: The updated ticket
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminTicketDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`ticket_closed`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.support_note:
+    post:
+      tags: [admin]
+      summary: Add an internal note
+      description: |
+        Never shown to the customer and never emailed. Audit-logged.
+      operationId: adminNoteSupportTicket
+      x-phase: 2
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, note]
+              properties:
+                id: { type: string }
+                note: { type: string, minLength: 1, maxLength: 5000, description: Plain text }
+      responses:
+        "200":
+          description: The updated ticket
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminTicketDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.support_update:
+    post:
+      tags: [admin]
+      summary: Change status, priority or assignee
+      description: |
+        Only the keys sent change; `assigneeId: null` unassigns. Status flow: open -> pending_customer / resolved / closed; pending_customer -> open / resolved / closed; resolved -> open / pending_customer / closed; closed -> open. Anything else is `409 invalid_transition`. `assigneeId` must be a GrowthX Admin user (`422`). Audit-logged.
+      operationId: adminUpdateSupportTicket
+      x-phase: 2
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string }
+                status: { $ref: "#/components/schemas/TicketStatus" }
+                priority: { $ref: "#/components/schemas/TicketPriority" }
+                assigneeId: { type: string, nullable: true }
+      responses:
+        "200":
+          description: The updated ticket
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminTicketDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`invalid_transition`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
 components:
   securitySchemes:
     tenantKey:
@@ -4320,6 +4814,32 @@ components:
             gstRate: { type: number, example: 18 }
             active: { type: boolean, description: "Whether the plan is on sale" }
             item: { type: string, nullable: true, description: "The billing Item on its invoices" }
+
+    StaffRole:
+      type: string
+      enum: [admin, content_editor]
+
+    StaffMember:
+      type: object
+      required: [id, email, name, role, enabled, signIn, isYou, hasOtherRoles]
+      properties:
+        id: { type: string, description: "The user id (their email)" }
+        email: { type: string, format: email }
+        name: { type: string }
+        role: { $ref: "#/components/schemas/StaffRole" }
+        enabled: { type: boolean }
+        lastLogin: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time, nullable: true }
+        signIn:
+          type: object
+          required: [password, providers]
+          properties:
+            password: { type: boolean, description: "False until they set one (invite, Forgot password)" }
+            providers:
+              type: array
+              items: { type: string, example: microsoft }
+        isYou: { type: boolean }
+        hasOtherRoles: { type: boolean, description: "Also a customer or partner: can't be disabled here" }
 
     SiteStatus:
       type: string
@@ -5484,3 +6004,104 @@ components:
         width: { type: integer }
         height: { type: integer }
         size: { type: integer, description: Bytes after re-encoding }
+
+    TicketStatus:
+      type: string
+      enum: [open, pending_customer, resolved, closed]
+    TicketPriority:
+      type: string
+      enum: [low, normal, high, urgent]
+    TicketCategory:
+      type: string
+      enum: [billing, technical, site, other]
+
+    Ticket:
+      type: object
+      required: [id, subject, category, priority, status, createdAt, updatedAt]
+      properties:
+        id: { type: string, example: TKT-00001 }
+        subject: { type: string }
+        category: { $ref: "#/components/schemas/TicketCategory" }
+        priority: { $ref: "#/components/schemas/TicketPriority" }
+        status: { $ref: "#/components/schemas/TicketStatus" }
+        tenantId: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time, description: Last activity }
+        resolvedAt: { type: string, format: date-time, nullable: true }
+        closedAt: { type: string, format: date-time, nullable: true }
+
+    TicketMessage:
+      type: object
+      required: [id, authorName, fromStaff, body, createdAt]
+      properties:
+        id: { type: string }
+        authorName: { type: string }
+        fromStaff: { type: boolean }
+        body: { type: string, description: Plain text. Render as text, never as HTML }
+        createdAt: { type: string, format: date-time }
+
+    TicketDetail:
+      allOf:
+        - $ref: "#/components/schemas/Ticket"
+        - type: object
+          required: [messages]
+          properties:
+            messages:
+              type: array
+              description: Oldest first; internal notes are not included
+              items: { $ref: "#/components/schemas/TicketMessage" }
+
+    AdminTicket:
+      allOf:
+        - $ref: "#/components/schemas/Ticket"
+        - type: object
+          required: [accountId, customerEmail]
+          properties:
+            accountId: { type: string }
+            company: { type: string, nullable: true }
+            customerName: { type: string, nullable: true }
+            customerEmail: { type: string }
+            assignee:
+              type: object
+              nullable: true
+              required: [id, name]
+              properties:
+                id: { type: string }
+                name: { type: string }
+            firstResponseAt: { type: string, format: date-time, nullable: true }
+
+    AdminTicketDetail:
+      allOf:
+        - $ref: "#/components/schemas/AdminTicket"
+        - type: object
+          required: [messages]
+          properties:
+            messages:
+              type: array
+              items:
+                allOf:
+                  - $ref: "#/components/schemas/TicketMessage"
+                  - type: object
+                    required: [internal]
+                    properties:
+                      internal: { type: boolean, description: A team-only note }
+                      authorId: { type: string, nullable: true }
+
+    AdminSupportSummary:
+      type: object
+      required: [open, pendingCustomer, resolved, closed, unassigned, urgent, staff]
+      properties:
+        open: { type: integer }
+        pendingCustomer: { type: integer }
+        resolved: { type: integer }
+        closed: { type: integer }
+        unassigned: { type: integer, description: Open or pending tickets with no assignee }
+        urgent: { type: integer, description: Open or pending urgent tickets }
+        staff:
+          type: array
+          items:
+            type: object
+            required: [id, name]
+            properties:
+              id: { type: string }
+              name: { type: string }
