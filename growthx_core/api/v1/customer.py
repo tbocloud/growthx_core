@@ -82,9 +82,10 @@ def open_site():
 	if tenant.status != "ready" or not tenant.site_url:
 		raise ApiError(409, "site_not_ready", "Your site isn't ready yet.")
 	audit("open_site", "GX Tenant", tenant.name)  # never log a token
-	if not apps.theme_required(tenant.product):
+	if tenant.origin == "imported" or not apps.theme_required(tenant.product):
 		# A site without growthx_theme has no single sign-on, so its own login page is the way in
-		# (the customer's user is set up there, with "Login with Email Link").
+		# (the customer's user is set up there, with "Login with Email Link"). An imported site
+		# (ERPNext Direct) never gets the theme, whatever its plan's product says.
 		return {
 			"url": f"{custom_domains.public_url(tenant).rstrip('/')}/login",
 			"expiresAt": iso(now_datetime() + timedelta(seconds=site_login.TTL_SECONDS)),

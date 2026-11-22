@@ -98,6 +98,17 @@ PRODUCTS = [
 		summary="Measurements, orders and fittings, without the paper notebook.",
 		sort_order=8,
 	),
+	# Not sold on the website: an ERPNext site a customer already runs, imported by an admin
+	# (admin.adopt_site) so GrowthX can bill it. Nothing is installed on those sites.
+	dict(
+		slug="erpnext-direct",
+		product_name="ERPNext Direct",
+		category="Your own ERPNext site",
+		summary="An ERPNext site you already run, billed through GrowthX.",
+		availability="coming_soon",
+		install_theme=0,
+		sort_order=9,
+	),
 ]
 
 # Placeholder prices from the web team's contract (02 §2.0.3). Yearly = 10 x monthly.
