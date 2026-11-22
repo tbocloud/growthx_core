@@ -456,6 +456,7 @@ def create_plan():
 		}
 	).insert(ignore_permissions=True)
 	seed.plan_items()
+	plan.reload()
 	audit(
 		"plan.create",
 		"GX Plan",
