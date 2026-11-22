@@ -5239,6 +5239,8 @@ components:
       required: [id, productName, planName, status, price, interval]
       properties:
         id: { type: string }
+        productSlug: { type: string, nullable: true }
+        planId: { type: string }
         productName: { type: string }
         planName: { type: string }
         status: { $ref: "#/components/schemas/SubscriptionStatus" }
