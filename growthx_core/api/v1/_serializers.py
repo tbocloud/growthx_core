@@ -50,6 +50,7 @@ def user(name: str) -> dict:
 		"company": company,
 		"partnerStatus": partner_status,
 		"hasPassword": accounts.has_password(name),
+		"socialLogins": accounts.social_providers(name),
 	}
 
 

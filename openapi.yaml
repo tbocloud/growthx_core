@@ -511,7 +511,7 @@ paths:
                 required: [signupRequired, signupToken, expiresAt, email, name]
                 properties:
                   signupRequired: { type: boolean, enum: [true] }
-                  signupToken: { type: string, example: gxg_..., description: "For `auth.signup`; works for one account" }
+                  signupToken: { type: string, example: gxs_..., description: "For `auth.signup`; works for one account" }
                   expiresAt: { type: string, format: date-time, description: 30 minutes from now }
                   email: { type: string, format: email, description: Verified by Google }
                   name: { type: string, description: "The Google account's name; may be empty" }
@@ -545,16 +545,25 @@ paths:
       tags: [auth]
       summary: Sign in with Microsoft (web)
       description: |
-        For the back office's own people: the Next.js server sends the user to Microsoft Entra ID (authorization-code
-        flow, scope `openid profile email`, PKCE recommended), receives `code` at its callback, and posts it here
-        **server-to-server**. Core exchanges it with Microsoft using the same redirect URI:
-        `<website>/api/auth/microsoft/callback` (production `https://tbogrowthx.com/api/auth/microsoft/callback`).
-        A code works once.
+        One multi-tenant Entra app registration (any organizational directory and personal Microsoft accounts; authority
+        `common`). The Next.js server sends the user to Microsoft (authorization-code flow, scope `openid profile email`,
+        PKCE recommended), receives `code` at its callback, and posts it here **server-to-server**. Core exchanges it with
+        Microsoft using the same redirect URI: `<website>/api/auth/microsoft/callback` (production
+        `https://tbogrowthx.com/api/auth/microsoft/callback`). A code works once. The token's issuer must be
+        `https://login.microsoftonline.com/{tid}/v2.0` for the token's own `tid`.
 
-        The account must belong to the configured directory (`microsoft_oauth_tenant_id`): a token from another
-        directory or a personal Microsoft account is refused (`400 microsoft_failed`). Email matches an existing
-        GrowthX account: **200**, logged in (same body as `auth.login`). No such account: **404 `no_account`** —
-        Microsoft never starts a sign-up; an admin creates the account first. Rate-limited per IP address.
+        **Staff** (the token's `tid` is `microsoft_oauth_staff_tenant_id`, the teambackoffice.com directory; guests of
+        that directory are not staff): **200**, logged in as `admin`. A new email gets a GrowthX user with no password and
+        the `GrowthX Admin` role (audit `staff.auto_provision`); an existing user gets the role if it lacks it. A user
+        disabled in GrowthX stays blocked (`403 account_unavailable`).
+
+        **Customers** (any other directory, and personal accounts): like `auth.google`, and never admin, whatever the
+        email. A Microsoft account already linked (`tid.oid`) signs in (**200**). Otherwise an existing user is matched by
+        email **only if the email is verified**: a personal account, or a work account whose token has the optional claim
+        `xms_edov` (add the optional claims `email` and `xms_edov` to the app registration). An unverified email that
+        already has an account: **409 `email_unverified`** (sign in another way, then link Microsoft from Account
+        settings). A new email: **202** with a `signupToken` for `auth.signup`; with `signInOnly: true`, **404
+        `no_account`**. Rate-limited per IP address.
       operationId: microsoftSignin
       x-phase: 2
       security: []
@@ -569,24 +578,33 @@ paths:
                 code: { type: string, maxLength: 2048, description: "`code` from Microsoft's redirect to the callback" }
                 codeVerifier: { type: string, maxLength: 128, description: "The PKCE verifier, if the website used PKCE" }
                 client: { $ref: "#/components/schemas/ClientKind" }
+                signInOnly:
+                  type: boolean
+                  description: "Sign-in-only mode (`/login?site=`): a new customer email gets `404 no_account` instead of a `202`"
       responses:
         "200":
           description: Logged in
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AuthSession" }
+        "202": { $ref: "#/components/responses/SocialSignupRequired" }
         "400":
-          description: "`microsoft_failed`: the code is invalid, used or expired, the redirect URI doesn't match, or the token is for another directory"
+          description: "`microsoft_failed`: the code is invalid, used or expired, the redirect URI doesn't match, or the token's claims are wrong (audience, issuer, expiry)"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "403":
-          description: "`account_unavailable`: the account is disabled, or is a staff account without a GrowthX role"
+          description: "`account_unavailable`: the account is disabled, is a staff account without a GrowthX role, or is an admin account (customers can't open those)"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "404":
-          description: "`no_account`: there's no GrowthX account for this Microsoft account"
+          description: "`no_account`: with `signInOnly`, there's no GrowthX account for this Microsoft account"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "`email_unverified`: the email already has an account but Microsoft hasn't verified it"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -597,6 +615,144 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+
+  /growthx_core.api.v1.auth.github:
+    post:
+      tags: [auth]
+      summary: Sign in or sign up with GitHub (web)
+      description: |
+        Like `auth.google`. The Next.js server sends the user to GitHub (OAuth app, scope `read:user user:email`, PKCE
+        recommended), receives `code` at `<website>/api/auth/github/callback` and posts it here **server-to-server**.
+        Core exchanges it with GitHub and uses only the **primary verified** email (`GET /user/emails`); the numeric
+        GitHub id is the stable id. GitHub never opens an admin account.
+
+        - An account is linked to this GitHub id, or the email belongs to an account: **200**, logged in.
+        - A new email: **202** with a `signupToken` for `auth.signup` (`socialToken`). With `signInOnly: true`: **404
+          `no_account`**.
+        Rate-limited per IP address.
+      operationId: githubSignin
+      x-phase: 2
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, maxLength: 2048, description: "`code` from GitHub's redirect to the callback" }
+                codeVerifier: { type: string, maxLength: 128, description: "The PKCE verifier, if the website used PKCE" }
+                client: { $ref: "#/components/schemas/ClientKind" }
+                signInOnly: { type: boolean, description: "A new email gets `404 no_account` instead of a `202`" }
+      responses:
+        "200":
+          description: Logged in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthSession" }
+        "202": { $ref: "#/components/responses/SocialSignupRequired" }
+        "400":
+          description: "`github_failed`: the code is invalid, used or expired, the redirect URI doesn't match, or GitHub's API failed"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: "`email_not_verified`: no primary verified email (or only a noreply address). `account_unavailable`: disabled, staff or admin account"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "`no_account`: with `signInOnly`, there's no GrowthX account for this GitHub account"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503":
+          description: "`github_unavailable`: GitHub sign-in isn't configured on this Core, or GitHub can't be reached"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /growthx_core.api.v1.auth.link_provider:
+    post:
+      tags: [auth]
+      summary: Link Google, Microsoft or GitHub to the logged-in account
+      description: |
+        Account settings. The same `code` flow as signing in (the callback runs in link mode), sent with the user's own
+        token. Returns the user (`socialLogins` now includes the provider). `409 already_linked`: that provider account
+        belongs to another GrowthX user; `409 provider_linked`: a different account of this provider is linked
+        (unlink it first); `409 not_linkable`: a staff Microsoft account. Errors from the provider are as in
+        `auth.google`, `auth.microsoft` and `auth.github`. 10 per 15 minutes per user.
+      operationId: linkProvider
+      x-phase: 2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, code]
+              properties:
+                provider: { type: string, enum: [google, microsoft, github] }
+                code: { type: string, maxLength: 2048 }
+                codeVerifier: { type: string, maxLength: 128 }
+      responses:
+        "200":
+          description: Linked
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400":
+          description: "`google_failed`, `microsoft_failed` or `github_failed`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "409":
+          description: "`already_linked`, `provider_linked` or `not_linkable`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /growthx_core.api.v1.auth.unlink_provider:
+    post:
+      tags: [auth]
+      summary: Unlink Google, Microsoft or GitHub from the logged-in account
+      description: |
+        Returns the user. `404 not_linked`; `409 last_sign_in_method` when it is the only way to sign in and the account
+        has no password (`user.hasPassword: false`; set one with Forgot password first). 10 per 15 minutes per user.
+      operationId: unlinkProvider
+      x-phase: 2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider]
+              properties:
+                provider: { type: string, enum: [google, microsoft, github] }
+      responses:
+        "200":
+          description: Unlinked
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404":
+          description: "`not_linked`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "`last_sign_in_method`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
 
   /growthx_core.api.v1.auth.site_info:
     get:
@@ -762,25 +918,31 @@ paths:
               type: object
               required: [accountType]
               description: |
-                Either `email`, `password`, `name` and `emailCode` (from `auth.send_signup_code`), or `googleSignupToken`
-                (from `auth.google`), with which `name` defaults to the Google name.
+                Either `email`, `password`, `name` and `emailCode` (from `auth.send_signup_code`), or `socialToken`
+                (from `auth.google`, `auth.microsoft` or `auth.github`), with which `name` defaults to the provider's name.
               properties:
                 accountType: { type: string, enum: [customer, partner] }
+                socialToken:
+                  type: string
+                  description: |
+                    The `signupToken` from `auth.google`, `auth.microsoft` or `auth.github` (202). The account gets the
+                    provider's email; any `email` sent is ignored. If the 202 said `emailVerified: false` (a Microsoft
+                    work account), `emailCode` is required as without a token. Otherwise as `googleSignupToken`.
                 googleSignupToken:
                   type: string
                   description: |
-                    The `signupToken` from `auth.google` (202). The account gets the email Google verified; any `email`
+                    Same as `socialToken`, kept for backward compatibility. The `signupToken` from `auth.google` (202). The account gets the email Google verified; any `email`
                     sent is ignored. Without `password` the account has none; the user can set one with "Forgot
                     password". Unknown, expired or used: 400 `google_signup_expired` (go through Google again). A
                     form error (422, 409) keeps the token, so the user can fix the form and resubmit.
                 name: { type: string, maxLength: 140 }
                 company: { type: string, maxLength: 140, description: "Required when accountType is customer. Can't contain < or > (422 validation_failed)" }
-                email: { type: string, format: email, description: Required without googleSignupToken }
+                email: { type: string, format: email, description: Required without a signup token }
                 emailCode:
                   type: string
                   pattern: "^\\d{6}$"
                   description: |
-                    Required without `googleSignupToken`. The code `auth.send_signup_code` emailed. Wrong: 422 with
+                    Required without `socialToken`/`googleSignupToken`. The code `auth.send_signup_code` emailed. Wrong: 422 with
                     `fields.emailCode` (it says how many tries are left). Expired, never sent, or 5 wrong tries: 400
                     `email_code_expired`. It stays valid after other form errors, and is used up when the account is
                     created.
@@ -790,7 +952,7 @@ paths:
                   format: password
                   minLength: 8
                   description: |
-                    Required without `googleSignupToken`. The site's password-strength policy also applies; a weak
+                    Required without `socialToken`/`googleSignupToken`. The site's password-strength policy also applies; a weak
                     password returns 422 with `fields.password`.
                 productSlug: { type: string, example: solar }
                 planId:
@@ -3831,6 +3993,21 @@ components:
       schema: { $ref: "#/components/schemas/ContentSiteSlugValue" }
 
   responses:
+    SocialSignupRequired:
+      description: No account with this email yet. Show the sign-up form and send `signupToken` to `auth.signup` as `socialToken`.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [signupRequired, signupToken, expiresAt, email, name]
+            properties:
+              signupRequired: { type: boolean, enum: [true] }
+              signupToken: { type: string, example: gxs_..., description: "For `auth.signup`; works for one account" }
+              expiresAt: { type: string, format: date-time, description: 30 minutes from now }
+              email: { type: string, format: email }
+              name: { type: string, description: "The provider account's name; may be empty" }
+              provider: { type: string, enum: [google, microsoft, github] }
+              emailVerified: { type: boolean, description: "False for a Microsoft work account whose email isn't verified: `auth.signup` then needs `emailCode`" }
     Ok:
       description: OK
       content:
@@ -3978,6 +4155,10 @@ components:
           description: |
             False for a Google sign-up that never set a password: show "Set a password" (Forgot password) instead of
             "Change password".
+        socialLogins:
+          type: array
+          items: { type: string, enum: [google, microsoft, github] }
+          description: "The providers linked to the account (Account settings, link and unlink)."
 
     ProvisioningHealth:
       type: object

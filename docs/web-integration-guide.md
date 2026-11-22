@@ -96,6 +96,9 @@ A slash (`{GROWTHX_API_URL}/catalogue.products`) is not a Frappe method and retu
 | POST | `auth.signup` | none | 2 | `POST /auth/signup` |
 | POST | `auth.google` | none | 2 | *new* (§5.12) |
 | POST | `auth.microsoft` | none | 2 | *new* (§5.12b) |
+| POST | `auth.github` | none | 2 | *new* (§5.12c) |
+| POST | `auth.link_provider` | any | 2 | *new* (§5.13) |
+| POST | `auth.unlink_provider` | any | 2 | *new* (§5.13) |
 | POST | `auth.send_signup_code` | none | 2 | *new* (§5.4) |
 | POST | `auth.change_password` | any | 2 | *new* (§5.13) |
 | POST | `auth.logout_others` | any | 2 | *new* (§5.13) |
@@ -569,30 +572,45 @@ later with "Forgot password".
 
 ### 5.12b Sign in with Microsoft (web)
 
-For the back office's own people (`teambackoffice.com`): an admin creates their GrowthX account first, then they
-sign in with their Microsoft account. Microsoft never starts a sign-up.
+One multi-tenant Entra app ("accounts in any organizational directory and personal Microsoft accounts", authority
+`common`). Setup: [`sso-setup.md`](sso-setup.md). Who the person is decides what happens:
 
-1. **"Continue with Microsoft"** → redirect to
-   `https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize` with `client_id`,
-   `redirect_uri={website}/api/auth/microsoft/callback`, `response_type=code`, `scope=openid profile email`, a
-   random `state` (short-lived httpOnly cookie) and PKCE (`code_challenge`, `S256`). The client ID is public; the
-   secret is only on Core, as `microsoft_oauth_client_id` / `microsoft_oauth_client_secret` /
-   `microsoft_oauth_tenant_id` (the directory ID; `organizations` accepts any work account).
+1. **"Continue with Microsoft"** → redirect to `https://login.microsoftonline.com/common/oauth2/v2.0/authorize` with
+   `client_id`, `redirect_uri={website}/api/auth/microsoft/callback`, `response_type=code`,
+   `scope=openid profile email`, a random `state` (short-lived httpOnly cookie) and PKCE (`code_challenge`, `S256`).
 2. **`GET /api/auth/microsoft/callback`** (Next.js route): check `state`, then server-to-server:
 
 ```http
 POST {GROWTHX_API_URL}.auth.microsoft     {"code": "<code>", "codeVerifier": "<if PKCE>"}
 ```
 
-- `200` → the same session as `auth.login`: store it and go to the dashboard.
-- `404 no_account` → no GrowthX account for this Microsoft account; nothing is created.
-- `400 microsoft_failed` (code used, expired, redirect URI mismatch, or a token from another directory),
-  `403 account_unavailable` (disabled or staff account), `503 microsoft_unavailable` → back to the login page
-  with a message.
+- **Staff** (the token's `tid` is the teambackoffice.com directory, `microsoft_oauth_staff_tenant_id`): `200`, logged in
+  as `admin`. A new email gets a GrowthX user (no password) with `GrowthX Admin` (audit `staff.auto_provision`); an
+  existing user gets the role if missing. A user disabled in GrowthX stays blocked (`403 account_unavailable`). Guests of
+  that directory (`#EXT#`) are not staff.
+- **Customers** (any other directory, and personal Microsoft accounts) behave like Google and can **never** be admin,
+  even with an `@teambackoffice.com` email:
+  - the Microsoft account (`tid.oid`) is already linked → `200`;
+  - else an existing user is matched by email **only when the email is verified**: a personal account, or a work
+    account with the optional claim `xms_edov` true. An unverified email that already has an account →
+    `409 email_unverified` ("sign in another way, then link Microsoft from Account settings");
+  - a new email → `202 {"signupRequired": true, "signupToken": "gxs_…", "email", "name", "provider", "emailVerified"}`
+    → sign-up form, then `auth.signup` with `"socialToken": "<signupToken>"`. If `emailVerified` is `false` the form also
+    needs the emailed code (`auth.send_signup_code`, `emailCode`). `signInOnly: true` → `404 no_account`.
+- `400 microsoft_failed`, `403 account_unavailable`, `503 microsoft_unavailable` → back to the login page with a message.
 
-The account is matched by email (`preferred_username`), so it must be the address on the GrowthX user. Core
-records the Microsoft link (`User Social Login`, provider `microsoft`). Admin-panel access still comes from the
-`GrowthX Admin` role.
+### 5.12c Sign in or sign up with GitHub (web)
+
+Like Google. **"Continue with GitHub"** → `https://github.com/login/oauth/authorize` with `client_id`,
+`redirect_uri={website}/api/auth/github/callback`, `scope=read:user user:email`, `state` (httpOnly cookie) and PKCE.
+The callback posts `POST {GROWTHX_API_URL}.auth.github {"code", "codeVerifier"}`. Core uses only the **primary verified**
+email (`403 email_not_verified` if there is none) and the numeric GitHub id as the stable id. Responses are as for Google:
+`200` session, `202` with a `signupToken` (→ `auth.signup` `socialToken`), `404 no_account` with `signInOnly`,
+`403 account_unavailable` (disabled, staff, or an admin account: GitHub never opens admin), `400 github_failed`,
+`503 github_unavailable`, `429`.
+
+**Signup tokens** are provider-agnostic (`gxs_…`, 30 minutes, one account). `auth.signup` takes `socialToken`;
+`googleSignupToken` still works as the same field.
 
 ### 5.13 Account settings (any role)
 
@@ -602,6 +620,10 @@ records the Microsoft link (`User Social Login`, provider `microsoft`). Admin-pa
   stored tokens**, because every other session (this one's old tokens included) is revoked. `newPassword`: 10–128
   characters, a letter and a number. Errors: `422 wrong_password` (`fields.currentPassword`), `422` with
   `fields.newPassword`, `409 no_password`, `429` after 5 tries in 15 minutes.
+- `user.socialLogins` (`["google","microsoft","github"]` subset) lists the linked sign-in providers. Link one:
+  start the provider's redirect in link mode, then `POST auth.link_provider {provider, code, codeVerifier}` with the
+  user's token (`409 already_linked`, `provider_linked`, `not_linkable`). Unlink: `POST auth.unlink_provider {provider}`
+  (`404 not_linked`; `409 last_sign_in_method` when it is the last way in and there is no password). Both return the user.
 - `POST auth.logout_others {}` → `{ok: true, revoked: <n>}`; this session stays.
 
 ### 5.14 Referral link clicks
@@ -664,7 +686,7 @@ below is phase 2. Phase 2 keeps the phase 1 response shapes.
 | 400 | `bad_request` | Body isn't a JSON object |
 | 400 | `invalid_reset_key` | Reset key unknown, used or expired |
 | 400 | `google_failed`, `google_signup_expired` | Google sign-in (§5.12) |
-| 400 | `microsoft_failed` | Microsoft sign-in (§5.12b) |
+| 400 | `microsoft_failed`, `github_failed` | Microsoft sign-in (§5.12b); GitHub sign-in (§5.12c) |
 | 400 | `email_code_expired` | Sign-up email code expired, never sent, or 5 wrong tries (§5.4) |
 | 403 | `email_not_verified`, `account_unavailable` | Google sign-in (§5.12); Microsoft sign-in (§5.12b) |
 | 409 | `domain_exists`, `domain_taken` | Custom domains (§5.15) |
@@ -672,6 +694,9 @@ below is phase 2. Phase 2 keeps the phase 1 response shapes.
 | 404 | `site_not_found`, `no_account` | "Sign in with GrowthX" (§5.16); Microsoft sign-in with no account (§5.12b) |
 | 409 | `site_unavailable` | "Sign in with GrowthX": the site is suspended (§5.16) |
 | 403 | `plan_required` | Custom domains on a trial (§5.15) |
+| 409 | `email_unverified` | Microsoft sign-in: the email has an account but isn't verified (§5.12b) |
+| 409 | `already_linked`, `provider_linked`, `not_linkable`, `last_sign_in_method` | Link / unlink a sign-in provider (§5.13) |
+| 404 | `not_linked` | Unlink a provider that isn't linked (§5.13) |
 | 409 | `no_password`, `invalid_transition` | Account settings (§5.13); admin customer actions (§5.9) |
 | 422 | `wrong_password` | Change password: current password wrong (§5.13) |
 | 400 | `payment_verification_failed` | Gateway signature doesn't match |
@@ -688,6 +713,7 @@ below is phase 2. Phase 2 keeps the phase 1 response shapes.
 | 503 | `payment_unavailable` | Gateway not configured or unreachable |
 | 503 | `google_unavailable` | Google sign-in not configured or Google unreachable |
 | 503 | `microsoft_unavailable` | Microsoft sign-in not configured or Microsoft unreachable |
+| 503 | `github_unavailable` | GitHub sign-in not configured or GitHub unreachable |
 | 503 | `email_unavailable` | The sign-up code email couldn't be sent |
 | 503 | `hosting_unavailable` | Press couldn't be reached to remove a custom domain (§5.15) |
 
