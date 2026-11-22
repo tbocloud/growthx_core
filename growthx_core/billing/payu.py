@@ -25,6 +25,7 @@ from frappe.utils import add_to_date, flt, get_datetime, getdate, now_datetime, 
 
 from growthx_core.api.v1._core import ApiError, audit
 from growthx_core.billing import payments, tax_invoice
+from growthx_core.partners import commissions
 
 GATEWAY = "payu"
 PAYABLE_PR_STATUSES = ("Initiated", "Requested")
@@ -406,6 +407,7 @@ def on_payment_entry_cancel(doc, method=None):
 	):
 		try:
 			checkout = frappe.get_doc("GX Checkout", name, for_update=True)
+			_void_commission(checkout, doc.name)
 			plan_state = (
 				"The plan it activated is still active"
 				if checkout.status == "paid"
@@ -429,6 +431,23 @@ def on_payment_entry_cancel(doc, method=None):
 			frappe.log_error(title=f"GrowthX: could not flag checkout {name} after Payment Entry cancel")
 
 
+def _void_commission(checkout, payment_entry: str):
+	"""The money came back, so the partner's commission on it is void. One already paid out can't be
+	voided here: the audit log asks an admin to take it off the partner's next payout."""
+	reason = f"Payment Entry {payment_entry} was cancelled (refund or reversal)."
+	voided = commissions.void_for_payment(checkout.account, checkout.name, reason)
+	key = commissions.payment_key(checkout.account, checkout.name)
+	paid = frappe.db.get_value("GX Commission", {"payment_key": key, "status": "paid"})
+	if voided or paid:
+		audit(
+			"commission.void_on_refund",
+			"GX Commission",
+			(voided or [paid])[0],
+			f"{reason} "
+			+ ("Commission voided." if voided else "Commission was already paid out: claw it back."),
+		)
+
+
 def _activate(checkout_name: str, payment_entry: str, paid_on):
 	checkout = frappe.get_doc("GX Checkout", checkout_name, for_update=True)
 	if flt(frappe.db.get_value("Sales Invoice", checkout.sales_invoice, "outstanding_amount")) > 0:
@@ -437,7 +456,15 @@ def _activate(checkout_name: str, payment_entry: str, paid_on):
 	try:
 		account = frappe.get_doc("GX Account", checkout.account, for_update=True)
 		plan = frappe.get_doc("GX Plan", checkout.plan)
-		_sub, details, period_end = payments.apply_payment(account, plan, checkout.name, paid_on, GATEWAY)
+		_sub, details, period_end = payments.apply_payment(
+			account,
+			plan,
+			checkout.name,
+			paid_on,
+			GATEWAY,
+			amount=checkout.amount,
+			sales_invoice=checkout.sales_invoice,
+		)
 		audit(
 			"customer.online_payment",
 			"GX Account",

@@ -79,10 +79,11 @@ The **Partner app** endpoints come from Flutter's "GrowthX Partner App - Propose
 
 | State | Endpoints | Notes |
 |---|---|---|
-| **Built** (14 Oct 2026) | `partner.dashboard`, `partner.customers`, `partner.customer`, `partner.referral_stats`, `partner.earnings`, `partner.notifications`, `partner.mark_notification_read`, `partner.mark_all_notifications_read`, `partner.dismiss_notification`, `partner.register_device`, `partner.unregister_device`, `partner.profile`, `partner.update_profile`, `partner.notification_preferences`, `partner.update_notification_preferences` | `earnings` (and `dashboard.earnings`) show placeholder figures until D8. `referral_stats.clicks` is null until the website records link visits. Push needs a Firebase project (`growthx_fcm` in site_config); until then notifications are in-app only. Notifications are created for a new referred customer and 3 days before a trial ends. |
+| **Built** (14 Oct 2026) | `partner.dashboard`, `partner.customers`, `partner.customer`, `partner.referral_stats`, `partner.earnings`, `partner.notifications`, `partner.mark_notification_read`, `partner.mark_all_notifications_read`, `partner.dismiss_notification`, `partner.register_device`, `partner.unregister_device`, `partner.profile`, `partner.update_profile`, `partner.notification_preferences`, `partner.update_notification_preferences` | `earnings` (and `dashboard.earnings`) now read the commission ledger (GX Commission / GX Payout). `referral_stats.clicks` is null until the website records link visits. Push needs a Firebase project (`growthx_fcm` in site_config); until then notifications are in-app only. Notifications are created for a new referred customer and 3 days before a trial ends. |
 | Proposed | `partner.leads`, `partner.create_lead`, `partner.update_lead` | Lead rules: duplicates across partners, who changes status (Sammish). ERPNext Lead's own rule is one lead per email across the whole site. |
 | Proposed | `partner.campaigns` | Do campaigns exist at launch? Global or per partner? (Sammish) |
-| Proposed | `partner.commissions`, `partner.payouts`, `partner.payout` | Commission rules, review period, TDS, payout date (D8, finance) |
+| Built (22 Nov 2026) | `partner.commissions`, `partner.payouts`; admin `commissions`, `approve_commissions`, `void_commissions`, `payouts`, `create_payouts`, `mark_payout_paid`, `cancel_payout` | Rules live in the `GX Partner Program Settings` Single, see `docs/partner-commissions.md`. TDS rate, hold days and the payout day need business confirmation. |
+| Proposed | `partner.payout` | One payout with its commission lines |
 | Proposed | `partner.request_payout_method_otp`, `partner.update_payout_method` | Verification method (SMS or email OTP, or password) and an SMS provider (Sammish) |
 
 How Flutter's proposal was adapted to the agreed conventions: no `{data, meta, error}` envelope (the body is the
@@ -106,7 +107,7 @@ All 108 operations in `openapi.yaml` are implemented in `growthx_core/api/v1/`. 
 | customer.open_site + tenant.redeem_login | Single sign-on works end to end locally (13 Oct 2026): the customer lands in their tenant's desk as their own user | On Press: writing the tenant's site_config (DevOps). Web server access logs contain the one-time token (it is in the URL); it is useless once used or after 60 s. |
 | Provisioning (sign-up → ready) | Working with a **fake Press client** | The real Press client is waiting on DevOps (endpoints, token). The `configure` step is waiting on the Solar set-up method (Nahala). |
 | billing.create_checkout / checkout_status | PayU (the frappe_payu app), Nov 2026; Razorpay removed | Core makes a Sales Invoice + PayU Payment Request (no email) and returns PayU's form; frappe_payu verifies the payment with PayU's API and marks it paid (Payment Entry); a Payment Entry hook activates the plan like `admin.record_payment`. Returns 503 `payment_unavailable` until `growthx_payu_gateway_account` is set. |
-| partner.summary / commission_history | Working | Commission figures use placeholder rules until D8. |
+| partner.summary / commission_history | Working | Read from GX Commission. |
 | admin.summary / customers / tenants / tenant / retry_provisioning | Working | — |
 
 **Pricing (D6, decided Nov 2026):** the launch offer is one lifetime plan per product (`<product>-lifetime`, `one_time`): ₹1,50,000 **including** 18 % GST, paid once by bank transfer and recorded with `admin.record_payment`. The monthly and yearly plans are retired (`seed.lifetime_plans`). Trial: 7 days from sign-up (was 14 until Nov 2026).

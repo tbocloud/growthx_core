@@ -8,6 +8,7 @@ white-label leak, and the outside link makes spam filters treat GrowthX mail as 
 import frappe
 
 from growthx_core import website_content
+from growthx_core.partners import program
 from growthx_core.setup import defaults
 
 EMAIL_FOOTER = "TBO GrowthX · https://tbogrowthx.com"
@@ -35,6 +36,8 @@ def apply_settings():
 	_enable_two_factor()
 	# SEO settings rows for the six marketing sites (website content).
 	website_content.ensure_sites()
+	# The published partner-program tiers, editable in GX Partner Program Settings.
+	program.ensure_defaults()
 
 
 def _enable_two_factor():

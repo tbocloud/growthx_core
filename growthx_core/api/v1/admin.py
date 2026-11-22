@@ -4,6 +4,7 @@ import frappe
 from frappe.query_builder.functions import Count
 from frappe.utils import add_months, add_years, fmt_money, get_datetime, getdate, now_datetime, nowdate
 
+from growthx_core.api.v1 import _ledger as ledger
 from growthx_core.api.v1 import _serializers as s
 from growthx_core.api.v1 import appointments as appts
 from growthx_core.api.v1._core import (
@@ -27,6 +28,7 @@ from growthx_core.api.v1._core import (
 )
 from growthx_core.billing import payments, payu
 from growthx_core.billing.payments import set_customer_status as _set_customer_status
+from growthx_core.partners import commissions as commission_ops
 from growthx_core.provisioning import press, runner
 from growthx_core.setup.defaults import default_link
 
@@ -283,7 +285,9 @@ def record_payment():
 	account = frappe.get_doc("GX Account", account_id, for_update=True)
 	# The customer mustn't also pay online for what's recorded here (409 if a payment is under way).
 	payu.cancel_open_checkouts(account.name, plan.product)
-	_sub, details, period_end = payments.apply_payment(account, plan, reference, paid_on, "manual")
+	_sub, details, period_end = payments.apply_payment(
+		account, plan, reference, paid_on, "manual", amount=amount / 100
+	)
 	audit(
 		"customer.record_payment",
 		"GX Account",
@@ -868,6 +872,223 @@ def _email_partner_approved(doc):
 	except Exception:
 		# The approval stands; admins see the failure in the Error Log.
 		frappe.log_error(title=f"GrowthX: could not send partner-approved email for {doc.name}")
+
+
+# ---------------------------------------------------------------- partner commissions and payouts
+
+COMMISSION_STATUSES = ("pending", "approved", "paid", "void")
+PAYOUT_STATUSES = ("draft", "paid", "cancelled")
+PAYOUT_METHODS = ("bank_transfer", "upi", "other")
+MAX_BULK = 200
+
+
+def _month_range(data: dict, key: str = "month"):
+	value = get_str(data, key, max_length=7)
+	if not value:
+		return None
+	try:
+		return commission_ops.valid_period(value)
+	except (ValueError, TypeError):
+		raise validation_error({key: "Use a month as YYYY-MM."})
+
+
+def _ids(data: dict) -> list[str]:
+	ids = data.get("ids")
+	if (
+		not isinstance(ids, list)
+		or not ids
+		or len(ids) > MAX_BULK
+		or not all(isinstance(i, str) and i for i in ids)
+	):
+		raise validation_error({"ids": f"Send between 1 and {MAX_BULK} commission ids."})
+	return list(dict.fromkeys(ids))
+
+
+@endpoint(methods=("GET",), roles=("admin",))
+def commissions():
+	data = query()
+	page, page_size = page_params(data)
+	status = get_choice(data, "status", COMMISSION_STATUSES)
+	partner_id = get_str(data, "partner", max_length=140)
+	month = _month_range(data)
+	order_by = get_sort(data, {"earnedAt": "paid_on", "amount": "amount"}, "-earnedAt")
+
+	filters = {}
+	if partner_id:
+		filters["partner"] = partner_id
+	if month:
+		filters["paid_on"] = ("between", [month[0], month[1]])
+	list_filters = {**filters, **({"status": status} if status else {})}
+	rows = frappe.get_all(
+		"GX Commission",
+		filters=list_filters,
+		fields=ledger.COMMISSION_FIELDS,
+		order_by=f"{order_by}, creation desc",
+		limit_start=(page - 1) * page_size,
+		limit_page_length=page_size,
+	)
+	# Totals per status for the same partner/month filter, so the page can show how much is waiting.
+	totals = dict.fromkeys(COMMISSION_STATUSES, 0)
+	for r in frappe.get_all("GX Commission", filters=filters, fields=["status", "amount"]):
+		totals[r.status] += commission_ops.to_paise(r.amount)
+	customers, partners_ = ledger.account_names(rows), ledger.partner_names(rows)
+	result = page_meta(
+		page,
+		page_size,
+		frappe.db.count("GX Commission", list_filters),
+		[ledger.admin_commission(r, customers, partners_) for r in rows],
+	)
+	result["totals"] = {k: {"amount": v, "currency": "INR"} for k, v in totals.items()}
+	return result
+
+
+def _bulk_result(done: list[str], skipped: list[dict]) -> dict:
+	return {"updated": len(done), "ids": done, "skipped": skipped}
+
+
+@endpoint(methods=("POST",), roles=("admin",), idempotent=True)
+def approve_commissions():
+	"""Approve pending commissions (up to 200 ids). A commission that isn't pending, or whose hold
+	period (Partner Program Settings) hasn't ended, is skipped and named in `skipped`. Audited."""
+	ids = _ids(body())
+	done, skipped = commission_ops.approve(ids, frappe.session.user)
+	for name in done:
+		audit("commission.approve", "GX Commission", name, "pending → approved")
+	_notify_approved(done)
+	return _bulk_result(done, skipped)
+
+
+def _notify_approved(names: list[str]):
+	from growthx_core.partners.notifications import notify
+
+	if not names:
+		return
+	totals: dict[str, list] = {}
+	for r in frappe.get_all("GX Commission", {"name": ("in", names)}, ["partner", "amount"]):
+		totals.setdefault(r.partner, []).append(commission_ops.to_paise(r.amount))
+	for partner_id, amounts in totals.items():
+		user = frappe.db.get_value("GX Partner Profile", partner_id, "user")
+		if user:
+			notify(
+				user,
+				"commission",
+				"Commission approved",
+				f"{fmt_money(commission_ops.to_rupees(sum(amounts)), currency='INR')} approved"
+				f" ({len(amounts)} payment{'s' if len(amounts) != 1 else ''}), to be paid in the next payout.",
+				deep_link_type="earnings",
+			)
+
+
+@endpoint(methods=("POST",), roles=("admin",), idempotent=True)
+def void_commissions():
+	"""Void commissions that aren't paid yet (up to 200 ids), with a reason (e.g. a refund). One in a
+	draft payout leaves it and the payout is recalculated. Paid ones are skipped. Audited."""
+	data = body()
+	ids = _ids(data)
+	reason = get_str(data, "reason", required=True, max_length=500, label="Reason")
+	done, skipped = commission_ops.void(ids, reason)
+	for name in done:
+		audit("commission.void", "GX Commission", name, reason)
+	return _bulk_result(done, skipped)
+
+
+@endpoint(methods=("GET",), roles=("admin",))
+def payouts():
+	data = query()
+	page, page_size = page_params(data)
+	status = get_choice(data, "status", PAYOUT_STATUSES)
+	partner_id = get_str(data, "partner", max_length=140)
+	period = get_str(data, "period", max_length=7)
+	if period:
+		try:
+			commission_ops.valid_period(period)
+		except (ValueError, TypeError):
+			raise validation_error({"period": "Use a month as YYYY-MM."})
+	filters = {k: v for k, v in {"status": status, "partner": partner_id, "period": period}.items() if v}
+	rows = frappe.get_all(
+		"GX Payout",
+		filters=filters,
+		fields=ledger.PAYOUT_FIELDS,
+		order_by="creation desc",
+		limit_start=(page - 1) * page_size,
+		limit_page_length=page_size,
+	)
+	names = ledger.partner_names(rows)
+	return page_meta(
+		page, page_size, frappe.db.count("GX Payout", filters), [ledger.payout(r, names) for r in rows]
+	)
+
+
+@endpoint(methods=("POST",), roles=("admin",), idempotent=True)
+def create_payouts():
+	"""Payout run for a month `{period: "YYYY-MM"}`: each active partner whose approved, unpaid
+	commission on payments up to the end of that month reaches the minimum payout gets a draft payout
+	(gross, TDS, net). Smaller balances are listed in `skipped` and carry over. Repeating it never
+	includes a commission twice."""
+	period = get_str(body(), "period", required=True, max_length=7, label="Period")
+	try:
+		commission_ops.valid_period(period)
+	except (ValueError, TypeError):
+		raise validation_error({"period": "Use a month as YYYY-MM."})
+	if period > nowdate()[:7]:
+		raise validation_error({"period": "A payout can't be made for a month that hasn't started."})
+	created, skipped = commission_ops.create_payouts(period, frappe.session.user)
+	for p in created:
+		audit(
+			"payout.create",
+			"GX Payout",
+			p.name,
+			f"{p.period}: {p.commission_count} commissions, gross {fmt_money(p.gross, currency='INR')},"
+			f" TDS {fmt_money(p.tds, currency='INR')} ({p.tds_rate:g}%), net {fmt_money(p.net, currency='INR')}",
+		)
+	names = ledger.partner_names(created)
+	return {
+		"created": [ledger.payout(p, names) for p in created],
+		"skipped": [{**r, "amount": {"amount": r["amount"], "currency": "INR"}} for r in skipped],
+	}
+
+
+def _draft_payout(payout_id: str):
+	if not frappe.db.exists("GX Payout", payout_id):
+		raise not_found()
+	doc = frappe.get_doc("GX Payout", payout_id, for_update=True)
+	if doc.status != "draft":
+		raise ApiError(409, "not_draft", f"This payout is already {doc.status}.")
+	return doc
+
+
+@endpoint(methods=("POST",), roles=("admin",), idempotent=True)
+def mark_payout_paid():
+	"""Record that a draft payout was transferred `{id, reference, paidOn, method}`: the payout and
+	its commissions become paid and the partner is told (in the app, and by email if they opted in to
+	commission updates). A payout that is already paid or cancelled answers 409."""
+	data = body()
+	payout_id = get_str(data, "id", required=True)
+	reference = get_str(data, "reference", required=True, max_length=140, label="UTR / reference")
+	paid_on = _paid_on(data.get("paidOn"))
+	method = get_choice(data, "method", PAYOUT_METHODS, required=True)
+	doc = _draft_payout(payout_id)
+	count = commission_ops.mark_paid(doc.name, reference, paid_on, method, frappe.session.user)
+	audit(
+		"payout.mark_paid",
+		"GX Payout",
+		doc.name,
+		f"{fmt_money(doc.net, currency='INR')} net ({count} commissions) paid on {paid_on.isoformat()}"
+		f" by {method}, reference {reference}",
+	)
+	doc.reload()
+	commission_ops.notify_payout_paid(doc)
+	return ledger.payout(doc, ledger.partner_names([doc]))
+
+
+@endpoint(methods=("POST",), roles=("admin",), idempotent=True)
+def cancel_payout():
+	"""Drop a draft payout `{id}`: its commissions go back to approved, ready for the next run."""
+	doc = _draft_payout(get_str(body(), "id", required=True))
+	commission_ops.cancel_payout(doc.name)
+	audit("payout.cancel", "GX Payout", doc.name, f"{doc.period} draft cancelled")
+	doc.reload()
+	return ledger.payout(doc, ledger.partner_names([doc]))
 
 
 # ---------------------------------------------------------------- appointments ("Talk to an expert")

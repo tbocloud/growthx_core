@@ -1998,7 +1998,7 @@ paths:
       summary: "Earnings summary"
       operationId: partnerEarnings
       x-phase: 3
-      x-note: "Placeholder figures until the commission rules are decided (D8): commission from ERPNext Sales Invoices; commission on paid invoices counts as pending; approved and paidLifetime are 0; nextPayoutDate and tdsRate are null."
+      x-note: "From the commission ledger (GX Commission); the rules are the Partner Program Settings in Core."
       x-roles: [partner]
       responses:
         "200":
@@ -2011,11 +2011,10 @@ paths:
   /growthx_core.api.v1.partner.commissions:
     get:
       tags: [partner]
-      summary: "[PROPOSED] Commission ledger"
+      summary: Commission ledger
+      description: "The partner's own commissions, newest first. A refunded commission is `reversed`. `type` is not a filter yet."
       operationId: partnerListCommissions
-      x-status: proposed
       x-phase: 3
-      x-decision: "Commission rules (D8)"
       x-roles: [partner]
       parameters:
         - { name: status, in: query, schema: { $ref: "#/components/schemas/CommissionStatus" } }
@@ -2045,11 +2044,10 @@ paths:
   /growthx_core.api.v1.partner.payouts:
     get:
       tags: [partner]
-      summary: "[PROPOSED] Payout history"
+      summary: Payout history
+      description: "A payout that is created but not yet transferred shows as `processing`. Cancelled payouts are not shown."
       operationId: partnerListPayouts
-      x-status: proposed
       x-phase: 3
-      x-decision: "Payout schedule, minimum payout, TDS (D8, finance)"
       x-roles: [partner]
       parameters:
         - { name: status, in: query, schema: { $ref: "#/components/schemas/PayoutStatus" } }
@@ -2539,6 +2537,261 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+
+  /growthx_core.api.v1.admin.commissions:
+    get:
+      tags: [admin]
+      summary: Partner commissions
+      description: |
+        Every commission, newest payment first, with `totals` (paise per status) for the same partner and month
+        filter. A commission is created when a customer a partner referred pays (one per payment) and is
+        `pending` until approved. `void`: the payment was refunded or an admin voided it.
+      operationId: adminListCommissions
+      x-phase: 3
+      x-roles: [admin]
+      parameters:
+        - { name: partner, in: query, schema: { type: string }, description: Partner id }
+        - { name: status, in: query, schema: { type: string, enum: [pending, approved, paid, void] } }
+        - { name: month, in: query, schema: { type: string, pattern: "^\\d{4}-\\d{2}$" }, description: "Month the customer paid, YYYY-MM" }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - { name: sort, in: query, schema: { type: string, enum: [earnedAt, -earnedAt, amount, -amount], default: -earnedAt } }
+      responses:
+        "200":
+          description: Commissions
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    required: [items, totals]
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/AdminCommission" }
+                      totals:
+                        type: object
+                        required: [pending, approved, paid, void]
+                        properties:
+                          pending: { $ref: "#/components/schemas/Money" }
+                          approved: { $ref: "#/components/schemas/Money" }
+                          paid: { $ref: "#/components/schemas/Money" }
+                          void: { $ref: "#/components/schemas/Money" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.approve_commissions:
+    post:
+      tags: [admin]
+      summary: Approve commissions (bulk)
+      description: |
+        `pending` → `approved` for up to 200 ids. One that isn't pending, or is still inside the hold period
+        (Partner Program Settings, `hold_days`), is left alone and named in `skipped` (`already_<status>`,
+        `on_hold`, `not_found`). Each approval is audit-logged and the partner is notified. Accepts `Idempotency-Key`.
+      operationId: adminApproveCommissions
+      x-phase: 3
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ids]
+              properties:
+                ids: { type: array, minItems: 1, maxItems: 200, items: { type: string } }
+      responses:
+        "200":
+          description: Result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BulkCommissionResult" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.void_commissions:
+    post:
+      tags: [admin]
+      summary: Void commissions (bulk)
+      description: |
+        `pending` or `approved` → `void` for up to 200 ids, with a reason (e.g. a refund). A commission in a draft
+        payout leaves it and the payout is recalculated (cancelled if nothing is left). A paid commission is left
+        alone (`already_paid`). Each one is audit-logged. Accepts `Idempotency-Key`.
+      operationId: adminVoidCommissions
+      x-phase: 3
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ids, reason]
+              properties:
+                ids: { type: array, minItems: 1, maxItems: 200, items: { type: string } }
+                reason: { type: string, maxLength: 500 }
+      responses:
+        "200":
+          description: Result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BulkCommissionResult" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.payouts:
+    get:
+      tags: [admin]
+      summary: Partner payouts
+      operationId: adminListPayouts
+      x-phase: 3
+      x-roles: [admin]
+      parameters:
+        - { name: partner, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string, enum: [draft, paid, cancelled] } }
+        - { name: period, in: query, schema: { type: string, pattern: "^\\d{4}-\\d{2}$" } }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Payouts, newest first
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/AdminPayout" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.create_payouts:
+    post:
+      tags: [admin]
+      summary: Run payouts for a month
+      description: |
+        For each active partner whose `approved`, unpaid commission on payments up to the end of `period` adds up to
+        the minimum payout (Partner Program Settings), creates a `draft` payout: gross, TDS (once on the total,
+        rounded half up to the paisa) and net. Smaller balances are listed in `skipped` and carry over. Safe to
+        repeat: a commission already in a payout is never included twice. Audit-logged. Accepts `Idempotency-Key`.
+      operationId: adminCreatePayouts
+      x-phase: 3
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [period]
+              properties:
+                period: { type: string, pattern: "^\\d{4}-\\d{2}$", description: "Month, not later than the current one" }
+      responses:
+        "200":
+          description: Result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [created, skipped]
+                properties:
+                  created:
+                    type: array
+                    items: { $ref: "#/components/schemas/AdminPayout" }
+                  skipped:
+                    type: array
+                    items:
+                      type: object
+                      required: [partner, reason, amount]
+                      properties:
+                        partner: { type: string }
+                        reason: { type: string, enum: [below_minimum, partner_not_active] }
+                        amount: { $ref: "#/components/schemas/Money" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.mark_payout_paid:
+    post:
+      tags: [admin]
+      summary: Record that a payout was transferred
+      description: |
+        `draft` → `paid`, with the bank or UPI reference, the date and the method. Its commissions become `paid` and
+        the partner is notified in the app (and by email if they opted in to commission updates). Anything but a draft
+        answers `409 not_draft`, so a payout can't be paid twice. Audit-logged. Accepts `Idempotency-Key`.
+      operationId: adminMarkPayoutPaid
+      x-phase: 3
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, reference, paidOn, method]
+              properties:
+                id: { type: string }
+                reference: { type: string, maxLength: 140, description: UTR or transaction reference }
+                paidOn: { type: string, format: date, description: Not in the future }
+                method: { type: string, enum: [bank_transfer, upi, other] }
+      responses:
+        "200":
+          description: The payout
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminPayout" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.cancel_payout:
+    post:
+      tags: [admin]
+      summary: Cancel a draft payout
+      description: Its commissions go back to `approved` and unpaid, ready for the next run. `409 not_draft` otherwise. Audit-logged.
+      operationId: adminCancelPayout
+      x-phase: 3
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string }
+      responses:
+        "200":
+          description: The payout
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminPayout" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
 
   /growthx_core.api.v1.admin.update_partner_status:
     post:
@@ -4498,7 +4751,7 @@ components:
             updatedAt: { type: string, format: date-time }
 
     PartnerEarnings:
-      description: "All amounts calculated on the server. Placeholder figures until the commission rules are decided (D8)."
+      description: "All amounts calculated on the server, from the commission ledger. Commission is before TDS."
       type: object
       required: [thisMonth, lastMonth, pending, approved, paidLifetime, lifetimeTotal]
       properties:
@@ -4510,11 +4763,14 @@ components:
         lifetimeTotal: { $ref: "#/components/schemas/Money" }
         nextPayoutDate: { type: string, format: date, nullable: true }
         tdsRate: { type: number, nullable: true, description: "e.g. 0.02 for 2 %. Display only; TDS is calculated on the server." }
+        minimumPayout: { $ref: "#/components/schemas/Money", description: "Approved, unpaid commission needed before a payout is made (before TDS)" }
+        commissionRate: { type: number, description: "The partner's current rate, e.g. 0.2 for 20 %" }
+        tier: { type: string, description: "The partner's current tier, e.g. Seed" }
 
     CommissionStatus:
       type: string
       enum: [pending, approved, paid, reversed]
-      description: "Show `pending` as \"Under review\". `reversed`: the customer was refunded."
+      description: "Show `pending` as \"Under review\". `reversed`: the payment was refunded or cancelled (admins see `void`)."
 
     CommissionType:
       type: string
@@ -4557,11 +4813,13 @@ components:
       required: [id, reference, period, status, gross, tds, net]
       properties:
         id: { type: string }
-        reference: { type: string, example: GXP-2026-0318 }
+        reference: { type: string, nullable: true, example: UTR123456789, description: "Bank or UPI reference, set once the payout is paid" }
         period: { type: string, pattern: "^\\d{4}-\\d{2}$", example: 2026-09 }
         status: { $ref: "#/components/schemas/PayoutStatus" }
         paidAt: { type: string, format: date-time, nullable: true }
-        method: { allOf: [{ $ref: "#/components/schemas/PayoutMethod" }], nullable: true }
+        method: { type: string, enum: [bank_transfer, upi, other], nullable: true }
+        commissionCount: { type: integer }
+        tdsRate: { type: number, description: "e.g. 0.02 for 2 %, as applied to this payout" }
         gross: { $ref: "#/components/schemas/Money" }
         tds: { $ref: "#/components/schemas/Money" }
         net: { $ref: "#/components/schemas/Money" }
@@ -4642,6 +4900,47 @@ components:
     PartnerStatus:
       type: string
       enum: [pending_approval, active, suspended]
+
+    AdminCommission:
+      allOf:
+        - $ref: "#/components/schemas/Commission"
+        - type: object
+          required: [partnerId, status]
+          properties:
+            status: { type: string, enum: [pending, approved, paid, void] }
+            partnerId: { type: string }
+            partnerName: { type: string, nullable: true }
+            tier: { type: string, nullable: true }
+            activeClients: { type: integer, description: "Partner's active clients when the customer paid" }
+            approvedAt: { type: string, format: date-time, nullable: true }
+            voidReason: { type: string, nullable: true }
+            createdAt: { type: string, format: date-time }
+
+    AdminPayout:
+      allOf:
+        - $ref: "#/components/schemas/Payout"
+        - type: object
+          required: [partnerId]
+          properties:
+            status: { type: string, enum: [draft, paid, cancelled] }
+            partnerId: { type: string }
+            partnerName: { type: string, nullable: true }
+            createdAt: { type: string, format: date-time }
+
+    BulkCommissionResult:
+      type: object
+      required: [updated, ids, skipped]
+      properties:
+        updated: { type: integer }
+        ids: { type: array, items: { type: string } }
+        skipped:
+          type: array
+          items:
+            type: object
+            required: [id, reason]
+            properties:
+              id: { type: string }
+              reason: { type: string, example: on_hold }
 
     AdminPartner:
       type: object
