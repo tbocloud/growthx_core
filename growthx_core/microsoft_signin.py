@@ -78,6 +78,8 @@ def verified_identity(code: str, code_verifier: str | None = None) -> dict:
 			frappe.log_error(title=f"Microsoft sign-in: {error or response.status_code}")
 		raise _failed()
 
+	if not _is_json(response):
+		raise _failed()
 	claims = _claims(response.json().get("id_token"))
 	email = claims.get("email") or claims.get("preferred_username")
 	if (
@@ -85,6 +87,7 @@ def verified_identity(code: str, code_verifier: str | None = None) -> dict:
 		or not _from_directory(claims, tenant_id)
 		or not isinstance(claims.get("exp"), int)
 		or claims["exp"] < time.time() - CLOCK_SKEW
+		or (isinstance(claims.get("nbf"), int) and claims["nbf"] > time.time() + CLOCK_SKEW)
 		or not isinstance(email, str)
 		or not email
 		or not claims.get("sub")
