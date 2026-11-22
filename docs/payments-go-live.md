@@ -108,7 +108,7 @@ there can ever suspend a customer's site.
 ### G. Verify with a real ₹1 payment
 
 16. **[Core dev]** In the admin panel create a plan on product `erpnext-direct`: name `Live test`, interval
-    `one_time`, price `100` paise (₹1), GST included. (Direct customers can only pay the plan assigned to them, so
+    `one_time`, price `100` paise (₹1), **GST included** (online GST invoices are refused for a plan priced without GST: checkout answers 503; `add_direct_site` warns with `plan_not_payable_online`). (Direct customers can only pay the plan assigned to them, so
     nobody else can buy it.)
 17. **[Core dev]** `Add ERPNext site` for an internal test customer (a real mailbox of ours, any of our own
     domains as the site) on that plan. Open the invite, set a password, add the billing address, press **Pay now**,

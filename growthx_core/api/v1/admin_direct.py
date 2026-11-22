@@ -146,6 +146,9 @@ def add_direct_site():
 		)
 
 	warnings = []
+	if plan.gst_rate and not plan.gst_included:
+		# Online GST invoices need GST-inclusive prices (billing.tax_invoice.apply): PayU would answer 503.
+		warnings.append("plan_not_payable_online")
 	press_check = "not_checked"
 	if confirm:
 		press_check = direct.check_on_press(host)

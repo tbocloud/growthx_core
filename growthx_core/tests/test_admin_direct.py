@@ -139,7 +139,7 @@ class TestAddDirectSite(DirectCase):
 		status, body = self._add(site="HTTPS://Acme-ERP.Example.com/login?x=1")
 		self.assertEqual(status, 201, body)
 		self.assertEqual((body["created"], body["accountCreated"], body["inviteSent"]), (True, True, True))
-		self.assertEqual((body["pressCheck"], body["warnings"]), ("confirmed", []))
+		self.assertEqual((body["pressCheck"], body["warnings"]), ("confirmed", ["plan_not_payable_online"]))
 
 		tenant = self._tenant(body)
 		self.assertEqual(
@@ -181,6 +181,14 @@ class TestAddDirectSite(DirectCase):
 		self.assertTrue(accounts.has_password(user))
 		# single use
 		self.assertEqual(_call(auth.reset_password, {"key": key, "newPassword": strong + "1"})[0], 400)
+
+	def test_a_plan_without_gst_included_warns_that_online_payment_wont_work(self):
+		status, body = self._add()
+		self.assertEqual(status, 201, body)
+		self.assertIn("plan_not_payable_online", body["warnings"])
+		frappe.db.set_value("GX Plan", LIFETIME, "gst_included", 1)
+		_, ok = self._add(site="inc.example.com", email="inc@example.com", phone="9833333333", plan=LIFETIME)
+		self.assertNotIn("plan_not_payable_online", ok["warnings"])
 
 	def test_the_invite_failing_does_not_fail_the_onboarding(self):
 		self.sendmail.side_effect = Exception("no outgoing email account")
@@ -228,7 +236,7 @@ class TestAddDirectSite(DirectCase):
 	def test_a_terminated_site_can_be_added_again(self):
 		_, first = self._add()
 		_call(admin.terminate_tenant, {"id": first["tenant"]["id"]})
-		status, body = self._add(email="new-owner@acme-traders.example.com")
+		status, body = self._add(email="new-owner@acme-traders.example.com", phone="9811111111")
 		self.assertEqual(status, 201, body)
 		self.assertNotEqual(body["tenant"]["id"], first["tenant"]["id"])
 
@@ -347,7 +355,9 @@ class TestAddDirectSite(DirectCase):
 		log = frappe.get_last_doc("GX Audit Log", {"action": "tenant.add_direct_site"})
 		self.assertIn(f"billing starts {start}", log.details)
 		# a date that is today means now
-		_, today = self._add(site="b.example.com", email="b@example.com", billingStart=nowdate())
+		_, today = self._add(
+			site="b.example.com", email="b@example.com", phone="9822222222", billingStart=nowdate()
+		)
 		self.assertEqual(
 			frappe.db.get_value("GX Subscription", self._tenant(today).subscription, "status"), "past_due"
 		)
@@ -604,7 +614,8 @@ if IC:
 					**pay_helpers.item_gst(),
 				}
 			).insert()
-			frappe.db.set_value("GX Plan", PLAN, "item", ITEM)
+			# Online invoices need GST-inclusive prices
+			frappe.db.set_value("GX Plan", PLAN, {"item": ITEM, "gst_included": 1})
 			self.patches = [
 				patch.dict(frappe.local.conf, {"growthx_company": pay_helpers.COMPANY}),
 				patch.object(payu, "gateway_account", return_value="PayU-test - INR - GXCT"),
@@ -626,7 +637,7 @@ if IC:
 			status, checkout = _call(billing.create_checkout, {"planId": PLAN})
 			frappe.set_user("Administrator")
 			self.assertEqual(status, 201, checkout)
-			self.assertEqual(checkout["amount"]["amount"], 118000)  # 1,000 + 18% GST, in paise
+			self.assertEqual(checkout["amount"]["amount"], 100000)  # 1,000 incl. GST, in paise
 			self.assertEqual(checkout["redirect"]["url"], pay_helpers.FORM["url"])
 
 			invoice = frappe.db.get_value("GX Checkout", checkout["reference"], "sales_invoice")

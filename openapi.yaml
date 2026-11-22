@@ -5958,7 +5958,7 @@ components:
         pressCheck: { type: string, enum: [confirmed, not_checked, unreachable, skipped] }
         warnings:
           type: array
-          items: { type: string, enum: [press_unreachable, invite_not_sent, billing_details_not_saved] }
+          items: { type: string, enum: [press_unreachable, invite_not_sent, billing_details_not_saved, plan_not_payable_online] }
 
     AdminTenantDetail:
       allOf:
