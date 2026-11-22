@@ -92,6 +92,10 @@ A slash (`{GROWTHX_API_URL}/catalogue.products`) is not a Frappe method and retu
 | GET | `admin.appointment?id=` | admin | 2 | *new* |
 | POST | `admin.update_appointment` | admin | 2 | *new* |
 | GET | `admin.appointment_experts` | admin | 2 | *new* |
+| GET | `admin.staff` | admin | 2 | *new* (Team: Admin and Content Editor users, with their sign-in methods) |
+| POST | `admin.add_staff` | admin | 2 | *new* (`{email, name, role}`: new person gets an invite email to set a password) |
+| POST | `admin.update_staff` | admin | 2 | *new* (`{id, role?, enabled?}`: disabling or demoting revokes tokens) |
+| POST | `admin.remove_staff` | admin | 2 | *new* (`{id}`: team roles off, tokens revoked) |
 | POST | `auth.login` | none | 1 | `POST /auth/login` |
 | POST | `auth.signup` | none | 2 | `POST /auth/signup` |
 | POST | `auth.google` | none | 2 | *new* (§5.12) |
@@ -685,6 +689,7 @@ Emails (best effort, text escaped, subject `[TKT-00001] ...`): new ticket -> sup
 | 404 | `site_not_found`, `no_account` | "Sign in with GrowthX" (§5.16); Microsoft sign-in with no account (§5.12b) |
 | 409 | `site_unavailable` | "Sign in with GrowthX": the site is suspended (§5.16) |
 | 403 | `plan_required` | Custom domains on a trial (§5.15) |
+| 409 | `already_staff`, `user_disabled`, `self_lockout`, `last_admin`, `shared_account` | Admin team: disabling someone who also has a customer/partner role; already on the team; account disabled; you can't disable/demote/remove yourself; the last enabled admin can't be disabled/demoted/removed |
 | 409 | `no_password`, `invalid_transition` | Account settings (§5.13); admin customer actions (§5.9) |
 | 422 | `wrong_password` | Change password: current password wrong (§5.13) |
 | 400 | `payment_verification_failed` | Gateway signature doesn't match |
