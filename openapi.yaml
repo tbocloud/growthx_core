@@ -2821,7 +2821,7 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
-          description: "`self_lockout` or `last_admin`"
+          description: "`self_lockout`, `last_admin`, or `shared_account` (disabling someone who also has a customer or partner role; remove them from the team instead)"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -4213,7 +4213,7 @@ components:
 
     StaffMember:
       type: object
-      required: [id, email, name, role, enabled, signIn, isYou]
+      required: [id, email, name, role, enabled, signIn, isYou, hasOtherRoles]
       properties:
         id: { type: string, description: "The user id (their email)" }
         email: { type: string, format: email }
@@ -4231,6 +4231,7 @@ components:
               type: array
               items: { type: string, example: microsoft }
         isYou: { type: boolean }
+        hasOtherRoles: { type: boolean, description: "Also a customer or partner: can't be disabled here" }
 
     SiteStatus:
       type: string

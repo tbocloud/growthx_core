@@ -1080,6 +1080,7 @@ from growthx_core.api.v1.admin_content_seo import (
 # ---------------------------------------------------------------- team (staff)
 
 STAFF_ROLES = {"admin": "GrowthX Admin", "content_editor": "GrowthX Content Editor"}
+SHARED_ROLES = ("GrowthX Customer", "GrowthX Partner")  # roles of an account that isn't only staff
 PROTECTED_USERS = ("Administrator", "Guest")  # never listed, changed or removed here
 
 
@@ -1106,8 +1107,12 @@ def _staff_member(user: str) -> dict:
 	row = frappe.db.get_value(
 		"User", user, ["name", "email", "full_name", "enabled", "last_login", "creation"], as_dict=True
 	)
+	# Frappe adds its own "frappe" row (the site's login), which isn't a way into GrowthX.
 	providers = frappe.get_all(
-		"User Social Login", {"parent": user, "parenttype": "User"}, pluck="provider", order_by="idx asc"
+		"User Social Login",
+		{"parent": user, "parenttype": "User", "provider": ("!=", "frappe")},
+		pluck="provider",
+		order_by="idx asc",
 	)
 	return {
 		"id": row.name,
@@ -1119,7 +1124,16 @@ def _staff_member(user: str) -> dict:
 		"createdAt": iso(row.creation),
 		"signIn": {"password": accounts.has_password(user), "providers": sorted(set(providers))},
 		"isYou": user == frappe.session.user,
+		"hasOtherRoles": _has_shared_roles(user),
 	}
+
+
+def _has_shared_roles(user: str) -> bool:
+	return bool(
+		frappe.db.exists(
+			"Has Role", {"parenttype": "User", "parent": user, "role": ("in", list(SHARED_ROLES))}
+		)
+	)
 
 
 def _enabled_admins() -> set[str]:
@@ -1268,6 +1282,13 @@ def update_staff():
 		revoke = True
 	if enabled is not None and enabled != bool(doc.enabled):
 		if not enabled:
+			if _has_shared_roles(user):
+				raise ApiError(
+					409,
+					"shared_account",
+					"This person also has a customer or partner account, and disabling would lock that out. "
+					"Remove them from the team instead.",
+				)
 			_guard_admin_loss(user, "disable")
 		doc.enabled = 1 if enabled else 0
 		changes.append("enabled" if enabled else "disabled")

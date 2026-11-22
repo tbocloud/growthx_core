@@ -33,6 +33,7 @@ class TestAdminStaff(IntegrationTestCase):
 		self.me = self._user(ADMIN)
 		self.other = self._user(ADMIN)
 		self.editor = self._user(EDITOR)
+		self.shared = self._user(EDITOR, "GrowthX Partner")
 		# Existing admins on a shared test site would hide the last-admin branch: park them.
 		self.parked = [n for n in admin._enabled_admins() if n not in (self.me, self.other)]
 		for name in self.parked:
@@ -83,6 +84,8 @@ class TestAdminStaff(IntegrationTestCase):
 		self.assertEqual(editor["signIn"], {"password": False, "providers": ["google", "microsoft"]})
 		self.assertTrue(editor["enabled"])
 		self.assertFalse(editor["isYou"])
+		self.assertFalse(editor["hasOtherRoles"])
+		self.assertTrue(by_id[self.shared]["hasOtherRoles"])
 		self.assertTrue(by_id[self.me]["isYou"])
 		self.assertEqual(by_id[self.me]["role"], "admin")
 		self.assertTrue(by_id[self.me]["signIn"]["password"])
@@ -197,6 +200,18 @@ class TestAdminStaff(IntegrationTestCase):
 		self.assertEqual(frappe.db.get_value("GX Auth Token", token["_name"], "status"), "Revoked")
 		status, body = _call(admin.update_staff, {"id": self.editor, "enabled": True})
 		self.assertEqual((status, body["enabled"]), (200, True))
+
+	def test_cannot_disable_a_user_who_is_also_customer_or_partner(self):
+		status, body = _call(admin.update_staff, {"id": self.shared, "enabled": False})
+		self.assertEqual((status, body["error"]["code"]), (409, "shared_account"))
+		self.assertTrue(frappe.db.get_value("User", self.shared, "enabled"))
+		# a role change is still fine, and so is removing them from the team
+		status, _ = _call(admin.update_staff, {"id": self.shared, "role": "admin"})
+		self.assertEqual(status, 200)
+		status, _ = _call(admin.remove_staff, {"id": self.shared})
+		self.assertEqual(status, 200)
+		self.assertEqual(self._roles(self.shared), {"GrowthX Partner"})
+		self.assertTrue(frappe.db.get_value("User", self.shared, "enabled"))
 
 	def test_update_noop_changes_nothing(self):
 		status, body = _call(

@@ -676,7 +676,7 @@ below is phase 2. Phase 2 keeps the phase 1 response shapes.
 | 404 | `site_not_found`, `no_account` | "Sign in with GrowthX" (§5.16); Microsoft sign-in with no account (§5.12b) |
 | 409 | `site_unavailable` | "Sign in with GrowthX": the site is suspended (§5.16) |
 | 403 | `plan_required` | Custom domains on a trial (§5.15) |
-| 409 | `already_staff`, `user_disabled`, `self_lockout`, `last_admin` | Admin team: already on the team; account disabled; you can't disable/demote/remove yourself; the last enabled admin can't be disabled/demoted/removed |
+| 409 | `already_staff`, `user_disabled`, `self_lockout`, `last_admin`, `shared_account` | Admin team: disabling someone who also has a customer/partner role; already on the team; account disabled; you can't disable/demote/remove yourself; the last enabled admin can't be disabled/demoted/removed |
 | 409 | `no_password`, `invalid_transition` | Account settings (§5.13); admin customer actions (§5.9) |
 | 422 | `wrong_password` | Change password: current password wrong (§5.13) |
 | 400 | `payment_verification_failed` | Gateway signature doesn't match |
