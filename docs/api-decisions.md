@@ -94,9 +94,9 @@ commission status (refunds), `lead` notification category, and an OTP step befor
 - Real staging and production hosts are pending DevOps.
 - Rate limits are set per endpoint (e.g. login: 5 per email and 20 per IP per 15 min; sign-up: 10 per IP per hour) and return 429 `rate_limited` with `Retry-After`. They will be tuned on staging.
 
-## 6. Implementation status (12 Oct 2026, local bench)
+## 6. Implementation status (22 Nov 2026, production)
 
-All 23 operations in `openapi.yaml` are implemented in `growthx_core/api/v1/` and pass an end-to-end HTTP smoke test (50 checks) plus 21 unit tests. They run on a **local bench only**; nothing is on staging yet, so nothing is "done" under the Definition of Done.
+All 108 operations in `openapi.yaml` are implemented in `growthx_core/api/v1/`. They pass CI on a fresh bench (`bench --site test_site run-tests --app growthx_core`) and an end-to-end HTTP smoke test (`growthx-web/src/mocks/contract.test.ts`). They run in production: Core on `growthx-core.tbogrowthx.com` (Press release group `bench-0016`), reached at `api.tbogrowthx.com`.
 
 | Area | State | What's still missing |
 |---|---|---|

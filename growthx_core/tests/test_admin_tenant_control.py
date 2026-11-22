@@ -174,6 +174,7 @@ class TestAdminTenantControl(IntegrationTestCase):
 		self.assertEqual(body["trialDays"], 14)
 		self.assertTrue(body["active"])
 		self.assertEqual(body["features"], ["1 company", "Unlimited invoices"])
+		self.assertEqual(body["item"], "GX-TEST-CONTROL-GROWTH")
 
 		plan = frappe.get_doc("GX Plan", "test-control-growth")
 		self.assertEqual(plan.price, 1499)
