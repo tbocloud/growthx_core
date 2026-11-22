@@ -540,6 +540,64 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /growthx_core.api.v1.auth.microsoft:
+    post:
+      tags: [auth]
+      summary: Sign in with Microsoft (web)
+      description: |
+        For the back office's own people: the Next.js server sends the user to Microsoft Entra ID (authorization-code
+        flow, scope `openid profile email`, PKCE recommended), receives `code` at its callback, and posts it here
+        **server-to-server**. Core exchanges it with Microsoft using the same redirect URI:
+        `<website>/api/auth/microsoft/callback` (production `https://tbogrowthx.com/api/auth/microsoft/callback`).
+        A code works once.
+
+        The account must belong to the configured directory (`microsoft_oauth_tenant_id`): a token from another
+        directory or a personal Microsoft account is refused (`400 microsoft_failed`). Email matches an existing
+        GrowthX account: **200**, logged in (same body as `auth.login`). No such account: **404 `no_account`** —
+        Microsoft never starts a sign-up; an admin creates the account first. Rate-limited per IP address.
+      operationId: microsoftSignin
+      x-phase: 2
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, maxLength: 2048, description: "`code` from Microsoft's redirect to the callback" }
+                codeVerifier: { type: string, maxLength: 128, description: "The PKCE verifier, if the website used PKCE" }
+                client: { $ref: "#/components/schemas/ClientKind" }
+      responses:
+        "200":
+          description: Logged in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthSession" }
+        "400":
+          description: "`microsoft_failed`: the code is invalid, used or expired, the redirect URI doesn't match, or the token is for another directory"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: "`account_unavailable`: the account is disabled, or is a staff account without a GrowthX role"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "`no_account`: there's no GrowthX account for this Microsoft account"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503":
+          description: "`microsoft_unavailable`: Microsoft sign-in isn't configured on this Core, or Microsoft can't be reached"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /growthx_core.api.v1.auth.site_info:
     get:
       tags: [auth]

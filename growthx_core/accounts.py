@@ -68,11 +68,12 @@ def create_user(email: str, full_name: str, password: str, role: str, phone: str
 
 
 GOOGLE = "google"
+MICROSOFT = "microsoft"
 
 
-def link_google(user: str, google_id: str):
-	"""Record that the user signs in with Google (Frappe's User Social Login), for the welcome email."""
-	if frappe.db.exists("User Social Login", {"parent": user, "provider": GOOGLE}):
+def link_social(user: str, provider: str, userid: str):
+	"""Record that the user signs in with a provider (Frappe's User Social Login), for the welcome email."""
+	if frappe.db.exists("User Social Login", {"parent": user, "provider": provider}):
 		return
 	frappe.get_doc(
 		{
@@ -80,10 +81,20 @@ def link_google(user: str, google_id: str):
 			"parent": user,
 			"parenttype": "User",
 			"parentfield": "social_logins",
-			"provider": GOOGLE,
-			"userid": google_id,
+			"provider": provider,
+			"userid": userid,
 		}
 	).insert(ignore_permissions=True)
+
+
+def link_google(user: str, google_id: str):
+	"""Record that the user signs in with Google."""
+	link_social(user, GOOGLE, google_id)
+
+
+def link_microsoft(user: str, microsoft_id: str):
+	"""Record that the user signs in with Microsoft (the back office's Entra ID)."""
+	link_social(user, MICROSOFT, microsoft_id)
 
 
 # A Google sign-up without a password gets a random one nobody knows. Kept as a user default
