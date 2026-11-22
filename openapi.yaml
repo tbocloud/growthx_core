@@ -2760,7 +2760,11 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
-        "409": { description: "`not_draft`: the payout is already paid or cancelled" }
+        "409":
+          description: "`not_draft`: the payout is already paid or cancelled"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
 
   /growthx_core.api.v1.admin.cancel_payout:
@@ -2791,7 +2795,11 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
-        "409": { description: "`not_draft`: the payout is already paid or cancelled" }
+        "409":
+          description: "`not_draft`: the payout is already paid or cancelled"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /growthx_core.api.v1.admin.update_partner_status:
     post:
