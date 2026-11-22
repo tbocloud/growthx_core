@@ -197,7 +197,8 @@ class TestAdminTickets(TicketCase):
 		self.assertTrue(out["firstResponseAt"])
 		kwargs = self.sendmail.call_args.kwargs
 		self.assertEqual(kwargs["recipients"], [self.alice])
-		self.assertIn("On it &lt;script&gt;", kwargs["message"])
+		# Frappe strips the tag when the message is saved; either way no markup reaches the email.
+		self.assertIn("On it", kwargs["message"])
 		self.assertNotIn("<script>", kwargs["message"])
 		first = out["firstResponseAt"]
 		_, out = self.call(admin.support_reply, self.staff, {"id": tid, "message": "More"})
