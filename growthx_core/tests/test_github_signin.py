@@ -218,10 +218,12 @@ class TestLinkedProviders(IntegrationTestCase):
 		accounts.mark_no_password(EXISTING)
 		status, body, _ = self._as_user(auth.unlink_provider, {"provider": "google"})
 		self.assertEqual((status, body["error"]["code"]), (409, "last_sign_in_method"))
-		# An API error rolls back the request's transaction, and with it this test's set-up above.
+
+	def test_another_provider_can_go_while_one_stays_without_a_password(self):
+		# Its own test: an API error rolls back the request's transaction, set-up included.
 		accounts.link_social(EXISTING, "google", "g1")
-		accounts.mark_no_password(EXISTING)
 		accounts.link_social(EXISTING, "github", "4242")
+		accounts.mark_no_password(EXISTING)
 		status, body, _ = self._as_user(auth.unlink_provider, {"provider": "google"})
 		self.assertEqual((status, body["socialLogins"]), (200, ["github"]))
 
