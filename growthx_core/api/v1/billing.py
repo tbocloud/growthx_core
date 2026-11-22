@@ -6,6 +6,7 @@ payment_unavailable: online payment is off and customers pay by bank transfer (a
 
 import frappe
 
+from growthx_core import direct
 from growthx_core.api.v1 import _serializers as s
 from growthx_core.api.v1._core import (
 	ApiError,
@@ -60,6 +61,9 @@ def create_checkout():
 			"This plan is billed differently.",
 			fields={"billingInterval": "Doesn't match the plan."},
 		)
+
+	# ERPNext Direct: only the plan the team assigned, and only while billing hasn't been terminated.
+	direct.require_assigned_plan(account.name, plan)
 
 	if not billing_details.available():
 		raise _unavailable(Exception("india_compliance isn't installed: GST invoices can't be made"))

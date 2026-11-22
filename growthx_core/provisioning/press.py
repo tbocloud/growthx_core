@@ -74,6 +74,11 @@ class PressClient:
 		"""Delete a site (Press backs it up first). Press frees the name only when this finishes."""
 		raise NotImplementedError
 
+	def site_exists(self, site_name: str) -> bool:
+		"""One exact-name lookup: does the GrowthX team's Press have this live site? Read-only; never
+		lists sites. PressError if Press can't answer."""
+		raise NotImplementedError
+
 	def install_app(self, site_id: str, app: str) -> None:
 		"""Install `app` on an existing site (used to backfill growthx_theme)."""
 		raise NotImplementedError
@@ -163,6 +168,12 @@ class FakePressClient(PressClient):
 
 	def archive_site(self, site_id):
 		pass
+
+	# Tests set this to the site names the fake Press "has"; None means it has every name asked for.
+	site_names: set[str] | None = None
+
+	def site_exists(self, site_name):
+		return self.site_names is None or site_name in self.site_names
 
 	def install_app(self, site_id, app):
 		pass
@@ -337,6 +348,13 @@ class RealPressClient(PressClient):
 	def archive_site(self, site_id):
 		self._own(site_id)
 		self._call("press.api.site.archive", name=site_id, force=1)
+
+	def site_exists(self, site_name):
+		try:
+			site = self._call("press.api.site.get", name=site_name)
+		except PressNotFound:
+			return False
+		return (site or {}).get("status") != "Archived"
 
 	def install_app(self, site_id, app):
 		self._own(site_id)

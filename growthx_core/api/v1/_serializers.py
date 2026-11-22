@@ -103,6 +103,7 @@ def site(t) -> dict:
 	return {
 		"id": t.name,
 		"productSlug": t.product,
+		"origin": t.origin or "provisioned",
 		"displayName": t.display_name or t.name,
 		"status": t.status,
 		"statusMessage": t.status_message or None,
@@ -136,7 +137,11 @@ def site_detail(tenant_doc) -> dict:
 def admin_tenant(t, customer_name: str | None = None) -> dict:
 	"""`origin` tells the two kinds apart: `provisioned` is a site Core built for a GrowthX app,
 	`imported` an ERPNext site the customer already had (billed on the direct product)."""
-	plan_id = frappe.db.get_value("GX Subscription", t.subscription, "plan") if t.subscription else None
+	plan_id, sub_status = (
+		frappe.db.get_value("GX Subscription", t.subscription, ["plan", "status"])
+		if t.subscription
+		else (None, None)
+	)
 	return {
 		"id": t.name,
 		"customerId": t.account,
@@ -145,6 +150,7 @@ def admin_tenant(t, customer_name: str | None = None) -> dict:
 		"origin": t.origin or "provisioned",
 		"plan": plan_id,
 		"planName": frappe.db.get_value("GX Plan", plan_id, "plan_name") if plan_id else None,
+		"subscriptionStatus": sub_status,
 		"siteUrl": t.site_url or None,
 		"status": t.status,
 		"lastError": t.last_error or None,

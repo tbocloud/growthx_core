@@ -31,6 +31,7 @@ from growthx_core.provisioning import apps, custom_domains, runner, site_login
 SITE_FIELDS = [
 	"name",
 	"product",
+	"origin",
 	"display_name",
 	"status",
 	"status_message",

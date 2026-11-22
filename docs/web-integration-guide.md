@@ -430,6 +430,13 @@ GET {GROWTHX_API_URL}.billing.checkout_status?txnid=PAYU…
 - **`503 payment_unavailable`**: online payment is off (Core has no PayU gateway account configured, e.g.
   production until PayU approves the domains). Show "online payment isn't available; pay by bank transfer".
 
+**ERPNext Direct customers** (their own ERPNext site, added by an admin with `admin.add_direct_site`): their
+subscription starts `past_due` (or `trialing` until a later billing start) and `customer.sites` lists the site
+with `origin: "imported"` (`customer.open_site` returns `<site>/login`). They pay with the same
+`billing.create_checkout`, but only the plan the team assigned: another plan of the product is
+`422 invalid_plan`, and after the team terminated their billing it is `409 invalid_transition`. See
+`docs/payments-go-live.md` for turning PayU on in production.
+
 ### 5.8 Partner
 
 `GET {GROWTHX_API_URL}.partner.summary`
