@@ -2713,6 +2713,153 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
 
+  /growthx_core.api.v1.admin.staff:
+    get:
+      tags: [admin]
+      summary: Team members (admins and content editors)
+      description: |
+        Everyone with the GrowthX Admin or Content Editor role (a user with both is `admin`), sorted by
+        name, in one page. `signIn` says whether they have a password (people who joined with Microsoft
+        or Google may not) and which social providers are linked. Administrator and Guest are never listed.
+      operationId: adminStaff
+      x-phase: 2
+      x-roles: [admin]
+      responses:
+        "200":
+          description: Team
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/StaffMember" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /growthx_core.api.v1.admin.add_staff:
+    post:
+      tags: [admin]
+      summary: Add a team member
+      description: |
+        A new email gets an account with no password and an email (valid 24 hours) to set one; `invited`
+        is false if that email could not be sent (they can use "Forgot password"). An existing user (e.g.
+        a customer) keeps their roles and gains the team role. `already_staff` if they already have
+        either team role; `user_disabled` if the existing account is disabled.
+      operationId: adminAddStaff
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, name, role]
+              properties:
+                email: { type: string, format: email }
+                name: { type: string }
+                role: { $ref: "#/components/schemas/StaffRole" }
+      responses:
+        "201":
+          description: Added
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/StaffMember"
+                  - type: object
+                    required: [invited]
+                    properties:
+                      invited: { type: boolean }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: "`already_staff` or `user_disabled`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.update_staff:
+    post:
+      tags: [admin]
+      summary: Change a team member's role or enable/disable them
+      description: |
+        Send `role` and/or `enabled`. Disabling or demoting revokes all their tokens. You can't disable
+        or demote yourself (`self_lockout`), and the last enabled admin can't be disabled or demoted
+        (`last_admin`). `404` for anyone who isn't on the team (and for Administrator/Guest).
+      operationId: adminUpdateStaff
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string, description: "The member's id (their email)" }
+                role: { $ref: "#/components/schemas/StaffRole" }
+                enabled: { type: boolean }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StaffMember" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`self_lockout`, `last_admin`, or `shared_account` (disabling someone who also has a customer or partner role; remove them from the team instead)"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.remove_staff:
+    post:
+      tags: [admin]
+      summary: Remove a team member
+      description: |
+        Takes both team roles off the user and revokes their tokens. The user and any customer or
+        partner role stay. Same guards as `admin.update_staff` (`self_lockout`, `last_admin`).
+      operationId: adminRemoveStaff
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string, description: "The member's id (their email)" }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`self_lockout` or `last_admin`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
   /growthx_core.api.v1.admin.audit_log:
     get:
       tags: [admin]
@@ -4059,6 +4206,32 @@ components:
             gstRate: { type: number, example: 18 }
             active: { type: boolean, description: "Whether the plan is on sale" }
             item: { type: string, nullable: true, description: "The billing Item on its invoices" }
+
+    StaffRole:
+      type: string
+      enum: [admin, content_editor]
+
+    StaffMember:
+      type: object
+      required: [id, email, name, role, enabled, signIn, isYou, hasOtherRoles]
+      properties:
+        id: { type: string, description: "The user id (their email)" }
+        email: { type: string, format: email }
+        name: { type: string }
+        role: { $ref: "#/components/schemas/StaffRole" }
+        enabled: { type: boolean }
+        lastLogin: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time, nullable: true }
+        signIn:
+          type: object
+          required: [password, providers]
+          properties:
+            password: { type: boolean, description: "False until they set one (invite, Forgot password)" }
+            providers:
+              type: array
+              items: { type: string, example: microsoft }
+        isYou: { type: boolean }
+        hasOtherRoles: { type: boolean, description: "Also a customer or partner: can't be disabled here" }
 
     SiteStatus:
       type: string
