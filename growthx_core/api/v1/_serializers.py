@@ -167,6 +167,8 @@ def admin_tenant_detail(tenant_doc) -> dict:
 def subscription(s, product_name: str | None = None, plan_name: str | None = None) -> dict:
 	return {
 		"id": s.name,
+		"productSlug": s.product or None,
+		"planId": s.plan,
 		"productName": product_name or frappe.db.get_value("GX Product", s.product, "product_name"),
 		"planName": plan_name or frappe.db.get_value("GX Plan", s.plan, "plan_name"),
 		"status": s.status,
