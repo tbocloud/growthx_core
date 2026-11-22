@@ -1,0 +1,165 @@
+{
+ "actions": [],
+ "creation": "2026-11-22 10:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "partner",
+  "period",
+  "status",
+  "commission_count",
+  "column_break_1",
+  "gross",
+  "tds_rate",
+  "tds",
+  "net",
+  "section_paid",
+  "paid_on",
+  "reference",
+  "method",
+  "column_break_2",
+  "created_by",
+  "paid_by"
+ ],
+ "fields": [
+  {
+   "fieldname": "partner",
+   "fieldtype": "Link",
+   "label": "Partner",
+   "options": "GX Partner Profile",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "search_index": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "period",
+   "fieldtype": "Data",
+   "label": "Period",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "read_only": 1,
+   "description": "Month, YYYY-MM: includes approved commission paid by customers up to the end of it"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "draft\npaid\ncancelled",
+   "default": "draft",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "commission_count",
+   "fieldtype": "Int",
+   "label": "Commissions",
+   "in_list_view": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break",
+   "label": "Column Break 1"
+  },
+  {
+   "fieldname": "gross",
+   "fieldtype": "Currency",
+   "label": "Gross",
+   "options": "INR",
+   "in_list_view": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "tds_rate",
+   "fieldtype": "Percent",
+   "label": "TDS Rate (%)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "tds",
+   "fieldtype": "Currency",
+   "label": "TDS",
+   "options": "INR",
+   "read_only": 1
+  },
+  {
+   "fieldname": "net",
+   "fieldtype": "Currency",
+   "label": "Net Payable",
+   "options": "INR",
+   "in_list_view": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_paid",
+   "fieldtype": "Section Break",
+   "label": "Payment"
+  },
+  {
+   "fieldname": "paid_on",
+   "fieldtype": "Date",
+   "label": "Paid On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "reference",
+   "fieldtype": "Data",
+   "label": "UTR / Reference",
+   "read_only": 1
+  },
+  {
+   "fieldname": "method",
+   "fieldtype": "Select",
+   "label": "Method",
+   "options": "\nbank_transfer\nupi\nother",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_2",
+   "fieldtype": "Column Break",
+   "label": "Column Break 2"
+  },
+  {
+   "fieldname": "created_by",
+   "fieldtype": "Data",
+   "label": "Created By",
+   "read_only": 1
+  },
+  {
+   "fieldname": "paid_by",
+   "fieldtype": "Data",
+   "label": "Marked Paid By",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-11-22 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Partners",
+ "name": "GX Payout",
+ "owner": "Administrator",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "autoname": "format:GXPO-{#####}",
+ "permissions": [
+  {
+   "read": 1,
+   "report": 1,
+   "export": 1,
+   "role": "System Manager"
+  },
+  {
+   "read": 1,
+   "report": 1,
+   "export": 1,
+   "role": "GrowthX Admin"
+  }
+ ],
+ "title_field": "partner"
+}

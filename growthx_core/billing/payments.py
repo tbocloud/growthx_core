@@ -13,6 +13,7 @@ import frappe
 from frappe.utils import add_months, add_years, cint, flt, fmt_money, getdate
 
 from growthx_core.api.v1._core import ApiError, validation_error
+from growthx_core.partners import commissions
 from growthx_core.provisioning import runner
 
 
@@ -46,9 +47,21 @@ def check_payable(account, plan) -> str:
 	return name
 
 
-def apply_payment(account, plan, reference: str, paid_on: date, gateway: str):
-	"""`account` is the GX Account document (locked by the caller), `plan` the GX Plan document.
-	Returns (subscription, details for the audit line, period end or None for lifetime)."""
+def apply_payment(
+	account,
+	plan,
+	reference: str,
+	paid_on: date,
+	gateway: str,
+	amount=None,
+	sales_invoice: str | None = None,
+):
+	"""`account` is the GX Account document (locked by the caller), `plan` the GX Plan document,
+	`amount` what the customer paid in rupees, GST included (the plan's price when not given).
+	Returns (subscription, details for the audit line, period end or None for lifetime).
+
+	If a partner referred the customer, the payment also earns that partner a commission (one per
+	payment, see growthx_core.partners.commissions); a problem there never stops the activation."""
 	sub = frappe.get_doc("GX Subscription", _subscription_for(account, plan), for_update=True)
 	previous_plan = sub.plan
 	if sub.last_payment_id == reference:
@@ -85,6 +98,17 @@ def apply_payment(account, plan, reference: str, paid_on: date, gateway: str):
 		details = "renewal"
 	else:
 		details = set_customer_status(account, "active", "suspended", "ready", "resume_site")
+	# After the status change: the customer now counts as an active client for the partner's tier.
+	commissions.record_for_payment(
+		account,
+		plan,
+		reference,
+		paid_on,
+		gross_amount=amount,
+		gateway=gateway,
+		sales_invoice=sales_invoice,
+		subscription=sub.name,
+	)
 	return sub, details, period_end
 
 

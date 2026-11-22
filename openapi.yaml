@@ -68,6 +68,8 @@ tags:
   - name: billing
   - name: partner
   - name: admin
+  - name: support
+    description: Customer support tickets (role customer). The team's side is under admin.
   - name: tenant
     description: Server-to-server calls from tenant sites (growthx_theme). Not for Web or Flutter.
   - name: content
@@ -511,7 +513,7 @@ paths:
                 required: [signupRequired, signupToken, expiresAt, email, name]
                 properties:
                   signupRequired: { type: boolean, enum: [true] }
-                  signupToken: { type: string, example: gxg_..., description: "For `auth.signup`; works for one account" }
+                  signupToken: { type: string, example: gxs_..., description: "For `auth.signup`; works for one account" }
                   expiresAt: { type: string, format: date-time, description: 30 minutes from now }
                   email: { type: string, format: email, description: Verified by Google }
                   name: { type: string, description: "The Google account's name; may be empty" }
@@ -545,16 +547,25 @@ paths:
       tags: [auth]
       summary: Sign in with Microsoft (web)
       description: |
-        For the back office's own people: the Next.js server sends the user to Microsoft Entra ID (authorization-code
-        flow, scope `openid profile email`, PKCE recommended), receives `code` at its callback, and posts it here
-        **server-to-server**. Core exchanges it with Microsoft using the same redirect URI:
-        `<website>/api/auth/microsoft/callback` (production `https://tbogrowthx.com/api/auth/microsoft/callback`).
-        A code works once.
+        One multi-tenant Entra app registration (any organizational directory and personal Microsoft accounts; authority
+        `common`). The Next.js server sends the user to Microsoft (authorization-code flow, scope `openid profile email`,
+        PKCE recommended), receives `code` at its callback, and posts it here **server-to-server**. Core exchanges it with
+        Microsoft using the same redirect URI: `<website>/api/auth/microsoft/callback` (production
+        `https://tbogrowthx.com/api/auth/microsoft/callback`). A code works once. The token's issuer must be
+        `https://login.microsoftonline.com/{tid}/v2.0` for the token's own `tid`.
 
-        The account must belong to the configured directory (`microsoft_oauth_tenant_id`): a token from another
-        directory or a personal Microsoft account is refused (`400 microsoft_failed`). Email matches an existing
-        GrowthX account: **200**, logged in (same body as `auth.login`). No such account: **404 `no_account`** —
-        Microsoft never starts a sign-up; an admin creates the account first. Rate-limited per IP address.
+        **Staff** (the token's `tid` is `microsoft_oauth_staff_tenant_id`, the teambackoffice.com directory; guests of
+        that directory are not staff): **200**, logged in as `admin`. A new email gets a GrowthX user with no password and
+        the `GrowthX Admin` role (audit `staff.auto_provision`); an existing user gets the role if it lacks it. A user
+        disabled in GrowthX stays blocked (`403 account_unavailable`).
+
+        **Customers** (any other directory, and personal accounts): like `auth.google`, and never admin, whatever the
+        email. A Microsoft account already linked (`tid.oid`) signs in (**200**). Otherwise an existing user is matched by
+        email **only if the email is verified**: a personal account, or a work account whose token has the optional claim
+        `xms_edov` (add the optional claims `email` and `xms_edov` to the app registration). An unverified email that
+        already has an account: **409 `email_unverified`** (sign in another way, then link Microsoft from Account
+        settings). A new email: **202** with a `signupToken` for `auth.signup`; with `signInOnly: true`, **404
+        `no_account`**. Rate-limited per IP address.
       operationId: microsoftSignin
       x-phase: 2
       security: []
@@ -569,24 +580,33 @@ paths:
                 code: { type: string, maxLength: 2048, description: "`code` from Microsoft's redirect to the callback" }
                 codeVerifier: { type: string, maxLength: 128, description: "The PKCE verifier, if the website used PKCE" }
                 client: { $ref: "#/components/schemas/ClientKind" }
+                signInOnly:
+                  type: boolean
+                  description: "Sign-in-only mode (`/login?site=`): a new customer email gets `404 no_account` instead of a `202`"
       responses:
         "200":
           description: Logged in
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AuthSession" }
+        "202": { $ref: "#/components/responses/SocialSignupRequired" }
         "400":
-          description: "`microsoft_failed`: the code is invalid, used or expired, the redirect URI doesn't match, or the token is for another directory"
+          description: "`microsoft_failed`: the code is invalid, used or expired, the redirect URI doesn't match, or the token's claims are wrong (audience, issuer, expiry)"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "403":
-          description: "`account_unavailable`: the account is disabled, or is a staff account without a GrowthX role"
+          description: "`account_unavailable`: the account is disabled, is a staff account without a GrowthX role, or is an admin account (customers can't open those)"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "404":
-          description: "`no_account`: there's no GrowthX account for this Microsoft account"
+          description: "`no_account`: with `signInOnly`, there's no GrowthX account for this Microsoft account"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "`email_unverified`: the email already has an account but Microsoft hasn't verified it"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -597,6 +617,144 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+
+  /growthx_core.api.v1.auth.github:
+    post:
+      tags: [auth]
+      summary: Sign in or sign up with GitHub (web)
+      description: |
+        Like `auth.google`. The Next.js server sends the user to GitHub (OAuth app, scope `read:user user:email`, PKCE
+        recommended), receives `code` at `<website>/api/auth/github/callback` and posts it here **server-to-server**.
+        Core exchanges it with GitHub and uses only the **primary verified** email (`GET /user/emails`); the numeric
+        GitHub id is the stable id. GitHub never opens an admin account.
+
+        - An account is linked to this GitHub id, or the email belongs to an account: **200**, logged in.
+        - A new email: **202** with a `signupToken` for `auth.signup` (`socialToken`). With `signInOnly: true`: **404
+          `no_account`**.
+        Rate-limited per IP address.
+      operationId: githubSignin
+      x-phase: 2
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, maxLength: 2048, description: "`code` from GitHub's redirect to the callback" }
+                codeVerifier: { type: string, maxLength: 128, description: "The PKCE verifier, if the website used PKCE" }
+                client: { $ref: "#/components/schemas/ClientKind" }
+                signInOnly: { type: boolean, description: "A new email gets `404 no_account` instead of a `202`" }
+      responses:
+        "200":
+          description: Logged in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthSession" }
+        "202": { $ref: "#/components/responses/SocialSignupRequired" }
+        "400":
+          description: "`github_failed`: the code is invalid, used or expired, the redirect URI doesn't match, or GitHub's API failed"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: "`email_not_verified`: no primary verified email (or only a noreply address). `account_unavailable`: disabled, staff or admin account"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "`no_account`: with `signInOnly`, there's no GrowthX account for this GitHub account"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503":
+          description: "`github_unavailable`: GitHub sign-in isn't configured on this Core, or GitHub can't be reached"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /growthx_core.api.v1.auth.link_provider:
+    post:
+      tags: [auth]
+      summary: Link Google, Microsoft or GitHub to the logged-in account
+      description: |
+        Account settings. The same `code` flow as signing in (the callback runs in link mode), sent with the user's own
+        token. Returns the user (`socialLogins` now includes the provider). `409 already_linked`: that provider account
+        belongs to another GrowthX user; `409 provider_linked`: a different account of this provider is linked
+        (unlink it first); `409 not_linkable`: a staff Microsoft account. Errors from the provider are as in
+        `auth.google`, `auth.microsoft` and `auth.github`. 10 per 15 minutes per user.
+      operationId: linkProvider
+      x-phase: 2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, code]
+              properties:
+                provider: { type: string, enum: [google, microsoft, github] }
+                code: { type: string, maxLength: 2048 }
+                codeVerifier: { type: string, maxLength: 128 }
+      responses:
+        "200":
+          description: Linked
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400":
+          description: "`google_failed`, `microsoft_failed` or `github_failed`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "409":
+          description: "`already_linked`, `provider_linked` or `not_linkable`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /growthx_core.api.v1.auth.unlink_provider:
+    post:
+      tags: [auth]
+      summary: Unlink Google, Microsoft or GitHub from the logged-in account
+      description: |
+        Returns the user. `404 not_linked`; `409 last_sign_in_method` when it is the only way to sign in and the account
+        has no password (`user.hasPassword: false`; set one with Forgot password first). 10 per 15 minutes per user.
+      operationId: unlinkProvider
+      x-phase: 2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider]
+              properties:
+                provider: { type: string, enum: [google, microsoft, github] }
+      responses:
+        "200":
+          description: Unlinked
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404":
+          description: "`not_linked`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "`last_sign_in_method`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
 
   /growthx_core.api.v1.auth.site_info:
     get:
@@ -762,25 +920,31 @@ paths:
               type: object
               required: [accountType]
               description: |
-                Either `email`, `password`, `name` and `emailCode` (from `auth.send_signup_code`), or `googleSignupToken`
-                (from `auth.google`), with which `name` defaults to the Google name.
+                Either `email`, `password`, `name` and `emailCode` (from `auth.send_signup_code`), or `socialToken`
+                (from `auth.google`, `auth.microsoft` or `auth.github`), with which `name` defaults to the provider's name.
               properties:
                 accountType: { type: string, enum: [customer, partner] }
+                socialToken:
+                  type: string
+                  description: |
+                    The `signupToken` from `auth.google`, `auth.microsoft` or `auth.github` (202). The account gets the
+                    provider's email; any `email` sent is ignored. If the 202 said `emailVerified: false` (a Microsoft
+                    work account), `emailCode` is required as without a token. Otherwise as `googleSignupToken`.
                 googleSignupToken:
                   type: string
                   description: |
-                    The `signupToken` from `auth.google` (202). The account gets the email Google verified; any `email`
+                    Same as `socialToken`, kept for backward compatibility. The `signupToken` from `auth.google` (202). The account gets the email Google verified; any `email`
                     sent is ignored. Without `password` the account has none; the user can set one with "Forgot
                     password". Unknown, expired or used: 400 `google_signup_expired` (go through Google again). A
                     form error (422, 409) keeps the token, so the user can fix the form and resubmit.
                 name: { type: string, maxLength: 140 }
                 company: { type: string, maxLength: 140, description: "Required when accountType is customer. Can't contain < or > (422 validation_failed)" }
-                email: { type: string, format: email, description: Required without googleSignupToken }
+                email: { type: string, format: email, description: Required without a signup token }
                 emailCode:
                   type: string
                   pattern: "^\\d{6}$"
                   description: |
-                    Required without `googleSignupToken`. The code `auth.send_signup_code` emailed. Wrong: 422 with
+                    Required without `socialToken`/`googleSignupToken`. The code `auth.send_signup_code` emailed. Wrong: 422 with
                     `fields.emailCode` (it says how many tries are left). Expired, never sent, or 5 wrong tries: 400
                     `email_code_expired`. It stays valid after other form errors, and is used up when the account is
                     created.
@@ -790,7 +954,7 @@ paths:
                   format: password
                   minLength: 8
                   description: |
-                    Required without `googleSignupToken`. The site's password-strength policy also applies; a weak
+                    Required without `socialToken`/`googleSignupToken`. The site's password-strength policy also applies; a weak
                     password returns 422 with `fields.password`.
                 productSlug: { type: string, example: solar }
                 planId:
@@ -1998,7 +2162,7 @@ paths:
       summary: "Earnings summary"
       operationId: partnerEarnings
       x-phase: 3
-      x-note: "Placeholder figures until the commission rules are decided (D8): commission from ERPNext Sales Invoices; commission on paid invoices counts as pending; approved and paidLifetime are 0; nextPayoutDate and tdsRate are null."
+      x-note: "From the commission ledger (GX Commission); the rules are the Partner Program Settings in Core."
       x-roles: [partner]
       responses:
         "200":
@@ -2011,11 +2175,10 @@ paths:
   /growthx_core.api.v1.partner.commissions:
     get:
       tags: [partner]
-      summary: "[PROPOSED] Commission ledger"
+      summary: Commission ledger
+      description: "The partner's own commissions, newest first. A refunded commission is `reversed`. `type` is not a filter yet."
       operationId: partnerListCommissions
-      x-status: proposed
       x-phase: 3
-      x-decision: "Commission rules (D8)"
       x-roles: [partner]
       parameters:
         - { name: status, in: query, schema: { $ref: "#/components/schemas/CommissionStatus" } }
@@ -2045,11 +2208,10 @@ paths:
   /growthx_core.api.v1.partner.payouts:
     get:
       tags: [partner]
-      summary: "[PROPOSED] Payout history"
+      summary: Payout history
+      description: "A payout that is created but not yet transferred shows as `processing`. Cancelled payouts are not shown."
       operationId: partnerListPayouts
-      x-status: proposed
       x-phase: 3
-      x-decision: "Payout schedule, minimum payout, TDS (D8, finance)"
       x-roles: [partner]
       parameters:
         - { name: status, in: query, schema: { $ref: "#/components/schemas/PayoutStatus" } }
@@ -2540,6 +2702,269 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /growthx_core.api.v1.admin.commissions:
+    get:
+      tags: [admin]
+      summary: Partner commissions
+      description: |
+        Every commission, newest payment first, with `totals` (paise per status) for the same partner and month
+        filter. A commission is created when a customer a partner referred pays (one per payment) and is
+        `pending` until approved. `void`: the payment was refunded or an admin voided it.
+      operationId: adminListCommissions
+      x-phase: 3
+      x-roles: [admin]
+      parameters:
+        - { name: partner, in: query, schema: { type: string }, description: Partner id }
+        - { name: status, in: query, schema: { type: string, enum: [pending, approved, paid, void] } }
+        - { name: month, in: query, schema: { type: string, pattern: "^\\d{4}-\\d{2}$" }, description: "Month the customer paid, YYYY-MM" }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - { name: sort, in: query, schema: { type: string, enum: [earnedAt, -earnedAt, amount, -amount], default: -earnedAt } }
+      responses:
+        "200":
+          description: Commissions
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    required: [items, totals]
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/AdminCommission" }
+                      totals:
+                        type: object
+                        required: [pending, approved, paid, void]
+                        properties:
+                          pending: { $ref: "#/components/schemas/Money" }
+                          approved: { $ref: "#/components/schemas/Money" }
+                          paid: { $ref: "#/components/schemas/Money" }
+                          void: { $ref: "#/components/schemas/Money" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.approve_commissions:
+    post:
+      tags: [admin]
+      summary: Approve commissions (bulk)
+      description: |
+        `pending` → `approved` for up to 200 ids. One that isn't pending, or is still inside the hold period
+        (Partner Program Settings, `hold_days`), is left alone and named in `skipped` (`already_<status>`,
+        `on_hold`, `not_found`). Each approval is audit-logged and the partner is notified. Accepts `Idempotency-Key`.
+      operationId: adminApproveCommissions
+      x-phase: 3
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ids]
+              properties:
+                ids: { type: array, minItems: 1, maxItems: 200, items: { type: string } }
+      responses:
+        "200":
+          description: Result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BulkCommissionResult" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.void_commissions:
+    post:
+      tags: [admin]
+      summary: Void commissions (bulk)
+      description: |
+        `pending` or `approved` → `void` for up to 200 ids, with a reason (e.g. a refund). A commission in a draft
+        payout leaves it and the payout is recalculated (cancelled if nothing is left). A paid commission is left
+        alone (`already_paid`). Each one is audit-logged. Accepts `Idempotency-Key`.
+      operationId: adminVoidCommissions
+      x-phase: 3
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ids, reason]
+              properties:
+                ids: { type: array, minItems: 1, maxItems: 200, items: { type: string } }
+                reason: { type: string, maxLength: 500 }
+      responses:
+        "200":
+          description: Result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BulkCommissionResult" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.payouts:
+    get:
+      tags: [admin]
+      summary: Partner payouts
+      operationId: adminListPayouts
+      x-phase: 3
+      x-roles: [admin]
+      parameters:
+        - { name: partner, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string, enum: [draft, paid, cancelled] } }
+        - { name: period, in: query, schema: { type: string, pattern: "^\\d{4}-\\d{2}$" } }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Payouts, newest first
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/AdminPayout" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.create_payouts:
+    post:
+      tags: [admin]
+      summary: Run payouts for a month
+      description: |
+        For each active partner whose `approved`, unpaid commission on payments up to the end of `period` adds up to
+        the minimum payout (Partner Program Settings), creates a `draft` payout: gross, TDS (once on the total,
+        rounded half up to the paisa) and net. Smaller balances are listed in `skipped` and carry over. Safe to
+        repeat: a commission already in a payout is never included twice. Audit-logged. Accepts `Idempotency-Key`.
+      operationId: adminCreatePayouts
+      x-phase: 3
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [period]
+              properties:
+                period: { type: string, pattern: "^\\d{4}-\\d{2}$", description: "Month, not later than the current one" }
+      responses:
+        "200":
+          description: Result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [created, skipped]
+                properties:
+                  created:
+                    type: array
+                    items: { $ref: "#/components/schemas/AdminPayout" }
+                  skipped:
+                    type: array
+                    items:
+                      type: object
+                      required: [partner, reason, amount]
+                      properties:
+                        partner: { type: string }
+                        reason: { type: string, enum: [below_minimum, partner_not_active] }
+                        amount: { $ref: "#/components/schemas/Money" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.mark_payout_paid:
+    post:
+      tags: [admin]
+      summary: Record that a payout was transferred
+      description: |
+        `draft` → `paid`, with the bank or UPI reference, the date and the method. Its commissions become `paid` and
+        the partner is notified in the app (and by email if they opted in to commission updates). Anything but a draft
+        answers `409 not_draft`, so a payout can't be paid twice. Audit-logged. Accepts `Idempotency-Key`.
+      operationId: adminMarkPayoutPaid
+      x-phase: 3
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, reference, paidOn, method]
+              properties:
+                id: { type: string }
+                reference: { type: string, maxLength: 140, description: UTR or transaction reference }
+                paidOn: { type: string, format: date, description: Not in the future }
+                method: { type: string, enum: [bank_transfer, upi, other] }
+      responses:
+        "200":
+          description: The payout
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminPayout" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`not_draft`: the payout is already paid or cancelled"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.cancel_payout:
+    post:
+      tags: [admin]
+      summary: Cancel a draft payout
+      description: Its commissions go back to `approved` and unpaid, ready for the next run. `409 not_draft` otherwise. Audit-logged.
+      operationId: adminCancelPayout
+      x-phase: 3
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string }
+      responses:
+        "200":
+          description: The payout
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminPayout" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`not_draft`: the payout is already paid or cancelled"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /growthx_core.api.v1.admin.update_partner_status:
     post:
       tags: [admin]
@@ -2708,6 +3133,153 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: "`invalid_transition`: the customer is churned. `duplicate_payment`: this reference is already recorded on the subscription. `payment_in_progress`: an online payment for this product is under way (see above)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.staff:
+    get:
+      tags: [admin]
+      summary: Team members (admins and content editors)
+      description: |
+        Everyone with the GrowthX Admin or Content Editor role (a user with both is `admin`), sorted by
+        name, in one page. `signIn` says whether they have a password (people who joined with Microsoft
+        or Google may not) and which social providers are linked. Administrator and Guest are never listed.
+      operationId: adminStaff
+      x-phase: 2
+      x-roles: [admin]
+      responses:
+        "200":
+          description: Team
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/StaffMember" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /growthx_core.api.v1.admin.add_staff:
+    post:
+      tags: [admin]
+      summary: Add a team member
+      description: |
+        A new email gets an account with no password and an email (valid 24 hours) to set one; `invited`
+        is false if that email could not be sent (they can use "Forgot password"). An existing user (e.g.
+        a customer) keeps their roles and gains the team role. `already_staff` if they already have
+        either team role; `user_disabled` if the existing account is disabled.
+      operationId: adminAddStaff
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, name, role]
+              properties:
+                email: { type: string, format: email }
+                name: { type: string }
+                role: { $ref: "#/components/schemas/StaffRole" }
+      responses:
+        "201":
+          description: Added
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/StaffMember"
+                  - type: object
+                    required: [invited]
+                    properties:
+                      invited: { type: boolean }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: "`already_staff` or `user_disabled`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.update_staff:
+    post:
+      tags: [admin]
+      summary: Change a team member's role or enable/disable them
+      description: |
+        Send `role` and/or `enabled`. Disabling or demoting revokes all their tokens. You can't disable
+        or demote yourself (`self_lockout`), and the last enabled admin can't be disabled or demoted
+        (`last_admin`). `404` for anyone who isn't on the team (and for Administrator/Guest).
+      operationId: adminUpdateStaff
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string, description: "The member's id (their email)" }
+                role: { $ref: "#/components/schemas/StaffRole" }
+                enabled: { type: boolean }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StaffMember" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`self_lockout`, `last_admin`, or `shared_account` (disabling someone who also has a customer or partner role; remove them from the team instead)"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.remove_staff:
+    post:
+      tags: [admin]
+      summary: Remove a team member
+      description: |
+        Takes both team roles off the user and revokes their tokens. The user and any customer or
+        partner role stay. Same guards as `admin.update_staff` (`self_lockout`, `last_admin`).
+      operationId: adminRemoveStaff
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string, description: "The member's id (their email)" }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`self_lockout` or `last_admin`"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -3895,6 +4467,351 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /growthx_core.api.v1.support.create:
+    post:
+      tags: [support]
+      summary: Open a support ticket
+      description: |
+        A customer opens a ticket (the Support page). Saved as a GX Support Ticket with the first message, and emailed to
+        support@tbogrowthx.com (site_config `growthx_support_email`). `urgent` priority is the team's to set.
+        No attachments: messages are plain text.
+      operationId: supportCreateTicket
+      x-phase: 2
+      x-roles: [customer]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subject, message]
+              properties:
+                subject: { type: string, maxLength: 140 }
+                message: { type: string, minLength: 1, maxLength: 5000, description: Plain text }
+                category: { $ref: "#/components/schemas/TicketCategory" }
+                priority: { type: string, enum: [low, normal, high], default: normal }
+                tenantId: { type: string, description: One of the caller's own sites }
+      responses:
+        "201":
+          description: The ticket with its first message
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TicketDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.support.tickets:
+    get:
+      tags: [support]
+      summary: The caller's tickets
+      description: |
+        Only tickets of the caller's own account, most recent activity first.
+      operationId: supportListTickets
+      x-phase: 2
+      x-roles: [customer]
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/TicketStatus" }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Tickets
+          content:
+            application/json:
+              schema: 
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/Ticket" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.support.ticket:
+    get:
+      tags: [support]
+      summary: One ticket and its conversation
+      description: |
+        The conversation without the team's internal notes. Another account's ticket is `404`.
+      operationId: supportGetTicket
+      x-phase: 2
+      x-roles: [customer]
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: The ticket
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TicketDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /growthx_core.api.v1.support.reply:
+    post:
+      tags: [support]
+      summary: Reply to a ticket
+      description: |
+        Adds a customer message. A resolved or pending ticket becomes `open`; the assignee (or the support inbox) is emailed. A closed ticket gives `409 ticket_closed`.
+      operationId: supportReplyTicket
+      x-phase: 2
+      x-roles: [customer]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, message]
+              properties:
+                id: { type: string }
+                message: { type: string, minLength: 1, maxLength: 5000, description: Plain text }
+      responses:
+        "200":
+          description: The updated ticket
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TicketDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`ticket_closed`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.support.close:
+    post:
+      tags: [support]
+      summary: Close a ticket
+      description: |
+        The customer closes their own ticket. `409 invalid_transition` when it is already closed.
+      operationId: supportCloseTicket
+      x-phase: 2
+      x-roles: [customer]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string }
+      responses:
+        "200":
+          description: The closed ticket
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TicketDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`invalid_transition`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /growthx_core.api.v1.admin.support_summary:
+    get:
+      tags: [admin]
+      summary: Support counts and staff
+      description: |
+        Counts per status, open tickets with nobody assigned, open urgent ones, and the GrowthX Admin users a ticket can be assigned to.
+      operationId: adminSupportSummary
+      x-phase: 2
+      x-roles: [admin]
+      responses:
+        "200":
+          description: Counts
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminSupportSummary" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /growthx_core.api.v1.admin.support_tickets:
+    get:
+      tags: [admin]
+      summary: Support inbox
+      description: |
+        All tickets. `assignee` is a user id, `me` or `unassigned`. `q` searches subject, ticket number, customer email and company.
+      operationId: adminListSupportTickets
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/TicketStatus" }
+        - name: priority
+          in: query
+          schema: { $ref: "#/components/schemas/TicketPriority" }
+        - name: category
+          in: query
+          schema: { $ref: "#/components/schemas/TicketCategory" }
+        - name: assignee
+          in: query
+          schema: { type: string }
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: sort
+          in: query
+          schema: { type: string, enum: [activity, -activity, createdAt, -createdAt, priority, -priority], default: -activity }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Tickets
+          content:
+            application/json:
+              schema: 
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/AdminTicket" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.support_ticket:
+    get:
+      tags: [admin]
+      summary: A ticket with internal notes
+      description: |
+        The whole conversation including internal notes (`internal: true`).
+      operationId: adminGetSupportTicket
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: The ticket
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminTicketDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /growthx_core.api.v1.admin.support_reply:
+    post:
+      tags: [admin]
+      summary: Reply to the customer
+      description: |
+        The customer sees and is emailed this reply. Sets the ticket to `pending_customer`, records the first response time and assigns the replier when nobody is. Audit-logged. `409 ticket_closed` on a closed ticket.
+      operationId: adminReplySupportTicket
+      x-phase: 2
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, message]
+              properties:
+                id: { type: string }
+                message: { type: string, minLength: 1, maxLength: 5000, description: Plain text }
+      responses:
+        "200":
+          description: The updated ticket
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminTicketDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`ticket_closed`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.support_note:
+    post:
+      tags: [admin]
+      summary: Add an internal note
+      description: |
+        Never shown to the customer and never emailed. Audit-logged.
+      operationId: adminNoteSupportTicket
+      x-phase: 2
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, note]
+              properties:
+                id: { type: string }
+                note: { type: string, minLength: 1, maxLength: 5000, description: Plain text }
+      responses:
+        "200":
+          description: The updated ticket
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminTicketDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.support_update:
+    post:
+      tags: [admin]
+      summary: Change status, priority or assignee
+      description: |
+        Only the keys sent change; `assigneeId: null` unassigns. Status flow: open -> pending_customer / resolved / closed; pending_customer -> open / resolved / closed; resolved -> open / pending_customer / closed; closed -> open. Anything else is `409 invalid_transition`. `assigneeId` must be a GrowthX Admin user (`422`). Audit-logged.
+      operationId: adminUpdateSupportTicket
+      x-phase: 2
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string }
+                status: { $ref: "#/components/schemas/TicketStatus" }
+                priority: { $ref: "#/components/schemas/TicketPriority" }
+                assigneeId: { type: string, nullable: true }
+      responses:
+        "200":
+          description: The updated ticket
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminTicketDetail" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`invalid_transition`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
 components:
   securitySchemes:
     tenantKey:
@@ -3948,6 +4865,21 @@ components:
       schema: { $ref: "#/components/schemas/ContentSiteSlugValue" }
 
   responses:
+    SocialSignupRequired:
+      description: No account with this email yet. Show the sign-up form and send `signupToken` to `auth.signup` as `socialToken`.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [signupRequired, signupToken, expiresAt, email, name]
+            properties:
+              signupRequired: { type: boolean, enum: [true] }
+              signupToken: { type: string, example: gxs_..., description: "For `auth.signup`; works for one account" }
+              expiresAt: { type: string, format: date-time, description: 30 minutes from now }
+              email: { type: string, format: email }
+              name: { type: string, description: "The provider account's name; may be empty" }
+              provider: { type: string, enum: [google, microsoft, github] }
+              emailVerified: { type: boolean, description: "False for a Microsoft work account whose email isn't verified: `auth.signup` then needs `emailCode`" }
     Ok:
       description: OK
       content:
@@ -4095,6 +5027,10 @@ components:
           description: |
             False for a Google sign-up that never set a password: show "Set a password" (Forgot password) instead of
             "Change password".
+        socialLogins:
+          type: array
+          items: { type: string, enum: [google, microsoft, github] }
+          description: "The providers linked to the account (Account settings, link and unlink)."
 
     ProvisioningHealth:
       type: object
@@ -4176,6 +5112,32 @@ components:
             gstRate: { type: number, example: 18 }
             active: { type: boolean, description: "Whether the plan is on sale" }
             item: { type: string, nullable: true, description: "The billing Item on its invoices" }
+
+    StaffRole:
+      type: string
+      enum: [admin, content_editor]
+
+    StaffMember:
+      type: object
+      required: [id, email, name, role, enabled, signIn, isYou, hasOtherRoles]
+      properties:
+        id: { type: string, description: "The user id (their email)" }
+        email: { type: string, format: email }
+        name: { type: string }
+        role: { $ref: "#/components/schemas/StaffRole" }
+        enabled: { type: boolean }
+        lastLogin: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time, nullable: true }
+        signIn:
+          type: object
+          required: [password, providers]
+          properties:
+            password: { type: boolean, description: "False until they set one (invite, Forgot password)" }
+            providers:
+              type: array
+              items: { type: string, example: microsoft }
+        isYou: { type: boolean }
+        hasOtherRoles: { type: boolean, description: "Also a customer or partner: can't be disabled here" }
 
     SiteStatus:
       type: string
@@ -4616,7 +5578,7 @@ components:
             updatedAt: { type: string, format: date-time }
 
     PartnerEarnings:
-      description: "All amounts calculated on the server. Placeholder figures until the commission rules are decided (D8)."
+      description: "All amounts calculated on the server, from the commission ledger. Commission is before TDS."
       type: object
       required: [thisMonth, lastMonth, pending, approved, paidLifetime, lifetimeTotal]
       properties:
@@ -4628,11 +5590,14 @@ components:
         lifetimeTotal: { $ref: "#/components/schemas/Money" }
         nextPayoutDate: { type: string, format: date, nullable: true }
         tdsRate: { type: number, nullable: true, description: "e.g. 0.02 for 2 %. Display only; TDS is calculated on the server." }
+        minimumPayout: { $ref: "#/components/schemas/Money", description: "Approved, unpaid commission needed before a payout is made (before TDS)" }
+        commissionRate: { type: number, description: "The partner's current rate, e.g. 0.2 for 20 %" }
+        tier: { type: string, description: "The partner's current tier, e.g. Seed" }
 
     CommissionStatus:
       type: string
       enum: [pending, approved, paid, reversed]
-      description: "Show `pending` as \"Under review\". `reversed`: the customer was refunded."
+      description: "Show `pending` as \"Under review\". `reversed`: the payment was refunded or cancelled (admins see `void`)."
 
     CommissionType:
       type: string
@@ -4675,11 +5640,13 @@ components:
       required: [id, reference, period, status, gross, tds, net]
       properties:
         id: { type: string }
-        reference: { type: string, example: GXP-2026-0318 }
+        reference: { type: string, nullable: true, example: UTR123456789, description: "Bank or UPI reference, set once the payout is paid" }
         period: { type: string, pattern: "^\\d{4}-\\d{2}$", example: 2026-09 }
         status: { $ref: "#/components/schemas/PayoutStatus" }
         paidAt: { type: string, format: date-time, nullable: true }
-        method: { allOf: [{ $ref: "#/components/schemas/PayoutMethod" }], nullable: true }
+        method: { type: string, enum: [bank_transfer, upi, other], nullable: true }
+        commissionCount: { type: integer }
+        tdsRate: { type: number, description: "e.g. 0.02 for 2 %, as applied to this payout" }
         gross: { $ref: "#/components/schemas/Money" }
         tds: { $ref: "#/components/schemas/Money" }
         net: { $ref: "#/components/schemas/Money" }
@@ -4760,6 +5727,66 @@ components:
     PartnerStatus:
       type: string
       enum: [pending_approval, active, suspended]
+
+    AdminCommission:
+      description: "A commission as an admin sees it. Like `Commission`, but a refunded one is `void` (not `reversed`)."
+      type: object
+      required: [id, type, amount, status, earnedAt, partnerId]
+      properties:
+        id: { type: string }
+        customerId: { type: string, nullable: true }
+        customerName: { type: string, nullable: true }
+        invoiceId: { type: string, nullable: true }
+        type: { $ref: "#/components/schemas/CommissionType" }
+        base: { $ref: "#/components/schemas/Money", description: Amount excluding GST the commission is calculated on }
+        rate: { type: number, nullable: true, description: "e.g. 0.2 for 20 %" }
+        amount: { $ref: "#/components/schemas/Money" }
+        status: { type: string, enum: [pending, approved, paid, void] }
+        earnedAt: { type: string, format: date-time, description: When the customer paid }
+        reviewUntil: { type: string, format: date-time, nullable: true, description: "Earliest approval (hold period), while pending" }
+        payoutId: { type: string, nullable: true }
+        partnerId: { type: string }
+        partnerName: { type: string, nullable: true }
+        tier: { type: string, nullable: true }
+        activeClients: { type: integer, description: "Partner's active clients when the customer paid" }
+        approvedAt: { type: string, format: date-time, nullable: true }
+        voidReason: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+
+    AdminPayout:
+      description: A payout as an admin sees it (`draft` until paid, `cancelled` if dropped).
+      type: object
+      required: [id, reference, period, status, gross, tds, net, partnerId]
+      properties:
+        id: { type: string }
+        reference: { type: string, nullable: true, description: "Bank or UPI reference, set once paid" }
+        period: { type: string, pattern: "^\\d{4}-\\d{2}$" , example: 2026-09 }
+        status: { type: string, enum: [draft, paid, cancelled] }
+        paidAt: { type: string, format: date-time, nullable: true }
+        method: { type: string, enum: [bank_transfer, upi, other], nullable: true }
+        commissionCount: { type: integer }
+        tdsRate: { type: number, description: "e.g. 0.02 for 2 %, as applied to this payout" }
+        gross: { $ref: "#/components/schemas/Money" }
+        tds: { $ref: "#/components/schemas/Money" }
+        net: { $ref: "#/components/schemas/Money" }
+        partnerId: { type: string }
+        partnerName: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+
+    BulkCommissionResult:
+      type: object
+      required: [updated, ids, skipped]
+      properties:
+        updated: { type: integer }
+        ids: { type: array, items: { type: string } }
+        skipped:
+          type: array
+          items:
+            type: object
+            required: [id, reason]
+            properties:
+              id: { type: string }
+              reason: { type: string, example: on_hold }
 
     AdminPartner:
       type: object
@@ -5291,3 +6318,104 @@ components:
         width: { type: integer }
         height: { type: integer }
         size: { type: integer, description: Bytes after re-encoding }
+
+    TicketStatus:
+      type: string
+      enum: [open, pending_customer, resolved, closed]
+    TicketPriority:
+      type: string
+      enum: [low, normal, high, urgent]
+    TicketCategory:
+      type: string
+      enum: [billing, technical, site, other]
+
+    Ticket:
+      type: object
+      required: [id, subject, category, priority, status, createdAt, updatedAt]
+      properties:
+        id: { type: string, example: TKT-00001 }
+        subject: { type: string }
+        category: { $ref: "#/components/schemas/TicketCategory" }
+        priority: { $ref: "#/components/schemas/TicketPriority" }
+        status: { $ref: "#/components/schemas/TicketStatus" }
+        tenantId: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time, description: Last activity }
+        resolvedAt: { type: string, format: date-time, nullable: true }
+        closedAt: { type: string, format: date-time, nullable: true }
+
+    TicketMessage:
+      type: object
+      required: [id, authorName, fromStaff, body, createdAt]
+      properties:
+        id: { type: string }
+        authorName: { type: string }
+        fromStaff: { type: boolean }
+        body: { type: string, description: Plain text. Render as text, never as HTML }
+        createdAt: { type: string, format: date-time }
+
+    TicketDetail:
+      allOf:
+        - $ref: "#/components/schemas/Ticket"
+        - type: object
+          required: [messages]
+          properties:
+            messages:
+              type: array
+              description: Oldest first; internal notes are not included
+              items: { $ref: "#/components/schemas/TicketMessage" }
+
+    AdminTicket:
+      allOf:
+        - $ref: "#/components/schemas/Ticket"
+        - type: object
+          required: [accountId, customerEmail]
+          properties:
+            accountId: { type: string }
+            company: { type: string, nullable: true }
+            customerName: { type: string, nullable: true }
+            customerEmail: { type: string }
+            assignee:
+              type: object
+              nullable: true
+              required: [id, name]
+              properties:
+                id: { type: string }
+                name: { type: string }
+            firstResponseAt: { type: string, format: date-time, nullable: true }
+
+    AdminTicketDetail:
+      allOf:
+        - $ref: "#/components/schemas/AdminTicket"
+        - type: object
+          required: [messages]
+          properties:
+            messages:
+              type: array
+              items:
+                allOf:
+                  - $ref: "#/components/schemas/TicketMessage"
+                  - type: object
+                    required: [internal]
+                    properties:
+                      internal: { type: boolean, description: A team-only note }
+                      authorId: { type: string, nullable: true }
+
+    AdminSupportSummary:
+      type: object
+      required: [open, pendingCustomer, resolved, closed, unassigned, urgent, staff]
+      properties:
+        open: { type: integer }
+        pendingCustomer: { type: integer }
+        resolved: { type: integer }
+        closed: { type: integer }
+        unassigned: { type: integer, description: Open or pending tickets with no assignee }
+        urgent: { type: integer, description: Open or pending urgent tickets }
+        staff:
+          type: array
+          items:
+            type: object
+            required: [id, name]
+            properties:
+              id: { type: string }
+              name: { type: string }

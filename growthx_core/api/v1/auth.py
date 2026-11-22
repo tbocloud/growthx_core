@@ -7,7 +7,15 @@ from frappe.core.doctype.user.user import test_password_strength
 from frappe.utils import cint, now_datetime, sha256_hash
 from frappe.utils.password import check_password, update_password
 
-from growthx_core import accounts, google_signin, microsoft_signin, signup_codes, tokens
+from growthx_core import (
+	accounts,
+	github_signin,
+	google_signin,
+	microsoft_signin,
+	signup_codes,
+	social_signup,
+	tokens,
+)
 from growthx_core.api.v1 import _serializers as s
 from growthx_core.api.v1._core import (
 	ApiError,
@@ -64,7 +72,11 @@ def _growthx_user(email: str, editors: bool = False) -> str | None:
 	"""The enabled user with this email who has a GrowthX role, or None. With `editors`, content
 	editors too while portal sign-in is on (password sign-in and reset only, not Google)."""
 	user = frappe.db.get_value("User", {"email": email, "enabled": 1}, "name")
-	if not user:
+	return _with_growthx_role(user, editors)
+
+
+def _with_growthx_role(user: str | None, editors: bool = False) -> str | None:
+	if not user or not frappe.db.get_value("User", user, "enabled"):
 		return None
 	roles = set(frappe.get_roles(user))
 	if GROWTHX_ROLES & roles:
@@ -98,51 +110,118 @@ def login():
 	return s.auth_session(pair, user)
 
 
+def _social_login(identity: dict, data):
+	"""Sign in, or start a sign-up, with a verified social identity (Google, Microsoft customers,
+	GitHub). The provider account is found by its stable id first; a verified email then matches an
+	existing GrowthX user. An unverified email never matches (that would be an account takeover),
+	and `never_admin` providers can't open an admin account."""
+	provider = identity["provider"]
+	sign_in_only = data.get("signInOnly") is True
+	verified = identity.get("emailVerified") is True
+	linked = accounts.user_by_social(provider, identity["id"])
+
+	if linked:
+		user = _with_growthx_role(linked)
+	else:
+		user = _growthx_user(identity["email"]) if verified else None
+	if user:
+		if provider != "google" and accounts.ADMIN_ROLE in frappe.get_roles(user):
+			# Microsoft customers and GitHub never open the admin panel; staff use the staff path.
+			raise ApiError(403, "account_unavailable", "This account can't sign in here.")
+		if not linked:
+			accounts.link_social(user, provider, identity["id"])
+		return s.auth_session(tokens.issue(user, _client(data)), user)
+
+	if linked or _email_taken(identity["email"]):
+		if not verified and not linked and _growthx_user(identity["email"]):
+			raise ApiError(
+				409,
+				"email_unverified",
+				f"There's already an account with this email, but {provider.title()} hasn't verified it. "
+				f"Sign in another way, then link {provider.title()} from Account settings.",
+			)
+		# A disabled account, or a staff account without a GrowthX role.
+		raise ApiError(403, "account_unavailable", "This account can't sign in here.")
+	if sign_in_only:
+		raise ApiError(404, "no_account", f"There's no GrowthX account for this {provider.title()} account.")
+	return 202, {
+		"signupRequired": True,
+		"signupToken": social_signup.issue(identity),
+		"expiresAt": iso(now_datetime() + timedelta(seconds=social_signup.SIGNUP_TTL)),
+		"email": identity["email"],
+		"name": identity["name"],
+		"provider": provider,
+		"emailVerified": verified,
+	}
+
+
+def _oauth_input(data) -> tuple[str, str | None]:
+	code = get_str(data, "code", required=True, max_length=2048, label="Code")
+	return code, get_str(data, "codeVerifier", max_length=128, label="Code verifier")
+
+
 @endpoint(methods=("POST",), auth=False, rate_limit=RateLimit(20, 15 * 60))
 def google():
 	"""Sign in with Google: an existing account is logged in (200); a new email gets a sign-up
 	token for `auth.signup` (202), or `404 no_account` with `signInOnly` (signing in to a site)."""
 	data = body()
-	code = get_str(data, "code", required=True, max_length=2048, label="Code")
-	code_verifier = get_str(data, "codeVerifier", max_length=128, label="Code verifier")
-	sign_in_only = data.get("signInOnly") is True
-	identity = google_signin.verified_identity(code, code_verifier)
+	identity = google_signin.verified_identity(*_oauth_input(data))
+	return _social_login(identity, data)
 
-	user = _growthx_user(identity["email"])
-	if user:
-		accounts.link_google(user, identity["sub"])
-		return s.auth_session(tokens.issue(user, _client(data)), user)
-	if _email_taken(identity["email"]):
-		# A disabled account, or a staff account without a GrowthX role.
-		raise ApiError(403, "account_unavailable", "This account can't sign in here.")
-	if sign_in_only:
-		raise ApiError(404, "no_account", "There's no GrowthX account for this Google account.")
-	return 202, {
-		"signupRequired": True,
-		"signupToken": google_signin.issue_signup_token(identity),
-		"expiresAt": iso(now_datetime() + timedelta(seconds=google_signin.SIGNUP_TTL)),
-		"email": identity["email"],
-		"name": identity["name"],
-	}
+
+@endpoint(methods=("POST",), auth=False, rate_limit=RateLimit(20, 15 * 60))
+def github():
+	"""Sign in or sign up with GitHub, like Google, with the primary verified email. Never admin."""
+	data = body()
+	identity = github_signin.verified_identity(*_oauth_input(data))
+	return _social_login(identity, data)
 
 
 @endpoint(methods=("POST",), auth=False, rate_limit=RateLimit(20, 15 * 60))
 def microsoft():
-	"""Sign in with Microsoft: a member of the back office's Entra ID directory is logged in (200).
-	Microsoft never starts a sign-up — an admin creates the GrowthX account first."""
+	"""Sign in with Microsoft (one multi-tenant app). A member of the staff directory is logged in as
+	a GrowthX Admin (created on first sign-in); anyone else signs in or signs up as a customer."""
 	data = body()
-	code = get_str(data, "code", required=True, max_length=2048, label="Code")
-	code_verifier = get_str(data, "codeVerifier", max_length=128, label="Code verifier")
-	identity = microsoft_signin.verified_identity(code, code_verifier)
+	identity = microsoft_signin.verified_identity(*_oauth_input(data))
+	if identity["staff"]:
+		return _microsoft_staff(identity, data)
+	return _social_login(identity, data)
 
-	user = _growthx_user(identity["email"])
-	if not user:
-		if _email_taken(identity["email"]):
-			# A disabled account, or a staff account without a GrowthX role.
+
+def _microsoft_staff(identity: dict, data):
+	email = identity["email"]
+	name = frappe.db.get_value("User", {"email": email}, "name")
+	if name:
+		if not frappe.db.get_value("User", name, "enabled"):
+			# Disabled in GrowthX stays blocked, whatever the directory says.
 			raise ApiError(403, "account_unavailable", "This account can't sign in here.")
-		raise ApiError(404, "no_account", "There's no GrowthX account for this Microsoft account.")
-	accounts.link_microsoft(user, identity["sub"])
-	return s.auth_session(tokens.issue(user, _client(data)), user)
+		if accounts.ADMIN_ROLE not in frappe.get_roles(name):
+			doc = frappe.get_doc("User", name)
+			doc.append_roles(accounts.ADMIN_ROLE)
+			doc.flags.no_welcome_mail = True
+			doc.save(ignore_permissions=True)
+			audit("staff.grant_admin", "User", name, details=email, actor=name)
+	else:
+		first, _, last = (identity["name"] or email.split("@")[0]).partition(" ")
+		doc = frappe.get_doc(
+			{
+				"doctype": "User",
+				"email": email,
+				"first_name": first,
+				"last_name": last or None,
+				"user_type": "Website User",
+				"send_welcome_email": 0,
+				"new_password": frappe.generate_hash(length=32),  # nobody knows it
+				"roles": [{"role": accounts.ADMIN_ROLE}],
+			}
+		)
+		doc.flags.no_welcome_mail = True
+		doc.insert(ignore_permissions=True)
+		name = doc.name
+		accounts.mark_no_password(name)
+		audit("staff.auto_provision", "User", name, details=email, actor=name)
+	accounts.link_social(name, accounts.MICROSOFT, identity["id"])
+	return s.auth_session(tokens.issue(name, _client(data)), name)
 
 
 @endpoint(
@@ -181,14 +260,17 @@ def _email_taken_error():
 def signup():
 	data = body()
 	account_type = get_choice(data, "accountType", ("customer", "partner"), required=True)
-	google_token = get_str(data, "googleSignupToken", max_length=100)
-	google = _google_signup(google_token) if google_token else None
-	name = get_str(data, "name", required=not google, label="Name") or google["name"]
+	# `socialToken` (any provider); `googleSignupToken` is the same token under its old name.
+	social_token = get_str(data, "socialToken", max_length=100) or get_str(
+		data, "googleSignupToken", max_length=100
+	)
+	social = _social_signup(social_token) if social_token else None
+	name = get_str(data, "name", required=not social, label="Name") or social["name"]
 	if not name:
 		raise validation_error({"name": "Name is required."})
-	email = google["email"] if google else get_email(data)
-	# With Google there's no password; the user can set one later with "Forgot password".
-	password = _password(data) if not google or data.get("password") else frappe.generate_hash(length=32)
+	email = social["email"] if social else get_email(data)
+	# With a social sign-up there's no password; the user can set one later with "Forgot password".
+	password = _password(data) if not social or data.get("password") else frappe.generate_hash(length=32)
 	phone = get_str(data, "phone", max_length=20, label="Phone")
 	company = get_str(data, "company", required=account_type == "customer", label="Company")
 	if company and any(c in company for c in "<>"):
@@ -196,13 +278,14 @@ def signup():
 		raise validation_error({"company": "Company can't contain < or >."})
 	client = _client(data)
 	site = _signup_site(data) if account_type == "customer" else {}
-	if not google or data.get("password"):
+	if not social or data.get("password"):
 		_check_password_policy(password, "password", (name, email, company))
 
 	if _email_taken(email):
 		raise _email_taken_error()
-	# Google has verified a Google sign-up's email; everyone else proves it with the emailed code.
-	check_code = not google and signup_codes.required()
+	# The provider has verified a social sign-up's email (a Microsoft work account may not have: then
+	# the emailed code proves it); everyone else proves it with the emailed code.
+	check_code = (not social or not social["emailVerified"]) and signup_codes.required()
 	if check_code:
 		code = get_str(data, "emailCode", required=True, max_length=6, label="Code")
 		if not (len(code) == 6 and code.isdigit()):
@@ -239,11 +322,11 @@ def signup():
 		# defaults). A 500 with a reference, logged, instead of ERPNext's text as a 422.
 		raise AccountSetupError(f"Creating the {account_type} account failed") from e
 
-	if google_token:
-		accounts.link_google(user, google["sub"])
+	if social_token:
+		accounts.link_social(user, social["provider"], social["id"])
 		if not data.get("password"):
 			accounts.mark_no_password(user)
-		google_signin.use_signup_token(google_token)
+		social_signup.use(social_token)
 	if check_code:
 		signup_codes.use(email)
 	result = s.auth_session(tokens.issue(user, client), user)
@@ -256,13 +339,13 @@ class AccountSetupError(Exception):
 	"""Creating an account failed for a reason the visitor can't fix."""
 
 
-def _google_signup(token: str) -> dict:
-	identity = google_signin.signup_identity(token)
+def _social_signup(token: str) -> dict:
+	identity = social_signup.identity(token)
 	if not identity:
 		raise ApiError(
 			400,
-			"google_signup_expired",
-			"Your Google sign-in has expired. Please continue with Google again.",
+			"google_signup_expired",  # the code predates Microsoft and GitHub; the web client matches it
+			"Your sign-in has expired. Please continue with your account again.",
 		)
 	return identity
 
@@ -495,6 +578,55 @@ def logout_others():
 	"""Log out every other device: revoke all the user's tokens except the one making this call."""
 	revoked = tokens.revoke_all(current_user(), keep=frappe.local.gx_token)
 	return {"ok": True, "revoked": revoked}
+
+
+# Linked sign-in providers (Account settings). `user.socialLogins` lists them.
+
+VERIFIERS = {
+	accounts.GOOGLE: google_signin,
+	accounts.MICROSOFT: microsoft_signin,
+	accounts.GITHUB: github_signin,
+}
+
+
+@endpoint(methods=("POST",), rate_limit=RateLimit(10, 15 * 60, by_user=True))
+def link_provider():
+	"""Link Google, Microsoft or GitHub to the logged-in account: the same `code` flow as signing in,
+	sent with the user's own token. The provider account must not belong to another user."""
+	data = body()
+	provider = get_choice(data, "provider", tuple(VERIFIERS), required=True)
+	user = current_user()
+	identity = VERIFIERS[provider].verified_identity(*_oauth_input(data))
+	if provider == accounts.MICROSOFT and identity["staff"]:
+		raise ApiError(409, "not_linkable", "Staff Microsoft accounts sign in with the staff login.")
+	owner = accounts.user_by_social(provider, identity["id"])
+	if owner and owner != user:
+		raise ApiError(409, "already_linked", "This account is already linked to another GrowthX user.")
+	if provider in accounts.social_providers(user) and not owner:
+		raise ApiError(409, "provider_linked", f"A different {provider.title()} account is already linked.")
+	accounts.link_social(user, provider, identity["id"])
+	audit("auth.link_provider", "User", user, details=provider)
+	return s.user(user)
+
+
+@endpoint(methods=("POST",), rate_limit=RateLimit(10, 15 * 60, by_user=True))
+def unlink_provider():
+	"""Unlink a provider. The last way to sign in can't be removed: without a password, at least one
+	provider must stay."""
+	provider = get_choice(body(), "provider", tuple(VERIFIERS), required=True)
+	user = current_user()
+	linked = accounts.social_providers(user)
+	if provider not in linked:
+		raise ApiError(404, "not_linked", f"{provider.title()} isn't linked to your account.")
+	if len(linked) == 1 and not accounts.has_password(user):
+		raise ApiError(
+			409,
+			"last_sign_in_method",
+			f"{provider.title()} is the only way you sign in. Set a password first (Forgot password).",
+		)
+	accounts.unlink_social(user, provider)
+	audit("auth.unlink_provider", "User", user, details=provider)
+	return s.user(user)
 
 
 # ---------------------------------------------------------------- "Sign in with GrowthX" on a site

@@ -2,8 +2,19 @@ from datetime import date, timedelta
 
 import frappe
 from frappe.query_builder.functions import Count
-from frappe.utils import add_months, add_years, fmt_money, get_datetime, getdate, now_datetime, nowdate
+from frappe.utils import (
+	add_months,
+	add_years,
+	fmt_money,
+	get_datetime,
+	getdate,
+	now_datetime,
+	nowdate,
+	sha256_hash,
+)
 
+from growthx_core import accounts, tokens
+from growthx_core.api.v1 import _ledger as ledger
 from growthx_core.api.v1 import _serializers as s
 from growthx_core.api.v1 import appointments as appts
 from growthx_core.api.v1._core import (
@@ -24,9 +35,11 @@ from growthx_core.api.v1._core import (
 	page_params,
 	query,
 	validation_error,
+	web_url,
 )
 from growthx_core.billing import payments, payu
 from growthx_core.billing.payments import set_customer_status as _set_customer_status
+from growthx_core.partners import commissions as commission_ops
 from growthx_core.provisioning import press, runner
 from growthx_core.setup.defaults import default_link
 
@@ -290,7 +303,9 @@ def _record_manual_payment(account, plan, reference: str, amount: int, paid_on: 
 	"already paid offline"). `account` is the locked GX Account document."""
 	# The customer mustn't also pay online for what's recorded here (409 if a payment is under way).
 	payu.cancel_open_checkouts(account.name, plan.product)
-	_sub, details, period_end = payments.apply_payment(account, plan, reference, paid_on, "manual")
+	_sub, details, period_end = payments.apply_payment(
+		account, plan, reference, paid_on, "manual", amount=amount / 100
+	)
 	audit(
 		"customer.record_payment",
 		"GX Account",
@@ -876,6 +891,223 @@ def _email_partner_approved(doc):
 		frappe.log_error(title=f"GrowthX: could not send partner-approved email for {doc.name}")
 
 
+# ---------------------------------------------------------------- partner commissions and payouts
+
+COMMISSION_STATUSES = ("pending", "approved", "paid", "void")
+PAYOUT_STATUSES = ("draft", "paid", "cancelled")
+PAYOUT_METHODS = ("bank_transfer", "upi", "other")
+MAX_BULK = 200
+
+
+def _month_range(data: dict, key: str = "month"):
+	value = get_str(data, key, max_length=7)
+	if not value:
+		return None
+	try:
+		return commission_ops.valid_period(value)
+	except (ValueError, TypeError):
+		raise validation_error({key: "Use a month as YYYY-MM."})
+
+
+def _ids(data: dict) -> list[str]:
+	ids = data.get("ids")
+	if (
+		not isinstance(ids, list)
+		or not ids
+		or len(ids) > MAX_BULK
+		or not all(isinstance(i, str) and i for i in ids)
+	):
+		raise validation_error({"ids": f"Send between 1 and {MAX_BULK} commission ids."})
+	return list(dict.fromkeys(ids))
+
+
+@endpoint(methods=("GET",), roles=("admin",))
+def commissions():
+	data = query()
+	page, page_size = page_params(data)
+	status = get_choice(data, "status", COMMISSION_STATUSES)
+	partner_id = get_str(data, "partner", max_length=140)
+	month = _month_range(data)
+	order_by = get_sort(data, {"earnedAt": "paid_on", "amount": "amount"}, "-earnedAt")
+
+	filters = {}
+	if partner_id:
+		filters["partner"] = partner_id
+	if month:
+		filters["paid_on"] = ("between", [month[0], month[1]])
+	list_filters = {**filters, **({"status": status} if status else {})}
+	rows = frappe.get_all(
+		"GX Commission",
+		filters=list_filters,
+		fields=ledger.COMMISSION_FIELDS,
+		order_by=f"{order_by}, creation desc",
+		limit_start=(page - 1) * page_size,
+		limit_page_length=page_size,
+	)
+	# Totals per status for the same partner/month filter, so the page can show how much is waiting.
+	totals = dict.fromkeys(COMMISSION_STATUSES, 0)
+	for r in frappe.get_all("GX Commission", filters=filters, fields=["status", "amount"]):
+		totals[r.status] += commission_ops.to_paise(r.amount)
+	customers, partners_ = ledger.account_names(rows), ledger.partner_names(rows)
+	result = page_meta(
+		page,
+		page_size,
+		frappe.db.count("GX Commission", list_filters),
+		[ledger.admin_commission(r, customers, partners_) for r in rows],
+	)
+	result["totals"] = {k: {"amount": v, "currency": "INR"} for k, v in totals.items()}
+	return result
+
+
+def _bulk_result(done: list[str], skipped: list[dict]) -> dict:
+	return {"updated": len(done), "ids": done, "skipped": skipped}
+
+
+@endpoint(methods=("POST",), roles=("admin",), idempotent=True)
+def approve_commissions():
+	"""Approve pending commissions (up to 200 ids). A commission that isn't pending, or whose hold
+	period (Partner Program Settings) hasn't ended, is skipped and named in `skipped`. Audited."""
+	ids = _ids(body())
+	done, skipped = commission_ops.approve(ids, frappe.session.user)
+	for name in done:
+		audit("commission.approve", "GX Commission", name, "pending → approved")
+	_notify_approved(done)
+	return _bulk_result(done, skipped)
+
+
+def _notify_approved(names: list[str]):
+	from growthx_core.partners.notifications import notify
+
+	if not names:
+		return
+	totals: dict[str, list] = {}
+	for r in frappe.get_all("GX Commission", {"name": ("in", names)}, ["partner", "amount"]):
+		totals.setdefault(r.partner, []).append(commission_ops.to_paise(r.amount))
+	for partner_id, amounts in totals.items():
+		user = frappe.db.get_value("GX Partner Profile", partner_id, "user")
+		if user:
+			notify(
+				user,
+				"commission",
+				"Commission approved",
+				f"{fmt_money(commission_ops.to_rupees(sum(amounts)), currency='INR')} approved"
+				f" ({len(amounts)} payment{'s' if len(amounts) != 1 else ''}), to be paid in the next payout.",
+				deep_link_type="earnings",
+			)
+
+
+@endpoint(methods=("POST",), roles=("admin",), idempotent=True)
+def void_commissions():
+	"""Void commissions that aren't paid yet (up to 200 ids), with a reason (e.g. a refund). One in a
+	draft payout leaves it and the payout is recalculated. Paid ones are skipped. Audited."""
+	data = body()
+	ids = _ids(data)
+	reason = get_str(data, "reason", required=True, max_length=500, label="Reason")
+	done, skipped = commission_ops.void(ids, reason)
+	for name in done:
+		audit("commission.void", "GX Commission", name, reason)
+	return _bulk_result(done, skipped)
+
+
+@endpoint(methods=("GET",), roles=("admin",))
+def payouts():
+	data = query()
+	page, page_size = page_params(data)
+	status = get_choice(data, "status", PAYOUT_STATUSES)
+	partner_id = get_str(data, "partner", max_length=140)
+	period = get_str(data, "period", max_length=7)
+	if period:
+		try:
+			commission_ops.valid_period(period)
+		except (ValueError, TypeError):
+			raise validation_error({"period": "Use a month as YYYY-MM."})
+	filters = {k: v for k, v in {"status": status, "partner": partner_id, "period": period}.items() if v}
+	rows = frappe.get_all(
+		"GX Payout",
+		filters=filters,
+		fields=ledger.PAYOUT_FIELDS,
+		order_by="creation desc",
+		limit_start=(page - 1) * page_size,
+		limit_page_length=page_size,
+	)
+	names = ledger.partner_names(rows)
+	return page_meta(
+		page, page_size, frappe.db.count("GX Payout", filters), [ledger.payout(r, names) for r in rows]
+	)
+
+
+@endpoint(methods=("POST",), roles=("admin",), idempotent=True)
+def create_payouts():
+	"""Payout run for a month `{period: "YYYY-MM"}`: each active partner whose approved, unpaid
+	commission on payments up to the end of that month reaches the minimum payout gets a draft payout
+	(gross, TDS, net). Smaller balances are listed in `skipped` and carry over. Repeating it never
+	includes a commission twice."""
+	period = get_str(body(), "period", required=True, max_length=7, label="Period")
+	try:
+		commission_ops.valid_period(period)
+	except (ValueError, TypeError):
+		raise validation_error({"period": "Use a month as YYYY-MM."})
+	if period > nowdate()[:7]:
+		raise validation_error({"period": "A payout can't be made for a month that hasn't started."})
+	created, skipped = commission_ops.create_payouts(period, frappe.session.user)
+	for p in created:
+		audit(
+			"payout.create",
+			"GX Payout",
+			p.name,
+			f"{p.period}: {p.commission_count} commissions, gross {fmt_money(p.gross, currency='INR')},"
+			f" TDS {fmt_money(p.tds, currency='INR')} ({p.tds_rate:g}%), net {fmt_money(p.net, currency='INR')}",
+		)
+	names = ledger.partner_names(created)
+	return {
+		"created": [ledger.payout(p, names) for p in created],
+		"skipped": [{**r, "amount": {"amount": r["amount"], "currency": "INR"}} for r in skipped],
+	}
+
+
+def _draft_payout(payout_id: str):
+	if not frappe.db.exists("GX Payout", payout_id):
+		raise not_found()
+	doc = frappe.get_doc("GX Payout", payout_id, for_update=True)
+	if doc.status != "draft":
+		raise ApiError(409, "not_draft", f"This payout is already {doc.status}.")
+	return doc
+
+
+@endpoint(methods=("POST",), roles=("admin",), idempotent=True)
+def mark_payout_paid():
+	"""Record that a draft payout was transferred `{id, reference, paidOn, method}`: the payout and
+	its commissions become paid and the partner is told (in the app, and by email if they opted in to
+	commission updates). A payout that is already paid or cancelled answers 409."""
+	data = body()
+	payout_id = get_str(data, "id", required=True)
+	reference = get_str(data, "reference", required=True, max_length=140, label="UTR / reference")
+	paid_on = _paid_on(data.get("paidOn"))
+	method = get_choice(data, "method", PAYOUT_METHODS, required=True)
+	doc = _draft_payout(payout_id)
+	count = commission_ops.mark_paid(doc.name, reference, paid_on, method, frappe.session.user)
+	audit(
+		"payout.mark_paid",
+		"GX Payout",
+		doc.name,
+		f"{fmt_money(doc.net, currency='INR')} net ({count} commissions) paid on {paid_on.isoformat()}"
+		f" by {method}, reference {reference}",
+	)
+	doc.reload()
+	commission_ops.notify_payout_paid(doc)
+	return ledger.payout(doc, ledger.partner_names([doc]))
+
+
+@endpoint(methods=("POST",), roles=("admin",), idempotent=True)
+def cancel_payout():
+	"""Drop a draft payout `{id}`: its commissions go back to approved, ready for the next run."""
+	doc = _draft_payout(get_str(body(), "id", required=True))
+	commission_ops.cancel_payout(doc.name)
+	audit("payout.cancel", "GX Payout", doc.name, f"{doc.period} draft cancelled")
+	doc.reload()
+	return ledger.payout(doc, ledger.partner_names([doc]))
+
+
 # ---------------------------------------------------------------- appointments ("Talk to an expert")
 
 APPOINTMENT_STATUSES = {
@@ -1071,6 +1303,252 @@ from growthx_core.api.v1.admin_content_seo import (
 	save_content_page,
 	update_content_site,
 )
+from growthx_core.api.v1.admin_support import (
+	support_note,
+	support_reply,
+	support_summary,
+	support_ticket,
+	support_tickets,
+	support_update,
+)
+
+# ---------------------------------------------------------------- team (staff)
+
+STAFF_ROLES = {"admin": "GrowthX Admin", "content_editor": "GrowthX Content Editor"}
+SHARED_ROLES = ("GrowthX Customer", "GrowthX Partner")  # roles of an account that isn't only staff
+PROTECTED_USERS = ("Administrator", "Guest")  # never listed, changed or removed here
+
+
+def _staff_names() -> list[str]:
+	names = frappe.get_all(
+		"Has Role",
+		{"parenttype": "User", "role": ("in", list(STAFF_ROLES.values()))},
+		pluck="parent",
+		distinct=True,
+	)
+	return [n for n in names if n not in PROTECTED_USERS]
+
+
+def _staff_role(user: str) -> str | None:
+	"""admin or content_editor (admin wins), from the user's own role rows."""
+	roles = set(frappe.get_all("Has Role", {"parenttype": "User", "parent": user}, pluck="role"))
+	for key, role in STAFF_ROLES.items():
+		if role in roles:
+			return key
+	return None
+
+
+def _staff_member(user: str) -> dict:
+	row = frappe.db.get_value(
+		"User", user, ["name", "email", "full_name", "enabled", "last_login", "creation"], as_dict=True
+	)
+	# Frappe adds its own "frappe" row (the site's login), which isn't a way into GrowthX.
+	providers = frappe.get_all(
+		"User Social Login",
+		{"parent": user, "parenttype": "User", "provider": ("!=", "frappe")},
+		pluck="provider",
+		order_by="idx asc",
+	)
+	return {
+		"id": row.name,
+		"email": row.email or row.name,
+		"name": row.full_name or row.name,
+		"role": _staff_role(user),
+		"enabled": bool(row.enabled),
+		"lastLogin": iso(row.last_login),
+		"createdAt": iso(row.creation),
+		"signIn": {"password": accounts.has_password(user), "providers": sorted(set(providers))},
+		"isYou": user == frappe.session.user,
+		"hasOtherRoles": _has_shared_roles(user),
+	}
+
+
+def _has_shared_roles(user: str) -> bool:
+	return bool(
+		frappe.db.exists(
+			"Has Role", {"parenttype": "User", "parent": user, "role": ("in", list(SHARED_ROLES))}
+		)
+	)
+
+
+def _enabled_admins() -> set[str]:
+	admins = frappe.get_all(
+		"Has Role", {"parenttype": "User", "role": STAFF_ROLES["admin"]}, pluck="parent", distinct=True
+	)
+	if not admins:
+		return set()
+	enabled = frappe.get_all("User", {"name": ("in", admins), "enabled": 1}, pluck="name")
+	return {n for n in enabled if n not in PROTECTED_USERS}
+
+
+def _staff_target(data: dict) -> str:
+	"""The staff member `id` names (their email); 404 for anyone else, and always for Administrator/Guest."""
+	user_id = get_str(data, "id", required=True, label="Id")
+	user_id = frappe.db.get_value("User", {"name": user_id}, "name")
+	if not user_id or user_id in PROTECTED_USERS or not _staff_role(user_id):
+		raise not_found()
+	return user_id
+
+
+def _guard_admin_loss(user: str, what: str):
+	"""An admin can't lock themselves out, and the last enabled admin can't go."""
+	if user not in _enabled_admins():
+		return
+	if user == frappe.session.user:
+		raise ApiError(409, "self_lockout", f"You can't {what} your own account.")
+	if _enabled_admins() == {user}:
+		raise ApiError(409, "last_admin", f"This is the last enabled admin, so you can't {what} them.")
+
+
+def _save_user(doc):
+	doc.flags.no_welcome_mail = True
+	doc.save(ignore_permissions=True)
+
+
+def _set_staff_role(doc, key: str | None):
+	"""Keep the user's other roles; give them exactly this staff role (None removes both)."""
+	staff = set(STAFF_ROLES.values())
+	doc.set("roles", [r for r in doc.get("roles") if r.role not in staff])
+	if key:
+		doc.append("roles", {"role": STAFF_ROLES[key]})
+
+
+def _send_staff_invite(user: str, name: str, role: str) -> bool:
+	key = frappe.generate_hash()
+	frappe.db.set_value(
+		"User",
+		user,
+		{"reset_password_key": sha256_hash(key), "last_reset_password_key_generated_on": now_datetime()},
+	)
+	esc = frappe.utils.escape_html
+	link = web_url(f"/reset-password?key={key}")
+	try:
+		frappe.sendmail(
+			recipients=[user],
+			subject="You're invited to the GrowthX team",
+			now=True,
+			message=(
+				f"<p>Hi {esc(name)},</p>"
+				f"<p>You've been added to GrowthX as {esc(role)}.</p>"
+				f'<p><a href="{esc(link)}">Set your password</a>. The link works once and expires in 24 hours. '
+				'If it has expired, use "Forgot password" on the sign-in page.</p>'
+			),
+		)
+	except Exception:
+		frappe.log_error(title=f"GrowthX: could not send staff invite to {user}")
+		return False
+	return True
+
+
+@endpoint(methods=("GET",), roles=("admin",))
+def staff():
+	"""Everyone with the GrowthX Admin or Content Editor role, with how they sign in."""
+	members = [_staff_member(n) for n in _staff_names()]
+	members.sort(key=lambda m: (m["name"].lower(), m["email"]))
+	return page_meta(1, max(len(members), 1), len(members), members)
+
+
+@endpoint(methods=("POST",), roles=("admin",), idempotent=True)
+def add_staff():
+	"""Add a team member {email, name, role admin|content_editor}. A new person gets an account with no
+	password and an email to set one (invited true unless sending failed); an existing user (e.g. a
+	customer) just gets the role. 409 already_staff / user_disabled."""
+	data = body()
+	email = get_email(data)
+	name = get_str(data, "name", required=True, max_length=140, label="Name")
+	role = get_choice(data, "role", tuple(STAFF_ROLES), required=True)
+	existing = frappe.db.get_value("User", {"email": email}, "name")
+	if existing in PROTECTED_USERS:
+		raise validation_error({"email": "Enter a valid email address."})
+	invited = False
+	if existing:
+		if _staff_role(existing):
+			raise ApiError(409, "already_staff", "This person is already on the team.")
+		if not frappe.db.get_value("User", existing, "enabled"):
+			raise ApiError(409, "user_disabled", "This account is disabled. Enable it before adding a role.")
+		doc = frappe.get_doc("User", existing, for_update=True)
+		_set_staff_role(doc, role)
+		_save_user(doc)
+		user = doc.name
+	else:
+		first, _, last = name.partition(" ")
+		doc = frappe.get_doc(
+			{
+				"doctype": "User",
+				"email": email,
+				"first_name": first,
+				"last_name": last or None,
+				"user_type": "Website User",
+				"send_welcome_email": 0,
+				"roles": [{"role": STAFF_ROLES[role]}],
+			}
+		)
+		doc.flags.no_welcome_mail = True
+		doc.insert(ignore_permissions=True)
+		user = doc.name
+		accounts.mark_no_password(user)
+		invited = _send_staff_invite(user, name, STAFF_ROLES[role])
+	audit("staff.add", "User", user, f"{role}" + (", invited" if invited else ""))
+	return 201, {**_staff_member(user), "invited": invited}
+
+
+@endpoint(methods=("POST",), roles=("admin",), idempotent=True)
+def update_staff():
+	"""Change a team member's role and/or enable or disable them: {id, role?, enabled?}. Disabling or
+	demoting revokes their tokens. You can't disable or demote yourself, nor the last enabled admin."""
+	data = body()
+	user = _staff_target(data)
+	role = get_choice(data, "role", tuple(STAFF_ROLES))
+	enabled = data.get("enabled")
+	if enabled is not None and not isinstance(enabled, bool):
+		raise validation_error({"enabled": "enabled must be true or false."})
+	if role is None and enabled is None:
+		raise validation_error({"role": "Send a role or enabled."})
+
+	doc = frappe.get_doc("User", user, for_update=True)
+	current = _staff_role(user)
+	changes = []
+	revoke = False
+	if role and role != current:
+		if current == "admin":
+			_guard_admin_loss(user, "demote")
+		_set_staff_role(doc, role)
+		changes.append(f"role {current} → {role}")
+		revoke = True
+	if enabled is not None and enabled != bool(doc.enabled):
+		if not enabled:
+			if _has_shared_roles(user):
+				raise ApiError(
+					409,
+					"shared_account",
+					"This person also has a customer or partner account, and disabling would lock that out. "
+					"Remove them from the team instead.",
+				)
+			_guard_admin_loss(user, "disable")
+		doc.enabled = 1 if enabled else 0
+		changes.append("enabled" if enabled else "disabled")
+		revoke = revoke or not enabled
+	if changes:
+		_save_user(doc)
+		if revoke:
+			tokens.revoke_all(user)
+		audit("staff.update", "User", user, ", ".join(changes))
+	return _staff_member(user)
+
+
+@endpoint(methods=("POST",), roles=("admin",), idempotent=True)
+def remove_staff():
+	"""Take the team roles off {id} and revoke their tokens. The user itself (and any customer or
+	partner role) is kept."""
+	user = _staff_target(body())
+	_guard_admin_loss(user, "remove")
+	doc = frappe.get_doc("User", user, for_update=True)
+	_set_staff_role(doc, None)
+	_save_user(doc)
+	tokens.revoke_all(user)
+	audit("staff.remove", "User", user, "staff roles removed")
+	return {"ok": True}
+
 
 # ERPNext Direct onboarding (add a customer's existing ERPNext site, send the payment link).
 from growthx_core.api.v1.admin_direct import add_direct_site, send_payment_link

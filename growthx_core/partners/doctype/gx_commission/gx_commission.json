@@ -1,0 +1,267 @@
+{
+ "actions": [],
+ "creation": "2026-11-22 10:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "partner",
+  "account",
+  "status",
+  "commission_type",
+  "column_break_1",
+  "paid_on",
+  "invoice_amount",
+  "rate",
+  "amount",
+  "section_source",
+  "payment_key",
+  "payment_reference",
+  "gateway",
+  "sales_invoice",
+  "subscription",
+  "plan",
+  "column_break_2",
+  "gross_amount",
+  "tier",
+  "active_clients",
+  "approvable_from",
+  "section_review",
+  "approved_at",
+  "approved_by",
+  "void_reason",
+  "voided_at",
+  "column_break_3",
+  "payout",
+  "paid_at"
+ ],
+ "fields": [
+  {
+   "fieldname": "partner",
+   "fieldtype": "Link",
+   "label": "Partner",
+   "options": "GX Partner Profile",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "search_index": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "account",
+   "fieldtype": "Link",
+   "label": "Customer Account",
+   "options": "GX Account",
+   "reqd": 1,
+   "in_list_view": 1,
+   "search_index": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "pending\napproved\npaid\nvoid",
+   "default": "pending",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "read_only": 1,
+   "description": "pending: awaiting approval. approved: will be included in the next payout. paid: included in a paid payout. void: payment refunded or cancelled."
+  },
+  {
+   "fieldname": "commission_type",
+   "fieldtype": "Select",
+   "label": "Type",
+   "options": "first_month\nrecurring",
+   "default": "recurring",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break",
+   "label": "Column Break 1"
+  },
+  {
+   "fieldname": "paid_on",
+   "fieldtype": "Date",
+   "label": "Customer Paid On",
+   "reqd": 1,
+   "in_list_view": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "invoice_amount",
+   "fieldtype": "Currency",
+   "label": "Invoice Amount (excl. GST)",
+   "options": "INR",
+   "in_list_view": 1,
+   "read_only": 1,
+   "description": "The amount commission is calculated on"
+  },
+  {
+   "fieldname": "rate",
+   "fieldtype": "Percent",
+   "label": "Rate (%)",
+   "in_list_view": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "amount",
+   "fieldtype": "Currency",
+   "label": "Commission",
+   "options": "INR",
+   "in_list_view": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_source",
+   "fieldtype": "Section Break",
+   "label": "Source"
+  },
+  {
+   "fieldname": "payment_key",
+   "fieldtype": "Data",
+   "label": "Payment Key",
+   "reqd": 1,
+   "unique": 1,
+   "read_only": 1,
+   "description": "Account and payment reference. One commission per payment: it makes creation safe to repeat."
+  },
+  {
+   "fieldname": "payment_reference",
+   "fieldtype": "Data",
+   "label": "Payment Reference",
+   "read_only": 1
+  },
+  {
+   "fieldname": "gateway",
+   "fieldtype": "Data",
+   "label": "Gateway",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sales_invoice",
+   "fieldtype": "Link",
+   "label": "Sales Invoice",
+   "options": "Sales Invoice",
+   "read_only": 1
+  },
+  {
+   "fieldname": "subscription",
+   "fieldtype": "Link",
+   "label": "Subscription",
+   "options": "GX Subscription",
+   "read_only": 1
+  },
+  {
+   "fieldname": "plan",
+   "fieldtype": "Link",
+   "label": "Plan",
+   "options": "GX Plan",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_2",
+   "fieldtype": "Column Break",
+   "label": "Column Break 2"
+  },
+  {
+   "fieldname": "gross_amount",
+   "fieldtype": "Currency",
+   "label": "Customer Paid (incl. GST)",
+   "options": "INR",
+   "read_only": 1
+  },
+  {
+   "fieldname": "tier",
+   "fieldtype": "Data",
+   "label": "Tier",
+   "read_only": 1
+  },
+  {
+   "fieldname": "active_clients",
+   "fieldtype": "Int",
+   "label": "Active Clients at the Time",
+   "read_only": 1
+  },
+  {
+   "fieldname": "approvable_from",
+   "fieldtype": "Date",
+   "label": "Approvable From",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_review",
+   "fieldtype": "Section Break",
+   "label": "Review and payout"
+  },
+  {
+   "fieldname": "approved_at",
+   "fieldtype": "Datetime",
+   "label": "Approved At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "approved_by",
+   "fieldtype": "Data",
+   "label": "Approved By",
+   "read_only": 1
+  },
+  {
+   "fieldname": "void_reason",
+   "fieldtype": "Small Text",
+   "label": "Void Reason",
+   "read_only": 1
+  },
+  {
+   "fieldname": "voided_at",
+   "fieldtype": "Datetime",
+   "label": "Voided At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_3",
+   "fieldtype": "Column Break",
+   "label": "Column Break 3"
+  },
+  {
+   "fieldname": "payout",
+   "fieldtype": "Link",
+   "label": "Payout",
+   "options": "GX Payout",
+   "search_index": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "paid_at",
+   "fieldtype": "Datetime",
+   "label": "Paid At",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-11-22 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Partners",
+ "name": "GX Commission",
+ "owner": "Administrator",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "autoname": "format:GXC-{#####}",
+ "permissions": [
+  {
+   "read": 1,
+   "report": 1,
+   "export": 1,
+   "role": "System Manager"
+  },
+  {
+   "read": 1,
+   "report": 1,
+   "export": 1,
+   "role": "GrowthX Admin"
+  }
+ ],
+ "title_field": "partner"
+}
