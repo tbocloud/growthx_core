@@ -187,9 +187,7 @@ class TestLinkedProviders(IntegrationTestCase):
 		frappe.db.rollback()
 
 	def _as_user(self, fn, data):
-		from growthx_core import tokens
-
-		pair = tokens.issue(EXISTING, "web")
+		frappe.set_user(EXISTING)  # before the form: set_user resets frappe.local.form_dict
 		frappe.local.form_dict = frappe._dict(data)
 		frappe.local.request = None
 		frappe.local.request_ip = "127.0.0.1"
@@ -197,9 +195,8 @@ class TestLinkedProviders(IntegrationTestCase):
 			patch.object(_core, "_idempotency_key", return_value=None),
 			patch.object(_core, "_require_auth", return_value=None),
 		):
-			frappe.set_user(EXISTING)
 			response = fn()
-		return response.status_code, json.loads(response.get_data()), pair
+		return response.status_code, json.loads(response.get_data()), None
 
 	def test_link_then_unlink(self):
 		with _Both(emails=[{"email": "elsewhere@example.com", "primary": True, "verified": True}]):

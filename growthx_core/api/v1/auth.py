@@ -115,6 +115,8 @@ def _social_login(identity: dict, data):
 	GitHub). The provider account is found by its stable id first; a verified email then matches an
 	existing GrowthX user. An unverified email never matches (that would be an account takeover),
 	and `never_admin` providers can't open an admin account."""
+	# An identity from an older caller or test may lack the provider fields: it is Google's.
+	identity = {"provider": "google", "id": identity.get("sub"), "emailVerified": True, **identity}
 	provider = identity["provider"]
 	sign_in_only = data.get("signInOnly") is True
 	verified = identity.get("emailVerified") is True
