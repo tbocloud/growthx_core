@@ -121,6 +121,13 @@ class TestMicrosoftSignin(IntegrationTestCase):
 			status, body = _call(auth.microsoft, {"code": "0.Used"})
 		self.assertEqual((status, body["error"]["code"]), (400, "microsoft_failed"))
 
+	def test_a_200_that_is_not_json_is_refused(self):
+		response = MagicMock(status_code=200)
+		response.json.side_effect = ValueError("no body")
+		with patch.object(microsoft_signin.requests, "post", return_value=response):
+			status, body = _call(auth.microsoft, {"code": "0.Abc"})
+		self.assertEqual((status, body["error"]["code"]), (400, "microsoft_failed"))
+
 	def test_token_for_another_app_is_refused(self):
 		with _microsoft(aud="another-app-id", preferred_username=EXISTING):
 			status, body = _call(auth.microsoft, {"code": "0.Abc"})
