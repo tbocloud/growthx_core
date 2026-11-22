@@ -436,7 +436,7 @@ def create_plan():
 	if isinstance(trial_days, bool) or not isinstance(trial_days, int) or not 0 <= trial_days <= 90:
 		raise validation_error({"trialDays": "Enter a whole number of days from 0 to 90."})
 	gst_rate = data.get("gstRate", 18)
-	if isinstance(gst_rate, bool) or not isinstance(gst_rate, (int, float)) or not 0 <= gst_rate <= 28:
+	if isinstance(gst_rate, bool) or not isinstance(gst_rate, int | float) or not 0 <= gst_rate <= 28:
 		raise validation_error({"gstRate": "Enter a GST rate from 0 to 28."})
 	plan = frappe.get_doc(
 		{
