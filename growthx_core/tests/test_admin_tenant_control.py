@@ -68,6 +68,25 @@ class TestAdminTenantControl(IntegrationTestCase):
 		_plan(YEARLY, PRODUCT, "Yearly", interval="year", price=9999)
 		_plan(LIFETIME, PRODUCT, "Lifetime", interval="one_time", price=150000, gst_included=1)
 		_plan(OTHER_PLAN, OTHER_PRODUCT, "Monthly")
+		self._billing_prerequisites()
+
+	def _billing_prerequisites(self):
+		"""What `seed.plan_items` needs to make a plan's Item (a fresh test bench has neither)."""
+		if not frappe.db.exists("Item Group", "All Item Groups"):
+			frappe.get_doc(
+				{"doctype": "Item Group", "item_group_name": "All Item Groups", "is_group": 1}
+			).insert()
+		if not frappe.db.exists("Item Group", "Services"):
+			frappe.get_doc(
+				{
+					"doctype": "Item Group",
+					"item_group_name": "Services",
+					"parent_item_group": "All Item Groups",
+					"is_group": 0,
+				}
+			).insert()
+		if not frappe.db.exists("UOM", "Nos"):
+			frappe.get_doc({"doctype": "UOM", "uom_name": "Nos"}).insert()
 
 	def tearDown(self):
 		frappe.set_user("Administrator")
