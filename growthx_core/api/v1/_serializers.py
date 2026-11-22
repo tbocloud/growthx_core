@@ -220,3 +220,68 @@ def admin_appointment_detail(doc, history: list) -> dict:
 		"cancelReason": doc.cancel_reason or None,
 		"history": history,
 	}
+
+
+# ---------------------------------------------------------------- support tickets
+
+TICKET_FIELDS = [
+	"name",
+	"subject",
+	"category",
+	"priority",
+	"status",
+	"account",
+	"customer_user",
+	"tenant",
+	"assigned_to",
+	"creation",
+	"modified",
+	"last_activity_at",
+	"first_response_at",
+	"resolved_at",
+	"closed_at",
+]
+
+
+def ticket(row) -> dict:
+	"""What the customer sees of a ticket (no assignee, no staff details)."""
+	return {
+		"id": row.name,
+		"subject": row.subject,
+		"category": row.category,
+		"priority": row.priority,
+		"status": row.status,
+		"tenantId": row.tenant or None,
+		"createdAt": iso(row.creation),
+		"updatedAt": iso(row.last_activity_at or row.modified),
+		"resolvedAt": iso(row.resolved_at),
+		"closedAt": iso(row.closed_at),
+	}
+
+
+def ticket_message(row, admin=False) -> dict:
+	out = {
+		"id": row.name,
+		"authorName": row.author_name or ("GrowthX support" if row.is_staff else "Customer"),
+		"fromStaff": bool(cint(row.is_staff)),
+		"body": row.body,
+		"createdAt": iso(row.creation),
+	}
+	if admin:
+		out["internal"] = bool(cint(row.is_internal))
+		out["authorId"] = row.author
+	return out
+
+
+def admin_ticket(row, names: dict) -> dict:
+	"""`names` maps user id -> full name and account id -> company, for the rows being shown."""
+	assignee = row.assigned_to
+	return {
+		**ticket(row),
+		"accountId": row.account,
+		"company": names.get(("account", row.account)),
+		"customerName": names.get(("user", row.customer_user)),
+		"customerEmail": row.customer_user,
+		"assignee": {"id": assignee, "name": names.get(("user", assignee)) or assignee} if assignee else None,
+		"firstResponseAt": iso(row.first_response_at),
+	}

@@ -121,6 +121,9 @@ A slash (`{GROWTHX_API_URL}/catalogue.products`) is not a Frappe method and retu
 | GET | `admin.summary` | admin | 3 | `GET /admin/summary` |
 | GET | `admin.customers?q&status&sort` | admin | 2 | `GET /admin/customers` |
 | GET | `admin.contact_requests?q&source&from&to` | admin | 2 | *new* (Admin → Messages) |
+| POST | `support.create`, `support.reply`, `support.close` | customer | 2 | *new* (§5.18) |
+| GET | `support.tickets`, `support.ticket?id=` | customer | 2 | *new* (§5.18) |
+| GET/POST | `admin.support_*` | admin | 2 | *new* (§5.18, Admin → Support) |
 | GET | `admin.tenants?q&status&sort` | admin | 2 | `GET /admin/tenants` |
 | GET | `admin.tenant?id=` | admin | 2 | `GET /admin/tenants/{id}` |
 | POST | `admin.retry_provisioning` | admin | 2 | `POST /admin/tenants/{id}/retry` |
@@ -660,6 +663,16 @@ below is phase 2. Phase 2 keeps the phase 1 response shapes.
 - **Redirects:** same-site paths, or `https://` on tbogrowthx.com, printagx.in, willpex.in, billax.in, phoebix.in, stayvex.in (and `www.`). Core rejects loops and chains.
 - **Revalidate:** Core POSTs a signed `/api/revalidate` to the site after each change (details in the `content` tag). Without a secret, changes show within 5 minutes.
 - **Analytics:** `analyticsId` stays `null` in `content.site` until management approves tracking.
+
+### 5.18 Support tickets
+
+The customer Support page opens tickets instead of Contact requests; the public website Contact form still uses `contact.submit`.
+
+Customer (role `customer`, own account only; another account's ticket is `404`, internal notes are never returned): `POST support.create {subject, message, category? billing|technical|site|other, priority? low|normal|high, tenantId?}` -> `201` ticket with `messages`; `GET support.tickets?status&page&pageSize`; `GET support.ticket?id=`; `POST support.reply {id, message}` (a resolved or pending ticket becomes `open`; closed gives `409 ticket_closed`); `POST support.close {id}`. Messages are plain text (max 5000 characters), so render them as text. There are no attachments.
+
+Admin (role `admin`, changes are audit-logged): `GET admin.support_summary` (counts, unassigned, urgent, and `staff` to assign to), `GET admin.support_tickets?status&priority&category&assignee(me|unassigned|user id)&q&sort`, `GET admin.support_ticket?id=` (with internal notes), `POST admin.support_reply {id, message}` (sets `pending_customer`, first-response time, assigns the replier if nobody is), `POST admin.support_note {id, note}`, `POST admin.support_update {id, status?, priority?, assigneeId?}`. Status flow: open -> pending_customer/resolved/closed; pending_customer -> open/resolved/closed; resolved -> open/pending_customer/closed; closed -> open (`409 invalid_transition` otherwise).
+
+Emails (best effort, text escaped, subject `[TKT-00001] ...`): new ticket -> support inbox; staff reply -> the customer; customer reply -> the assignee, else the support inbox. Internal notes are never emailed.
 
 ## 6. Error codes
 
