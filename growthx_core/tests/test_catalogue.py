@@ -1,4 +1,5 @@
-"""catalogue.plans: prices only for signed-in callers, unless growthx_public_prices is set."""
+"""catalogue.plans: prices only for signed-in callers, unless growthx_public_prices is set.
+catalogue.products: `hidden` products never reach the website."""
 
 import json
 from unittest.mock import patch
@@ -60,3 +61,31 @@ class TestCataloguePlans(IntegrationTestCase):
 		frappe.set_user("Guest")
 		with patch.dict(frappe.conf, {"growthx_public_prices": 1}):
 			self.assertEqual(self._plans()["price"]["amount"], 15000000)
+
+
+class TestCatalogueProducts(IntegrationTestCase):
+	def setUp(self):
+		frappe.set_user("Administrator")
+		for slug, availability in (("gx-cat-shown", "coming_soon"), ("gx-cat-hidden", "hidden")):
+			if not frappe.db.exists("GX Product", slug):
+				frappe.get_doc(
+					{
+						"doctype": "GX Product",
+						"slug": slug,
+						"product_name": slug,
+						"availability": availability,
+					}
+				).insert(ignore_permissions=True)
+
+	def tearDown(self):
+		frappe.set_user("Administrator")
+		frappe.db.rollback()
+
+	def test_a_hidden_product_is_not_in_the_public_catalogue(self):
+		# ERPNext Direct is the team's own: the customer's existing site, billed through GrowthX.
+		frappe.set_user("Guest")
+		response = catalogue.products()
+		self.assertEqual(response.status_code, 200)
+		slugs = [p["slug"] for p in json.loads(response.get_data())["items"]]
+		self.assertIn("gx-cat-shown", slugs)
+		self.assertNotIn("gx-cat-hidden", slugs)

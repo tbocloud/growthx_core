@@ -38,12 +38,13 @@
   },
   {
    "default": "coming_soon",
+   "description": "available: sold on the website. coming_soon: shown on the website, not sold yet. hidden: never shown on the website (ERPNext Direct, which the team adds for a customer by hand).",
    "fieldname": "availability",
    "fieldtype": "Select",
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Availability",
-   "options": "available\ncoming_soon",
+   "options": "available\ncoming_soon\nhidden",
    "reqd": 1
   },
   {

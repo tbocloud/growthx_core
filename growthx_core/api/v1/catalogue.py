@@ -8,6 +8,8 @@ from growthx_core.api.v1._core import endpoint, get_str, query, validation_error
 def products():
 	rows = frappe.get_all(
 		"GX Product",
+		# `hidden` products are the team's own (e.g. ERPNext Direct): never in the public catalogue.
+		filters={"availability": ("!=", "hidden")},
 		fields=["name", "slug", "product_name", "category", "summary", "availability"],
 		order_by="sort_order asc, product_name asc",
 	)

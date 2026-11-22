@@ -105,7 +105,7 @@ PRODUCTS = [
 		product_name="ERPNext Direct",
 		category="Your own ERPNext site",
 		summary="An ERPNext site you already run, billed through GrowthX.",
-		availability="coming_soon",
+		availability="hidden",
 		install_theme=0,
 		sort_order=9,
 	),
