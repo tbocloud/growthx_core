@@ -248,8 +248,12 @@ def void_for_payment(account: str, reference: str, reason: str) -> list[str]:
 
 
 def _locked(name: str):
-	rows = frappe.get_all(
-		"GX Commission", {"name": name}, ["name", "status", "payout", "approvable_from"], for_update=True
+	rows = frappe.db.get_values(
+		"GX Commission",
+		{"name": name},
+		["name", "status", "payout", "approvable_from"],
+		as_dict=True,
+		for_update=True,
 	)
 	return rows[0] if rows else None
 
@@ -262,8 +266,8 @@ def recalculate_payout(name: str):
 	payout = frappe.db.get_value("GX Payout", name, ["status", "tds_rate"], as_dict=True)
 	if not payout or payout.status != "draft":
 		return
-	rows = frappe.get_all(
-		"GX Commission", {"payout": name, "status": "approved"}, ["amount"], for_update=True
+	rows = frappe.db.get_values(
+		"GX Commission", {"payout": name, "status": "approved"}, ["amount"], as_dict=True, for_update=True
 	)
 	if not rows:
 		frappe.db.set_value("GX Payout", name, {"status": "cancelled", "commission_count": 0})
@@ -298,11 +302,12 @@ def create_payouts(period: str, creator: str) -> tuple[list[dict], list[dict]]:
 	_first, last = valid_period(period)
 	rules = program.settings()
 	minimum = to_paise(rules["minimum_payout"])
-	rows = frappe.get_all(
+	rows = frappe.db.get_values(
 		"GX Commission",
 		{"status": "approved", "payout": ("is", "not set"), "paid_on": ("<=", last)},
 		["name", "partner", "amount"],
 		order_by="paid_on asc, creation asc",
+		as_dict=True,
 		for_update=True,
 	)
 	by_partner: dict[str, list] = {}
@@ -348,8 +353,12 @@ def cancel_payout(name: str) -> None:
 def mark_paid(name: str, reference: str, paid_on: date, method: str, paid_by: str) -> int:
 	"""The payout was transferred: it and its commissions become paid. Caller holds the payout's row
 	lock and has checked it is a draft. Returns how many commissions were paid."""
-	rows = frappe.get_all(
-		"GX Commission", {"payout": name, "status": "approved"}, ["name", "amount"], for_update=True
+	rows = frappe.db.get_values(
+		"GX Commission",
+		{"payout": name, "status": "approved"},
+		["name", "amount"],
+		as_dict=True,
+		for_update=True,
 	)
 	frappe.db.set_value(
 		"GX Commission",
