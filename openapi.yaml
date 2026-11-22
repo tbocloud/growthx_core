@@ -3015,6 +3015,123 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
 
+  /growthx_core.api.v1.admin.add_direct_site:
+    post:
+      tags: [admin]
+      summary: Add a customer's existing ERPNext site (ERPNext Direct) and bill it
+      description: |
+        For an ERPNext site that already runs on our Press: nothing is installed on, listed from or pulled
+        from it. Creates (or reuses, by email) the customer's account, billing customer and login, a
+        subscription on a plan of an `erpnext-direct*` product, and an `imported` site that has no Press id.
+        A new customer has no password: they get an email with a set-password link. The subscription starts
+        `past_due` (first invoice due now), or `trialing` until `billingStart`; `paidOffline` records a payment
+        already received (same rules as `admin.record_payment`) and makes it `active`. `confirmOnPress`
+        (default true) does one exact-name lookup on Press: not found is a 422, Press not answering is allowed
+        with the `press_unreachable` warning. Sending the same request again answers `200` with the site
+        already added. A site already added for another customer is `409 site_exists`.
+      operationId: adminAddDirectSite
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [company, contactName, email, site, plan]
+              properties:
+                company: { type: string, maxLength: 140 }
+                contactName: { type: string, maxLength: 140 }
+                email: { type: string, format: email, description: "An existing customer's email reuses their account; the email of a partner, admin or closed account is refused (`email_in_use`)" }
+                phone: { type: string, maxLength: 20 }
+                site: { type: string, example: erp.acme.com, description: "The site's domain; a pasted URL is reduced to its host name" }
+                plan: { type: string, description: "An active plan of an `erpnext-direct*` product" }
+                billingStart:
+                  type: string
+                  default: now
+                  description: "`now`, or a date (YYYY-MM-DD, at most a year ahead) for the first invoice"
+                confirmOnPress: { type: boolean, default: true }
+                gstin: { type: string, nullable: true, description: Needs billingAddress }
+                billingName: { type: string, nullable: true }
+                billingAddress:
+                  type: object
+                  description: Same fields as `customer.update_billing_details` (addressLine1, addressLine2, city, state, pincode)
+                  additionalProperties: true
+                paidOffline:
+                  type: object
+                  required: [reference, amount, paidOn]
+                  properties:
+                    reference: { type: string }
+                    amount: { type: integer, description: Paise }
+                    paidOn: { type: string, format: date }
+      responses:
+        "200":
+          description: The same request was already done; the site added then
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminDirectSite" }
+        "201":
+          description: Added
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminDirectSite" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: "`site_exists`: the domain is already a site; `already_added`: the customer already has a site on that product; `email_in_use`: the email belongs to another kind of user or a closed account"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /growthx_core.api.v1.admin.send_payment_link:
+    post:
+      tags: [admin]
+      summary: Email the customer the link to pay for a site
+      description: |
+        Sends the customer's contact email a link to their billing page (and a set-password link if they
+        have no password yet). Not for a terminated site, a canceled subscription or a lifetime plan that is
+        already paid. Five a site an hour.
+      operationId: adminSendPaymentLink
+      x-phase: 2
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string, description: Tenant id }
+      responses:
+        "200":
+          description: Sent
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sent, to]
+                properties:
+                  sent: { type: boolean }
+                  to: { type: string, format: email }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`tenant_archived`, `no_subscription`, `nothing_due`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502":
+          description: "`email_failed`: the email could not be sent"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /growthx_core.api.v1.admin.terminate_tenant:
     post:
       tags: [admin]
@@ -4081,6 +4198,7 @@ components:
       properties:
         id: { type: string }
         productSlug: { type: string }
+        origin: { type: string, enum: [provisioned, imported], description: "`imported`: the customer's own ERPNext site (ERPNext Direct), opened at its own /login" }
         displayName: { type: string, example: Noor Solar }
         status: { $ref: "#/components/schemas/SiteStatus" }
         statusMessage: { type: string, nullable: true, description: A customer-safe message. It never contains internal error detail. }
@@ -4793,12 +4911,27 @@ components:
           description: "`provisioned`: a site Core built for a GrowthX app. `imported`: the customer's own ERPNext site, billed on the direct product."
         plan: { type: string, nullable: true, description: "The subscription's plan id" }
         planName: { type: string, nullable: true }
+        subscriptionStatus: { type: string, nullable: true, enum: [trialing, active, past_due, suspended, canceled], description: "`past_due` on an ERPNext Direct site is its first invoice, due" }
         siteUrl: { type: string, format: uri, nullable: true }
         status: { $ref: "#/components/schemas/SiteStatus" }
         lastError: { type: string, nullable: true, description: Admin-only detail }
         attempts: { type: integer }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+
+    AdminDirectSite:
+      type: object
+      required: [customer, tenant, created, accountCreated, pressCheck, warnings]
+      properties:
+        customer: { $ref: "#/components/schemas/AdminCustomerDetail" }
+        tenant: { $ref: "#/components/schemas/AdminTenantDetail" }
+        created: { type: boolean, description: "false when the same request was already done" }
+        accountCreated: { type: boolean }
+        inviteSent: { type: boolean, nullable: true, description: "null when no invite was due (an existing customer with a password)" }
+        pressCheck: { type: string, enum: [confirmed, not_checked, unreachable, skipped] }
+        warnings:
+          type: array
+          items: { type: string, enum: [press_unreachable, invite_not_sent, billing_details_not_saved] }
 
     AdminTenantDetail:
       allOf:

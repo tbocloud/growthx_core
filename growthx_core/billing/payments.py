@@ -105,10 +105,11 @@ def set_customer_status(account, new_status: str, site_from: str, site_to: str, 
 	client = None
 	failed = []
 	for t in frappe.get_all(
-		"GX Tenant", {"account": account.name, "status": site_from}, ["name", "press_site_id"]
+		"GX Tenant", {"account": account.name, "status": site_from}, ["name", "press_site_id", "origin"]
 	):
 		try:
-			if t.press_site_id:
+			# An imported (ERPNext Direct) site is the customer's own: its status moves, Press isn't asked.
+			if t.press_site_id and t.origin != "imported":
 				client = client or runner.get_client()
 				getattr(client, press_action)(t.press_site_id)
 		except Exception:

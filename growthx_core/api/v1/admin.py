@@ -281,6 +281,13 @@ def record_payment():
 	plan = frappe.get_doc("GX Plan", plan_id)
 
 	account = frappe.get_doc("GX Account", account_id, for_update=True)
+	_record_manual_payment(account, plan, reference, amount, paid_on)
+	return _customer_detail(account.name)
+
+
+def _record_manual_payment(account, plan, reference: str, amount: int, paid_on: date):
+	"""Apply a payment made to us directly and audit it (record_payment, and add_direct_site's
+	"already paid offline"). `account` is the locked GX Account document."""
 	# The customer mustn't also pay online for what's recorded here (409 if a payment is under way).
 	payu.cancel_open_checkouts(account.name, plan.product)
 	_sub, details, period_end = payments.apply_payment(account, plan, reference, paid_on, "manual")
@@ -292,7 +299,6 @@ def record_payment():
 		f" (plan price {payments.plan_price(plan)}) paid on {paid_on.isoformat()}, reference {reference},"
 		f" active {f'until {period_end.isoformat()}' if period_end else 'for life'}",
 	)
-	return _customer_detail(account.name)
 
 
 def _paid_on(value) -> date:
@@ -469,8 +475,8 @@ def create_plan():
 def _move_subscription_to_plan(sub, plan):
 	"""Bill `sub` on `plan` from now: the new price, GST and interval. A monthly or yearly period that
 	hasn't run out keeps its end (a plan change isn't a new payment); a one-time plan has no end."""
-	if plan.billing_interval == "one_time":
-		period_end = None
+	if plan.billing_interval == "one_time" or (sub.status == "past_due" and not sub.current_period_end):
+		period_end = None  # (a first invoice not yet paid has no period to keep)
 	else:
 		today = getdate(nowdate())
 		start = max(getdate(sub.current_period_end), today) if sub.current_period_end else today
@@ -1065,3 +1071,6 @@ from growthx_core.api.v1.admin_content_seo import (
 	save_content_page,
 	update_content_site,
 )
+
+# ERPNext Direct onboarding (add a customer's existing ERPNext site, send the payment link).
+from growthx_core.api.v1.admin_direct import add_direct_site, send_payment_link

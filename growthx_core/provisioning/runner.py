@@ -437,7 +437,8 @@ def archive(tenant_name: str, client: PressClient | None = None):
 	"""Delete the tenant's site on Press (it is backed up first) and mark the tenant archived."""
 	client = client or get_client()
 	tenant = frappe.get_doc("GX Tenant", tenant_name, for_update=True)
-	if tenant.press_site_id:
+	# An imported (ERPNext Direct) site is the customer's own: it is never deleted on Press.
+	if tenant.press_site_id and tenant.origin != "imported":
 		client.archive_site(tenant.press_site_id)
 	tenant.status = "archived"
 	tenant.status_message = None
