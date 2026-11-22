@@ -241,7 +241,7 @@ class TestAdminTickets(TicketCase):
 		status, _ = self.call(admin.support_update, self.staff, {"id": tid, "assigneeId": self.alice})
 		self.assertEqual(status, 422)  # a customer is not staff
 		status, _ = self.call(admin.support_update, self.staff, {"id": tid})
-		self.assertEqual(status, 400)
+		self.assertEqual(status, 422)  # nothing to change
 		status, _ = self.call(admin.support_update, self.staff, {"id": "TKT-99999", "priority": "low"})
 		self.assertEqual(status, 404)
 

@@ -9,7 +9,6 @@ from frappe.query_builder.functions import Count
 from growthx_core import support
 from growthx_core.api.v1 import _serializers as s
 from growthx_core.api.v1._core import (
-	ApiError,
 	audit,
 	body,
 	current_user,
@@ -173,7 +172,7 @@ def support_update():
 		if assignee and not support.is_staff_user(assignee):
 			raise validation_error({"assigneeId": "Choose a GrowthX team member."})
 	if status is None and priority is None and assignee is _UNSET:
-		raise ApiError(400, "bad_request", "Nothing to change.")
+		raise validation_error({"status": "Send status, priority or assigneeId."})
 
 	changes = []
 	if status and status != ticket.status:
