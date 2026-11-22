@@ -69,6 +69,9 @@ def create_user(email: str, full_name: str, password: str, role: str, phone: str
 
 GOOGLE = "google"
 MICROSOFT = "microsoft"
+GITHUB = "github"
+SOCIAL_PROVIDERS = (GOOGLE, MICROSOFT, GITHUB)
+ADMIN_ROLE = "GrowthX Admin"
 
 
 def link_social(user: str, provider: str, userid: str):
@@ -95,6 +98,31 @@ def link_google(user: str, google_id: str):
 def link_microsoft(user: str, microsoft_id: str):
 	"""Record that the user signs in with Microsoft (the back office's Entra ID)."""
 	link_social(user, MICROSOFT, microsoft_id)
+
+
+def link_github(user: str, github_id: str):
+	"""Record that the user signs in with GitHub."""
+	link_social(user, GITHUB, github_id)
+
+
+def user_by_social(provider: str, userid: str) -> str | None:
+	"""The user who signs in with this provider account (its stable id), or None."""
+	if not userid:
+		return None
+	parent = frappe.db.get_value(
+		"User Social Login", {"provider": provider, "userid": userid, "parenttype": "User"}, "parent"
+	)
+	return parent if parent and frappe.db.exists("User", parent) else None
+
+
+def social_providers(user: str) -> list[str]:
+	"""The providers (google, microsoft, github) the user can sign in with, in a fixed order."""
+	linked = set(frappe.get_all("User Social Login", filters={"parent": user}, pluck="provider"))
+	return [p for p in SOCIAL_PROVIDERS if p in linked]
+
+
+def unlink_social(user: str, provider: str):
+	frappe.db.delete("User Social Login", {"parent": user, "provider": provider, "parenttype": "User"})
 
 
 # A Google sign-up without a password gets a random one nobody knows. Kept as a user default

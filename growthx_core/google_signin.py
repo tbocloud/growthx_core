@@ -17,14 +17,14 @@ import time
 
 import frappe
 import requests
-from frappe.utils import sha256_hash
 
+from growthx_core import social_signup
 from growthx_core.api.v1._core import ApiError, web_url
 
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 ISSUERS = ("accounts.google.com", "https://accounts.google.com")
 CALLBACK_PATH = "/api/auth/google/callback"
-SIGNUP_TTL = 30 * 60  # time to fill in the sign-up form after choosing a Google account
+SIGNUP_TTL = social_signup.SIGNUP_TTL
 CLOCK_SKEW = 60
 
 
@@ -77,9 +77,12 @@ def verified_identity(code: str, code_verifier: str | None = None) -> dict:
 	if claims.get("email_verified") is not True:
 		raise ApiError(403, "email_not_verified", "Your Google account's email isn't verified.")
 	return {
+		"provider": "google",
+		"id": claims["sub"],
 		"email": claims["email"].strip().lower(),
 		"name": (claims.get("name") or "").strip(),
 		"sub": claims["sub"],
+		"emailVerified": True,
 	}
 
 
@@ -101,27 +104,16 @@ def _is_json(response) -> bool:
 		return False
 
 
-# ---------------------------------------------------------------- sign-up tokens
-# A new Google user still has to fill in the sign-up form (account type, company, site). The token
-# carries the verified email to `auth.signup`; only its hash is stored, and it works for one account.
-
-
-def _cache_key(token: str) -> str:
-	return f"growthx:google_signup:{sha256_hash(token)}"
+# Sign-up tokens are provider-agnostic now (social_signup.py); these stay for existing callers.
 
 
 def issue_signup_token(identity: dict) -> str:
-	token = "gxg_" + frappe.generate_hash(length=43)
-	frappe.cache.set_value(_cache_key(token), json.dumps(identity), expires_in_sec=SIGNUP_TTL)
-	return token
+	return social_signup.issue(identity)
 
 
 def signup_identity(token: str) -> dict | None:
-	"""The identity behind a sign-up token, or None if it's unknown, expired or used."""
-	value = frappe.cache.get_value(_cache_key(token))
-	return json.loads(value) if value else None
+	return social_signup.identity(token)
 
 
 def use_signup_token(token: str):
-	"""Once the account exists; kept until then so a form error (e.g. a taken subdomain) can be fixed."""
-	frappe.cache.delete_value(_cache_key(token))
+	social_signup.use(token)
