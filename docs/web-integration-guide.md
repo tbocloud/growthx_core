@@ -331,12 +331,13 @@ POST {GROWTHX_API_URL}.customer.open_site        {"id": "GXT-00004"}
 - The link is **single-use and valid for 60 s**. Request it only when the user clicks "Open my app", then navigate to it straight away. Never store, log or prefetch it.
 - If the site isn't `ready` → `409 site_not_ready`.
 - Someone else's site → `404`.
+- **Theme-less sites get a plain login URL instead of a token**: for a site whose plan's product has `install_theme = 0` (e.g. laundry) and for every imported site (ERPNext Direct), the response is `{"url": "<site>/login", "expiresAt": …}` — that site has no `growthx_theme`, so there is no single sign-on; its own login page (with "Login with Email Link") is the way in. The web app just navigates to `url` in both cases.
 
 **What happens when the browser opens the link** (nothing for the web app to do beyond navigating):
 - The tenant site (`growthx_theme`) redeems the token with Core, server to server, logs the customer in **as their own user** and redirects to the desk (`/desk`; in Frappe v16 `/app` redirects there too). The token doesn't stay in the address bar.
 - The customer never sees the tenant's login page and has no tenant password.
 - An expired (over 60 s), reused or wrong-site link ends on the tenant's `/login` page with "This link has expired. Open your app again from GrowthX." The fix for the user is to click "Open my app" again.
-- If GrowthX is down, the customer can still get in with **"Login with Email Link"** on the tenant's login page (needs outgoing email on the tenant).
+- If GrowthX is down, the customer can still get in with **"Login with Email Link"** on the tenant's login page. That mail goes out through the tenant's own outgoing `Email Account`, which `configure` copies from Core's (`runner.mail_account()`) for theme-less products; a site with `growthx_theme` has none, so email-link login does not work there yet.
 
 ### 5.6 Subscriptions and invoices
 
