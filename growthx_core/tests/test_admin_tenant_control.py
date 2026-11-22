@@ -30,6 +30,11 @@ def _call(fn, data=None):
 		patch.object(frappe.db, "rollback"),  # an error response would roll back this test's data
 	):
 		response = fn()
+	if response.status_code >= 500:
+		print(
+			"ERROR LOG:",
+			frappe.get_all("Error Log", fields=["method", "error"], order_by="creation desc", limit=1),
+		)
 	return response.status_code, json.loads(response.get_data())
 
 
@@ -100,7 +105,7 @@ class TestAdminTenantControl(IntegrationTestCase):
 			{
 				"doctype": "GX Subscription",
 				"account": account.name,
-				"plan": plan.name,
+				"plan": plan_doc.name,
 				"product": plan_doc.product,
 				"status": "active",
 				"tenant": None,
