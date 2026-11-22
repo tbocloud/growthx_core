@@ -396,6 +396,9 @@ class RealPressClient(PressClient):
 			raise PressError(f"Configuring {site_id}: site unreachable ({type(e).__name__})") from None
 		if r.status_code != 200:
 			raise PressError(f"Configuring {site_id}: HTTP {r.status_code} {_error_text(r)}")
+		# growthx_theme's set-up runs the wizard and turns on "Login with Email Link" but makes no
+		# Email Account, so the link would never be sent.
+		self._ensure_mail_account(site_id, settings, cookies)
 		return r.json().get("message")
 
 	def _configure_erpnext(self, site_id, settings, cookies):
@@ -447,8 +450,7 @@ class RealPressClient(PressClient):
 		self._ensure_mail_account(site_id, settings, cookies)
 
 	def _ensure_mail_account(self, site_id, settings, cookies):
-		"""Give the site GrowthX's outgoing email, so the "Login with Email Link" email can be sent.
-		A site without the theme has no single sign-on, so without this it has no way in."""
+		"""Give the site GrowthX's outgoing email, so the "Login with Email Link" email can be sent."""
 		mail = settings.get("mail")
 		if not mail:
 			return
