@@ -6,3 +6,4 @@
 # Patches added in this section will be executed after doctypes are migrated
 growthx_core.patches.v1.product_apps_table
 growthx_core.patches.v1.phoebix_site_name
+growthx_core.patches.v1.hide_erpnext_direct
