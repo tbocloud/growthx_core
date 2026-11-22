@@ -4910,30 +4910,49 @@ components:
       enum: [pending_approval, active, suspended]
 
     AdminCommission:
-      allOf:
-        - $ref: "#/components/schemas/Commission"
-        - type: object
-          required: [partnerId, status]
-          properties:
-            status: { type: string, enum: [pending, approved, paid, void] }
-            partnerId: { type: string }
-            partnerName: { type: string, nullable: true }
-            tier: { type: string, nullable: true }
-            activeClients: { type: integer, description: "Partner's active clients when the customer paid" }
-            approvedAt: { type: string, format: date-time, nullable: true }
-            voidReason: { type: string, nullable: true }
-            createdAt: { type: string, format: date-time }
+      description: "A commission as an admin sees it. Like `Commission`, but a refunded one is `void` (not `reversed`)."
+      type: object
+      required: [id, type, amount, status, earnedAt, partnerId]
+      properties:
+        id: { type: string }
+        customerId: { type: string, nullable: true }
+        customerName: { type: string, nullable: true }
+        invoiceId: { type: string, nullable: true }
+        type: { $ref: "#/components/schemas/CommissionType" }
+        base: { $ref: "#/components/schemas/Money", description: Amount excluding GST the commission is calculated on }
+        rate: { type: number, nullable: true, description: "e.g. 0.2 for 20 %" }
+        amount: { $ref: "#/components/schemas/Money" }
+        status: { type: string, enum: [pending, approved, paid, void] }
+        earnedAt: { type: string, format: date-time, description: When the customer paid }
+        reviewUntil: { type: string, format: date-time, nullable: true, description: "Earliest approval (hold period), while pending" }
+        payoutId: { type: string, nullable: true }
+        partnerId: { type: string }
+        partnerName: { type: string, nullable: true }
+        tier: { type: string, nullable: true }
+        activeClients: { type: integer, description: "Partner's active clients when the customer paid" }
+        approvedAt: { type: string, format: date-time, nullable: true }
+        voidReason: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
 
     AdminPayout:
-      allOf:
-        - $ref: "#/components/schemas/Payout"
-        - type: object
-          required: [partnerId]
-          properties:
-            status: { type: string, enum: [draft, paid, cancelled] }
-            partnerId: { type: string }
-            partnerName: { type: string, nullable: true }
-            createdAt: { type: string, format: date-time }
+      description: A payout as an admin sees it (`draft` until paid, `cancelled` if dropped).
+      type: object
+      required: [id, reference, period, status, gross, tds, net, partnerId]
+      properties:
+        id: { type: string }
+        reference: { type: string, nullable: true, description: "Bank or UPI reference, set once paid" }
+        period: { type: string, pattern: "^\\d{4}-\\d{2}$" }
+        status: { type: string, enum: [draft, paid, cancelled] }
+        paidAt: { type: string, format: date-time, nullable: true }
+        method: { type: string, enum: [bank_transfer, upi, other], nullable: true }
+        commissionCount: { type: integer }
+        tdsRate: { type: number, description: "e.g. 0.02 for 2 %, as applied to this payout" }
+        gross: { $ref: "#/components/schemas/Money" }
+        tds: { $ref: "#/components/schemas/Money" }
+        net: { $ref: "#/components/schemas/Money" }
+        partnerId: { type: string }
+        partnerName: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
 
     BulkCommissionResult:
       type: object
