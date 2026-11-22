@@ -1,0 +1,83 @@
+{
+ "actions": [],
+ "creation": "2026-11-22 10:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "tiers",
+  "column_break_1",
+  "minimum_payout",
+  "payout_day",
+  "tds_rate",
+  "hold_days"
+ ],
+ "fields": [
+  {
+   "fieldname": "tiers",
+   "fieldtype": "Table",
+   "label": "Commission Tiers",
+   "options": "GX Partner Program Tier",
+   "description": "Rate by the number of active referred customers when a payment is received. Leave empty for the published program: Seed 20%, Sprout 25% from 10 clients, Canopy 30% from 30."
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break",
+   "label": "Column Break 1"
+  },
+  {
+   "fieldname": "minimum_payout",
+   "fieldtype": "Currency",
+   "label": "Minimum Payout",
+   "options": "INR",
+   "default": "1000",
+   "description": "A partner is paid only when approved, unpaid commission reaches this amount (before TDS). Smaller balances carry over."
+  },
+  {
+   "fieldname": "payout_day",
+   "fieldtype": "Int",
+   "label": "Payout Day of Month",
+   "default": "15",
+   "description": "1 to 28. Shown to partners as the next payout date."
+  },
+  {
+   "fieldname": "tds_rate",
+   "fieldtype": "Percent",
+   "label": "TDS Rate (%)",
+   "default": "2",
+   "description": "Withheld from each payout (Sec. 194H). NEEDS BUSINESS/FINANCE CONFIRMATION."
+  },
+  {
+   "fieldname": "hold_days",
+   "fieldtype": "Int",
+   "label": "Hold Days",
+   "default": "0",
+   "description": "Days after a customer's payment before its commission can be approved (a refund window). 0 = approvable at once."
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-11-22 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Partners",
+ "name": "GX Partner Program Settings",
+ "owner": "Administrator",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "issingle": 1,
+ "permissions": [
+  {
+   "create": 1,
+   "read": 1,
+   "role": "System Manager",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "read": 1,
+   "role": "GrowthX Admin",
+   "write": 1
+  }
+ ],
+ "track_changes": 1
+}

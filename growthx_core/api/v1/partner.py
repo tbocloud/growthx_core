@@ -5,6 +5,7 @@ import frappe
 from frappe.query_builder.functions import Sum
 from frappe.utils import add_months, cint, flt, get_datetime, getdate, now_datetime, nowdate
 
+from growthx_core.api.v1 import _ledger as ledger
 from growthx_core.api.v1._core import (
 	ApiError,
 	RateLimit,
@@ -25,6 +26,8 @@ from growthx_core.api.v1._core import (
 	query,
 	validation_error,
 )
+from growthx_core.partners import commissions as commission_ops
+from growthx_core.partners import program
 from growthx_core.partners.referrals import referral_url
 
 
@@ -49,15 +52,12 @@ def _summary(partner) -> dict:
 	accounts = frappe.get_all("GX Account", {"referred_by": partner.name}, ["name", "status"])
 	active = [a.name for a in accounts if a.status == "active"]
 
-	rate = (
-		flt(frappe.db.get_value("Sales Partner", partner.sales_partner, "commission_rate"))
-		if partner.sales_partner
-		else 0
-	)
-	# Commission rules (base, recurring or not) are pending D8: for now, the monthly rate x the
-	# active subscriptions' monthly price excluding GST.
+	rules = program.settings()
+	_tier, rate = program.tier_for(len(active), rules["tiers"])
+	# What the active subscriptions bring in each month at the partner's current tier rate
+	# (excluding GST). Lifetime plans recur never.
 	recurring = 0.0
-	if active and rate:
+	if active:
 		for sub in frappe.get_all(
 			"GX Subscription",
 			{"account": ("in", active), "status": "active"},
@@ -65,20 +65,13 @@ def _summary(partner) -> dict:
 		):
 			recurring += (
 				monthly(net_of_gst(sub.price, sub.gst_included, sub.gst_rate), sub.billing_interval)
-				* rate
+				* float(rate)
 				/ 100
 			)
 
-	# No payouts exist yet (GX Payout is Phase 3), so all commission on paid invoices is pending.
-	pending = 0.0
-	if partner.sales_partner:
-		si = frappe.qb.DocType("Sales Invoice")
-		pending = flt(
-			frappe.qb.from_(si)
-			.select(Sum(si.total_commission))
-			.where((si.sales_partner == partner.sales_partner) & (si.docstatus == 1) & (si.status == "Paid"))
-			.run()[0][0]
-		)
+	# Commission earned and not yet paid out: pending review plus approved.
+	totals = commission_ops.earnings_paise(partner.name, getdate(nowdate()))
+	pending = commission_ops.to_rupees(totals["pending"] + totals["approved"])
 
 	return {
 		"referralCode": partner.referral_code,
@@ -96,24 +89,18 @@ def commission_history():
 	partner = current_partner()
 	first_month = getdate(add_months(nowdate(), -11)).replace(day=1)
 	months = [add_months(first_month, i).strftime("%Y-%m") for i in range(12)]
-	totals = dict.fromkeys(months, 0.0)
+	totals = dict.fromkeys(months, 0)  # paise
 
-	if partner.sales_partner:
-		rows = frappe.db.sql(
-			"""
-			select date_format(posting_date, '%%Y-%%m') as month, sum(total_commission) as amount
-			from `tabSales Invoice`
-			where sales_partner = %s and docstatus = 1 and posting_date >= %s
-			group by month
-			""",
-			(partner.sales_partner, first_month),
-			as_dict=True,
-		)
-		for row in rows:
-			if row.month in totals:
-				totals[row.month] = flt(row.amount)
+	for c in frappe.get_all(
+		"GX Commission",
+		{"partner": partner.name, "status": ("!=", "void"), "paid_on": (">=", first_month)},
+		["paid_on", "amount"],
+	):
+		month = getdate(c.paid_on).strftime("%Y-%m")
+		if month in totals:
+			totals[month] += commission_ops.to_paise(c.amount)
 
-	return {"items": [{"month": m, "amount": money(totals[m])} for m in months]}
+	return {"items": [{"month": m, "amount": {"amount": totals[m], "currency": "INR"}} for m in months]}
 
 
 @endpoint(methods=("GET",), auth=False, rate_limit=RateLimit(60, 60))
@@ -305,8 +292,11 @@ def customer():
 	if ready_at:
 		timeline.append({"at": iso(ready_at), "event": "site_ready", "description": None})
 	timeline.sort(key=lambda e: e["at"] or "")
-	# Commission lines arrive with the commission ledger (Phase 3, decision D8).
-	return {**_public(row), "timeline": timeline, "commissions": []}
+	return {
+		**_public(row),
+		"timeline": timeline,
+		"commissions": _commission_items({"partner": current_partner().name, "account": customer_id}, 0, 50),
+	}
 
 
 @endpoint(methods=("GET",), roles=("partner",))
@@ -340,41 +330,30 @@ def referral_stats():
 
 
 def _earnings(partner) -> dict:
-	"""PLACEHOLDER until the commission rules are decided (D8) and GX Commission/GX Payout exist:
-	commission comes from ERPNext Sales Invoices for the partner's Sales Partner; commission on
-	paid invoices counts as pending; nothing is approved or paid out yet."""
-	zero = money(0)
-	if not partner.sales_partner:
-		return {
-			"thisMonth": zero,
-			"lastMonth": zero,
-			"pending": zero,
-			"approved": zero,
-			"paidLifetime": zero,
-			"lifetimeTotal": zero,
-			"nextPayoutDate": None,
-			"tdsRate": None,
-		}
-	si = frappe.qb.DocType("Sales Invoice")
-
-	def total(*conditions):
-		where = (si.sales_partner == partner.sales_partner) & (si.docstatus == 1)
-		for c in conditions:
-			where = where & c
-		return flt(frappe.qb.from_(si).select(Sum(si.total_commission)).where(where).run()[0][0])
-
+	"""From GX Commission (void ones excluded). Amounts are commission before TDS. `pending` is under
+	review, `approved` is approved and not yet paid (including a draft payout), `paidLifetime` is in
+	paid payouts. `thisMonth`/`lastMonth` count commission by the month the customer paid."""
 	today = getdate(nowdate())
-	this_month = today.replace(day=1)
-	last_month = getdate(add_months(this_month, -1))
+	rules = program.settings()
+	t = commission_ops.earnings_paise(partner.name, today)
+	active = commission_ops.active_clients(partner.name)
+	tier, rate = program.tier_for(active, rules["tiers"])
+
+	def paise(value):
+		return {"amount": value, "currency": "INR"}
+
 	return {
-		"thisMonth": money(total(si.posting_date >= this_month)),
-		"lastMonth": money(total(si.posting_date >= last_month, si.posting_date < this_month)),
-		"pending": money(total(si.status == "Paid")),
-		"approved": zero,
-		"paidLifetime": zero,
-		"lifetimeTotal": money(total()),
-		"nextPayoutDate": None,
-		"tdsRate": None,
+		"thisMonth": paise(t["this_month"]),
+		"lastMonth": paise(t["last_month"]),
+		"pending": paise(t["pending"]),
+		"approved": paise(t["approved"]),
+		"paidLifetime": paise(t["paid"]),
+		"lifetimeTotal": paise(t["pending"] + t["approved"] + t["paid"]),
+		"nextPayoutDate": program.next_payout_date(today, rules["payout_day"]).isoformat(),
+		"tdsRate": float(rules["tds_rate"] / 100),
+		"minimumPayout": paise(commission_ops.to_paise(rules["minimum_payout"])),
+		"commissionRate": float(rate / 100),
+		"tier": tier,
 	}
 
 
@@ -397,8 +376,80 @@ def dashboard():
 		"trialsEndingNext7Days": sum(1 for r in rows if _trial_ending_soon(r, now)),
 		"unreadNotifications": _unread_count(partner.user),
 		"recentCustomers": [_public(r) for r in rows[:n_customers]],
-		"recentCommissions": [],  # the commission ledger is Phase 3 (D8)
+		"recentCommissions": _commission_items(
+			{"partner": partner.name}, 0, min(max(cint(data.get("recentCommissions", 3)), 0), 10)
+		),
 	}
+
+
+# ---------------------------------------------------------------- commissions and payouts
+
+
+def _commission_items(filters: dict, start: int, limit: int) -> list[dict]:
+	rows = frappe.get_all(
+		"GX Commission",
+		filters=filters,
+		fields=ledger.COMMISSION_FIELDS,
+		order_by="paid_on desc, creation desc",
+		limit_start=start,
+		limit_page_length=limit,
+	)
+	customers = ledger.account_names(rows)
+	return [ledger.commission(r, customers) for r in rows]
+
+
+@endpoint(methods=("GET",), roles=("partner",))
+def commissions():
+	"""The partner's own commission ledger, newest first. `status` filters (a refunded commission is
+	`reversed`); `customerId`, `from` and `to` (the payment date) are optional."""
+	data = query()
+	page, page_size = page_params(data)
+	status = get_choice(data, "status", ("pending", "approved", "paid", "reversed"))
+	filters = {"partner": current_partner().name}
+	if status:
+		filters["status"] = "void" if status == "reversed" else status
+	if data.get("customerId"):
+		filters["account"] = get_str(data, "customerId")
+	try:
+		if data.get("from"):
+			filters["paid_on"] = (">=", getdate(data["from"]))
+		if data.get("to"):
+			end = getdate(data["to"])
+			filters["paid_on"] = (
+				("between", [filters["paid_on"][1], end]) if "paid_on" in filters else ("<=", end)
+			)
+	except Exception:
+		raise validation_error({"from": "Dates must be YYYY-MM-DD."})
+	return page_meta(
+		page,
+		page_size,
+		frappe.db.count("GX Commission", filters),
+		_commission_items(filters, (page - 1) * page_size, page_size),
+	)
+
+
+@endpoint(methods=("GET",), roles=("partner",))
+def payouts():
+	"""The partner's payouts, newest first. A draft payout shows as `processing`; cancelled ones are
+	not shown. `reference` is the bank/UPI reference once it is paid."""
+	data = query()
+	page, page_size = page_params(data)
+	status = get_choice(data, "status", ("processing", "paid", "failed"))
+	if status == "failed":
+		return page_meta(page, page_size, 0, [])  # a payout is never "failed": it stays a draft until paid
+	filters = {"partner": current_partner().name, "status": ("in", ("draft", "paid"))}
+	if status:
+		filters["status"] = {"processing": "draft", "paid": "paid"}[status]
+	rows = frappe.get_all(
+		"GX Payout",
+		filters=filters,
+		fields=ledger.PAYOUT_FIELDS,
+		order_by="creation desc",
+		limit_start=(page - 1) * page_size,
+		limit_page_length=page_size,
+	)
+	items = [{**ledger.payout(r), "status": "processing" if r.status == "draft" else r.status} for r in rows]
+	return page_meta(page, page_size, frappe.db.count("GX Payout", filters), items)
 
 
 # ---------------------------------------------------------------- notifications

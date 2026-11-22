@@ -447,7 +447,7 @@ GET {GROWTHX_API_URL}.billing.checkout_status?txnid=PAYU…
 - Use `referralUrl` for the share link and the QR code. **Your sign-up page should read `?ref=` and send it as `referralCode`.**
 - `openLeads` is `null` until leads are agreed.
 
-`GET {GROWTHX_API_URL}.partner.commission_history` → `{"items": [{"month": "2025-11", "amount": {"amount": 0, "currency": "INR"}}, …]}`: always 12 months, oldest first. The commission figures use placeholder rules until D8.
+`GET {GROWTHX_API_URL}.partner.commission_history` → `{"items": [{"month": "2025-11", "amount": {"amount": 0, "currency": "INR"}}, …]}`: always 12 months, oldest first. Figures come from the commission ledger (void commissions excluded), by the month the customer paid.
 
 ### 5.9 Admin
 
