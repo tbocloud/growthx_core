@@ -2,8 +2,18 @@ from datetime import date, timedelta
 
 import frappe
 from frappe.query_builder.functions import Count
-from frappe.utils import add_months, add_years, fmt_money, get_datetime, getdate, now_datetime, nowdate
+from frappe.utils import (
+	add_months,
+	add_years,
+	fmt_money,
+	get_datetime,
+	getdate,
+	now_datetime,
+	nowdate,
+	sha256_hash,
+)
 
+from growthx_core import accounts, tokens
 from growthx_core.api.v1 import _serializers as s
 from growthx_core.api.v1 import appointments as appts
 from growthx_core.api.v1._core import (
@@ -24,6 +34,7 @@ from growthx_core.api.v1._core import (
 	page_params,
 	query,
 	validation_error,
+	web_url,
 )
 from growthx_core.billing import payments, payu
 from growthx_core.billing.payments import set_customer_status as _set_customer_status
@@ -1065,3 +1076,219 @@ from growthx_core.api.v1.admin_content_seo import (
 	save_content_page,
 	update_content_site,
 )
+
+# ---------------------------------------------------------------- team (staff)
+
+STAFF_ROLES = {"admin": "GrowthX Admin", "content_editor": "GrowthX Content Editor"}
+PROTECTED_USERS = ("Administrator", "Guest")  # never listed, changed or removed here
+
+
+def _staff_names() -> list[str]:
+	names = frappe.get_all(
+		"Has Role",
+		{"parenttype": "User", "role": ("in", list(STAFF_ROLES.values()))},
+		pluck="parent",
+		distinct=True,
+	)
+	return [n for n in names if n not in PROTECTED_USERS]
+
+
+def _staff_role(user: str) -> str | None:
+	"""admin or content_editor (admin wins), from the user's own role rows."""
+	roles = set(frappe.get_all("Has Role", {"parenttype": "User", "parent": user}, pluck="role"))
+	for key, role in STAFF_ROLES.items():
+		if role in roles:
+			return key
+	return None
+
+
+def _staff_member(user: str) -> dict:
+	row = frappe.db.get_value(
+		"User", user, ["name", "email", "full_name", "enabled", "last_login", "creation"], as_dict=True
+	)
+	providers = frappe.get_all(
+		"User Social Login", {"parent": user, "parenttype": "User"}, pluck="provider", order_by="idx asc"
+	)
+	return {
+		"id": row.name,
+		"email": row.email or row.name,
+		"name": row.full_name or row.name,
+		"role": _staff_role(user),
+		"enabled": bool(row.enabled),
+		"lastLogin": iso(row.last_login),
+		"createdAt": iso(row.creation),
+		"signIn": {"password": accounts.has_password(user), "providers": sorted(set(providers))},
+		"isYou": user == frappe.session.user,
+	}
+
+
+def _enabled_admins() -> set[str]:
+	admins = frappe.get_all(
+		"Has Role", {"parenttype": "User", "role": STAFF_ROLES["admin"]}, pluck="parent", distinct=True
+	)
+	if not admins:
+		return set()
+	enabled = frappe.get_all("User", {"name": ("in", admins), "enabled": 1}, pluck="name")
+	return {n for n in enabled if n not in PROTECTED_USERS}
+
+
+def _staff_target(data: dict) -> str:
+	"""The staff member `id` names (their email); 404 for anyone else, and always for Administrator/Guest."""
+	user_id = get_str(data, "id", required=True, label="Id")
+	user_id = frappe.db.get_value("User", {"name": user_id}, "name")
+	if not user_id or user_id in PROTECTED_USERS or not _staff_role(user_id):
+		raise not_found()
+	return user_id
+
+
+def _guard_admin_loss(user: str, what: str):
+	"""An admin can't lock themselves out, and the last enabled admin can't go."""
+	if user not in _enabled_admins():
+		return
+	if user == frappe.session.user:
+		raise ApiError(409, "self_lockout", f"You can't {what} your own account.")
+	if _enabled_admins() == {user}:
+		raise ApiError(409, "last_admin", f"This is the last enabled admin, so you can't {what} them.")
+
+
+def _save_user(doc):
+	doc.flags.no_welcome_mail = True
+	doc.save(ignore_permissions=True)
+
+
+def _set_staff_role(doc, key: str | None):
+	"""Keep the user's other roles; give them exactly this staff role (None removes both)."""
+	staff = set(STAFF_ROLES.values())
+	doc.set("roles", [r for r in doc.get("roles") if r.role not in staff])
+	if key:
+		doc.append("roles", {"role": STAFF_ROLES[key]})
+
+
+def _send_staff_invite(user: str, name: str, role: str) -> bool:
+	key = frappe.generate_hash()
+	frappe.db.set_value(
+		"User",
+		user,
+		{"reset_password_key": sha256_hash(key), "last_reset_password_key_generated_on": now_datetime()},
+	)
+	esc = frappe.utils.escape_html
+	link = web_url(f"/reset-password?key={key}")
+	try:
+		frappe.sendmail(
+			recipients=[user],
+			subject="You're invited to the GrowthX team",
+			now=True,
+			message=(
+				f"<p>Hi {esc(name)},</p>"
+				f"<p>You've been added to GrowthX as {esc(role)}.</p>"
+				f'<p><a href="{esc(link)}">Set your password</a>. The link works once and expires in 24 hours. '
+				'If it has expired, use "Forgot password" on the sign-in page.</p>'
+			),
+		)
+	except Exception:
+		frappe.log_error(title=f"GrowthX: could not send staff invite to {user}")
+		return False
+	return True
+
+
+@endpoint(methods=("GET",), roles=("admin",))
+def staff():
+	"""Everyone with the GrowthX Admin or Content Editor role, with how they sign in."""
+	members = [_staff_member(n) for n in _staff_names()]
+	members.sort(key=lambda m: (m["name"].lower(), m["email"]))
+	return page_meta(1, max(len(members), 1), len(members), members)
+
+
+@endpoint(methods=("POST",), roles=("admin",), idempotent=True)
+def add_staff():
+	"""Add a team member {email, name, role admin|content_editor}. A new person gets an account with no
+	password and an email to set one (invited true unless sending failed); an existing user (e.g. a
+	customer) just gets the role. 409 already_staff / user_disabled."""
+	data = body()
+	email = get_email(data)
+	name = get_str(data, "name", required=True, max_length=140, label="Name")
+	role = get_choice(data, "role", tuple(STAFF_ROLES), required=True)
+	existing = frappe.db.get_value("User", {"email": email}, "name")
+	if existing in PROTECTED_USERS:
+		raise validation_error({"email": "Enter a valid email address."})
+	invited = False
+	if existing:
+		if _staff_role(existing):
+			raise ApiError(409, "already_staff", "This person is already on the team.")
+		if not frappe.db.get_value("User", existing, "enabled"):
+			raise ApiError(409, "user_disabled", "This account is disabled. Enable it before adding a role.")
+		doc = frappe.get_doc("User", existing, for_update=True)
+		_set_staff_role(doc, role)
+		_save_user(doc)
+		user = doc.name
+	else:
+		first, _, last = name.partition(" ")
+		doc = frappe.get_doc(
+			{
+				"doctype": "User",
+				"email": email,
+				"first_name": first,
+				"last_name": last or None,
+				"user_type": "Website User",
+				"send_welcome_email": 0,
+				"roles": [{"role": STAFF_ROLES[role]}],
+			}
+		)
+		doc.flags.no_welcome_mail = True
+		doc.insert(ignore_permissions=True)
+		user = doc.name
+		accounts.mark_no_password(user)
+		invited = _send_staff_invite(user, name, STAFF_ROLES[role])
+	audit("staff.add", "User", user, f"{role}" + (", invited" if invited else ""))
+	return 201, {**_staff_member(user), "invited": invited}
+
+
+@endpoint(methods=("POST",), roles=("admin",), idempotent=True)
+def update_staff():
+	"""Change a team member's role and/or enable or disable them: {id, role?, enabled?}. Disabling or
+	demoting revokes their tokens. You can't disable or demote yourself, nor the last enabled admin."""
+	data = body()
+	user = _staff_target(data)
+	role = get_choice(data, "role", tuple(STAFF_ROLES))
+	enabled = data.get("enabled")
+	if enabled is not None and not isinstance(enabled, bool):
+		raise validation_error({"enabled": "enabled must be true or false."})
+	if role is None and enabled is None:
+		raise validation_error({"role": "Send a role or enabled."})
+
+	doc = frappe.get_doc("User", user, for_update=True)
+	current = _staff_role(user)
+	changes = []
+	revoke = False
+	if role and role != current:
+		if current == "admin":
+			_guard_admin_loss(user, "demote")
+		_set_staff_role(doc, role)
+		changes.append(f"role {current} → {role}")
+		revoke = True
+	if enabled is not None and enabled != bool(doc.enabled):
+		if not enabled:
+			_guard_admin_loss(user, "disable")
+		doc.enabled = 1 if enabled else 0
+		changes.append("enabled" if enabled else "disabled")
+		revoke = revoke or not enabled
+	if changes:
+		_save_user(doc)
+		if revoke:
+			tokens.revoke_all(user)
+		audit("staff.update", "User", user, ", ".join(changes))
+	return _staff_member(user)
+
+
+@endpoint(methods=("POST",), roles=("admin",), idempotent=True)
+def remove_staff():
+	"""Take the team roles off {id} and revoke their tokens. The user itself (and any customer or
+	partner role) is kept."""
+	user = _staff_target(body())
+	_guard_admin_loss(user, "remove")
+	doc = frappe.get_doc("User", user, for_update=True)
+	_set_staff_role(doc, None)
+	_save_user(doc)
+	tokens.revoke_all(user)
+	audit("staff.remove", "User", user, "staff roles removed")
+	return {"ok": True}
