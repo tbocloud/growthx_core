@@ -98,8 +98,8 @@ PRODUCTS = [
 		summary="Measurements, orders and fittings, without the paper notebook.",
 		sort_order=8,
 	),
-	# Not sold on the website: an ERPNext site a customer already runs, imported by an admin
-	# (admin.adopt_site) so GrowthX can bill it. Nothing is installed on those sites.
+	# Not sold on the website: an ERPNext site a customer already runs, added by the team in Core
+	# so GrowthX can bill it. Nothing is installed on those sites.
 	dict(
 		slug="erpnext-direct",
 		product_name="ERPNext Direct",

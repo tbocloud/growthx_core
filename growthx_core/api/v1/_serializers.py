@@ -88,6 +88,16 @@ def plan(p, show_price=True) -> dict:
 	}
 
 
+def admin_plan(p) -> dict:
+	"""A plan as the admin portal's catalogue shows it, including plans not on sale."""
+	return {
+		**plan(p),
+		"gstRate": p.gst_rate,
+		"active": bool(cint(p.is_active)),
+		"item": p.item or None,
+	}
+
+
 def site(t) -> dict:
 	return {
 		"id": t.name,
@@ -123,11 +133,17 @@ def site_detail(tenant_doc) -> dict:
 
 
 def admin_tenant(t, customer_name: str | None = None) -> dict:
+	"""`origin` tells the two kinds apart: `provisioned` is a site Core built for a GrowthX app,
+	`imported` an ERPNext site the customer already had (billed on the direct product)."""
+	plan_id = frappe.db.get_value("GX Subscription", t.subscription, "plan") if t.subscription else None
 	return {
 		"id": t.name,
 		"customerId": t.account,
 		"customerName": customer_name or frappe.db.get_value("GX Account", t.account, "account_name"),
 		"productSlug": t.product,
+		"origin": t.origin or "provisioned",
+		"plan": plan_id,
+		"planName": frappe.db.get_value("GX Plan", plan_id, "plan_name") if plan_id else None,
 		"siteUrl": t.site_url or None,
 		"status": t.status,
 		"lastError": t.last_error or None,
@@ -139,25 +155,6 @@ def admin_tenant(t, customer_name: str | None = None) -> dict:
 
 def admin_tenant_detail(tenant_doc) -> dict:
 	return {**admin_tenant(tenant_doc), "steps": _steps(tenant_doc, admin=True)}
-
-
-def admin_press_site(row: dict, tenant=None, customer_name: str | None = None) -> dict:
-	"""One site as Press lists it. `managed` is False for a site no GX Tenant owns: an ERPNext
-	site sold directly, which an admin can import."""
-	return {
-		"name": row.get("name"),
-		"url": row.get("url"),
-		"status": row.get("status"),
-		"bench": row.get("bench"),
-		"releaseGroup": row.get("release_group"),
-		"releaseGroupTitle": row.get("release_group_title"),
-		"plan": row.get("plan"),
-		"createdAt": iso(row.get("created_at")),
-		"managed": bool(tenant),
-		"tenantId": tenant.name if tenant else None,
-		"origin": tenant.origin if tenant else None,
-		"customerName": customer_name,
-	}
 
 
 def subscription(s, product_name: str | None = None, plan_name: str | None = None) -> dict:

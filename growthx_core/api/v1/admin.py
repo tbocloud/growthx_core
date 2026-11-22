@@ -2,14 +2,12 @@ from datetime import date, timedelta
 
 import frappe
 from frappe.query_builder.functions import Count
-from frappe.utils import add_months, add_years, fmt_money, get_datetime, now_datetime, nowdate
+from frappe.utils import add_months, add_years, fmt_money, get_datetime, getdate, now_datetime, nowdate
 
-from growthx_core import accounts
 from growthx_core.api.v1 import _serializers as s
 from growthx_core.api.v1 import appointments as appts
 from growthx_core.api.v1._core import (
 	ApiError,
-	RateLimit,
 	audit,
 	body,
 	endpoint,
@@ -333,6 +331,8 @@ def tenants():
 		"name",
 		"account",
 		"product",
+		"origin",
+		"subscription",
 		"site_url",
 		"status",
 		"last_error",
@@ -396,180 +396,176 @@ def archive_tenant():
 	return s.admin_tenant_detail(frappe.get_doc("GX Tenant", tenant_id))
 
 
-# ---------------------------------------------------------------- Press inventory
+# ---------------------------------------------------------------- tenants: plans and termination
 
-PRESS_SITES_CACHE = "gx:press-inventory"
-PRESS_SITES_CACHE_SECONDS = 60
-
-
-def _press_sites() -> list[dict]:
-	"""Press's site list, cached briefly: the page reloads it and Press allows few calls a minute."""
-	cached = frappe.cache.get_value(PRESS_SITES_CACHE)
-	if cached is not None:
-		return frappe.parse_json(cached)
-	sites = press.get_client().list_sites()
-	frappe.cache.set_value(PRESS_SITES_CACHE, frappe.as_json(sites), expires_in_sec=PRESS_SITES_CACHE_SECONDS)
-	return sites
+PLAN_INTERVALS = ("month", "year", "one_time")
 
 
-@endpoint(methods=("GET",), roles=("admin",), rate_limit=RateLimit(30, 60, by_user=True))
-def press_inventory():
-	"""Every site the GrowthX team has on Press, by bench: the ones Core created and the ones it
-	didn't (ERPNext sites sold directly). An unmanaged site is what an admin imports to bill it."""
-	data = query()
-	q = (get_str(data, "q", max_length=100) or "").lower()
-	try:
-		sites = _press_sites()
-	except press.PressError:
-		raise ApiError(502, "press_unavailable", "Press could not be read right now.") from None
-
-	names = [row["name"] for row in sites if row.get("name")]
-	tenants = {}
-	if names:
-		for tenant in frappe.get_all(
-			"GX Tenant",
-			filters={"press_site_id": ("in", names)},
-			fields=["name", "press_site_id", "account", "origin"],
-		):
-			tenants[tenant.press_site_id] = tenant
-	customer_names = dict(
-		frappe.get_all(
-			"GX Account",
-			{"name": ("in", list({t.account for t in tenants.values()}) or [""])},
-			["name", "account_name"],
-			as_list=True,
-		)
-	)
-
-	items = []
-	for row in sites:
-		tenant = tenants.get(row.get("name"))
-		customer_name = customer_names.get(tenant.account) if tenant else None
-		item = s.admin_press_site(row, tenant, customer_name)
-		if q:
-			parts = (item["name"], item["url"], item["tenantId"], customer_name)
-			if q not in " ".join(str(part or "") for part in parts).lower():
-				continue
-		items.append(item)
-	items.sort(key=lambda i: (i["bench"] or "", i["name"] or ""))
-	return {"items": items, "total": len(items)}
+def _paise(data: dict, key: str) -> float:
+	"""An API amount (paise, whole number) as rupees."""
+	value = data.get(key)
+	if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+		raise validation_error({key: "Enter the amount in paise, a whole number above 0."})
+	return value / 100
 
 
-def _imported_account(email: str, company: str, full_name: str | None) -> str:
-	"""The GX Account an imported site is billed to: the one this email already has, or a new
-	Customer and account. Its user signs in on the site itself, so it gets no portal password."""
-	existing = frappe.db.get_value("GX Account", {"contact_email": email}, "name")
-	if existing:
-		return existing
-	user = frappe.db.get_value("User", {"email": email}, "name")
-	if user:
-		doc = frappe.get_doc("User", user)
-		doc.append_roles(accounts.CUSTOMER_ROLE)
-		doc.save(ignore_permissions=True)
-	else:
-		user = accounts.create_user(
-			email, full_name or company, frappe.generate_hash(length=32), accounts.CUSTOMER_ROLE
-		)
-		accounts.mark_no_password(user)
-	customer = frappe.get_doc(
+def _plan_id(product: str, plan_name: str, interval: str) -> str:
+	from frappe.utils import slug
+
+	suffix = "" if interval == "month" else f" {interval.replace('_', '-')}"
+	return slug(f"{product} {plan_name}{suffix}") or slug(plan_name) or "plan"
+
+
+@endpoint(methods=("POST",), roles=("admin",), idempotent=True)
+def create_plan():
+	"""A new plan on the catalogue: what a customer can be sold and what `assign_plan` bills. Its
+	billing Item is made too, without which a GST invoice for the plan can't be raised."""
+	from growthx_core.setup import seed
+
+	data = body()
+	product = get_str(data, "product", required=True)
+	plan_name = get_str(data, "planName", required=True, label="Plan name")
+	interval = get_choice(data, "interval", PLAN_INTERVALS, required=True)
+	plan_price = _paise(data, "price")
+	if not frappe.db.exists("GX Product", product):
+		raise validation_error({"product": "That app doesn't exist."})
+	plan_id = get_str(data, "id") or _plan_id(product, plan_name, interval)
+	if frappe.db.exists("GX Plan", plan_id):
+		raise ApiError(409, "plan_exists", "A plan with that id already exists.")
+	trial_days = data.get("trialDays", 0)
+	if isinstance(trial_days, bool) or not isinstance(trial_days, int) or not 0 <= trial_days <= 90:
+		raise validation_error({"trialDays": "Enter a whole number of days from 0 to 90."})
+	gst_rate = data.get("gstRate", 18)
+	if isinstance(gst_rate, bool) or not isinstance(gst_rate, (int, float)) or not 0 <= gst_rate <= 28:
+		raise validation_error({"gstRate": "Enter a GST rate from 0 to 28."})
+	plan = frappe.get_doc(
 		{
-			"doctype": "Customer",
-			"customer_name": company,
-			"customer_type": "Company",
-			"customer_group": default_link("Customer Group"),
-			"territory": default_link("Territory"),
-			"email_id": email,
+			"doctype": "GX Plan",
+			"plan_id": plan_id,
+			"product": product,
+			"plan_name": plan_name,
+			"billing_interval": interval,
+			"price": plan_price,
+			"gst_included": 1 if data.get("gstIncluded") else 0,
+			"gst_rate": gst_rate,
+			"trial_days": trial_days,
+			"description": get_str(data, "description", max_length=2000),
+			"features": get_str(data, "features", max_length=2000),
+			"highlighted": 1 if data.get("highlighted") else 0,
+			"is_active": 1,
 		}
 	).insert(ignore_permissions=True)
-	return (
-		frappe.get_doc(
-			{
-				"doctype": "GX Account",
-				"account_name": company,
-				"user": user,
-				"contact_email": email,
-				"customer": customer.name,
-				"status": "active",
-			}
-		)
-		.insert(ignore_permissions=True)
-		.name
+	seed.plan_items()
+	audit(
+		"plan.create",
+		"GX Plan",
+		plan.name,
+		f"{plan.plan_name} for {product}: {fmt_money(plan.price, currency='INR')} per {interval}",
 	)
+	return 201, s.admin_plan(plan)
 
 
-def _first_period_end(interval: str):
-	"""A lifetime plan never renews, so it has no period end."""
-	if interval == "one_time":
-		return None
-	return add_years(nowdate(), 1) if interval == "year" else add_months(nowdate(), 1)
-
-
-@endpoint(methods=("POST",), roles=("admin",), rate_limit=RateLimit(10, 60, by_user=True), idempotent=True)
-def adopt_site():
-	"""Take an ERPNext site GrowthX doesn't manage (sold directly) into GrowthX, so it can be billed:
-	its customer, an active subscription on `plan`, and the tenant. Nothing is created, installed or
-	themed on the site, and the plan is billing only: an imported site keeps signing its own users in."""
-	data = body()
-	site = get_str(data, "site", required=True, label="Site")
-	plan_id = get_str(data, "plan", required=True, label="Plan")
-	email = get_email(data)
-	company = get_str(data, "accountName", label="Company")
-	full_name = get_str(data, "fullName", label="Name")
-
-	if tenant := frappe.db.get_value("GX Tenant", {"press_site_id": site}, "name"):
-		raise ApiError(409, "already_managed", f"GrowthX already manages this site ({tenant}).")
-	if not frappe.db.exists("GX Plan", plan_id):
-		raise not_found()
-	plan = frappe.get_doc("GX Plan", plan_id)
-	if not plan.is_active:
-		raise validation_error({"plan": "This plan is not on sale."})
-
-	try:
-		sites = _press_sites()
-	except press.PressError:
-		raise ApiError(502, "press_unavailable", "Press could not be read right now.") from None
-	row = next((r for r in sites if r.get("name") == site), None)
-	if not row:
-		raise validation_error({"site": "Press has no site with that name."})
-	if row.get("status") != "active":
-		raise ApiError(
-			409, "not_importable", f"Only an active site can be imported (this one is {row['status']})."
-		)
-
-	company = company or site.split(".")[0]
-	account = _imported_account(email, company, full_name)
-	if existing := accounts.live_site(account, plan.product):
-		raise ApiError(409, "already_added", f"This customer already has a {plan.product} site ({existing}).")
-
-	subscription = frappe.get_doc(
+def _move_subscription_to_plan(sub, plan):
+	"""Bill `sub` on `plan` from now: the new price, GST and interval. A monthly or yearly period that
+	hasn't run out keeps its end (a plan change isn't a new payment); a one-time plan has no end."""
+	if plan.billing_interval == "one_time":
+		period_end = None
+	else:
+		today = getdate(nowdate())
+		start = max(getdate(sub.current_period_end), today) if sub.current_period_end else today
+		period_end = add_years(start, 1) if plan.billing_interval == "year" else add_months(start, 1)
+	sub.update(
 		{
-			"doctype": "GX Subscription",
-			"account": account,
 			"plan": plan.name,
-			"status": "active",
+			"billing_interval": plan.billing_interval,
 			"price": plan.price,
 			"gst_included": plan.gst_included,
 			"gst_rate": plan.gst_rate,
-			"current_period_end": _first_period_end(plan.billing_interval),
+			"current_period_end": period_end,
+			"cancel_at_period_end": 0,
 		}
-	).insert(ignore_permissions=True)
-	tenant = frappe.get_doc(
-		{
-			"doctype": "GX Tenant",
-			"account": account,
-			"product": plan.product,
-			"subscription": subscription.name,
-			"display_name": company,
-			"origin": "imported",
-			"status": "ready",
-			"ready_at": now_datetime(),
-			"subdomain": site.split(".")[0],
-			"press_site_id": site,
-			"site_url": row.get("url") or f"https://{site}",
-		}
-	).insert(ignore_permissions=True)
-	subscription.db_set("tenant", tenant.name, update_modified=False)
-	audit("adopt_site", "GX Tenant", tenant.name, f"{site} on {plan.plan_name}")
+	)
+	sub.save(ignore_permissions=True)
+
+
+@endpoint(methods=("POST",), roles=("admin",), idempotent=True)
+def assign_plan():
+	"""Change the plan a site is billed on. The plan must be of the same app: another app means other
+	apps on the site, which is a new site. Billing only; nothing on the site changes."""
+	data = body()
+	tenant_id = get_str(data, "id", required=True)
+	plan_id = get_str(data, "plan", required=True)
+	if not frappe.db.exists("GX Tenant", tenant_id):
+		raise not_found()
+	tenant = frappe.get_doc("GX Tenant", tenant_id)
+	if tenant.status == "archived":
+		raise ApiError(409, "tenant_archived", "A terminated site can't change plan.")
+	if tenant.status in ("requested", "provisioning", "failed"):
+		raise ApiError(409, "invalid_transition", "A site that isn't live yet can't change plan.")
+	if not tenant.subscription:
+		raise ApiError(409, "no_subscription", "This site has no subscription to change.")
+	if not frappe.db.exists("GX Plan", plan_id):
+		raise validation_error({"plan": "Unknown plan."})
+	plan = frappe.get_doc("GX Plan", plan_id)
+	if not plan.is_active:
+		raise validation_error({"plan": "That plan isn't on sale."})
+	sub = frappe.get_doc("GX Subscription", tenant.subscription, for_update=True)
+	if sub.status == "canceled":
+		raise ApiError(409, "no_subscription", "This site's subscription is canceled.")
+	if plan.product != sub.product:
+		raise validation_error({"plan": "Choose a plan of the same app."})
+	if sub.plan != plan.name:
+		old = frappe.db.get_value("GX Plan", sub.plan, "plan_name") or sub.plan
+		_move_subscription_to_plan(sub, plan)
+		audit(
+			"tenant.assign_plan",
+			"GX Subscription",
+			sub.name,
+			f"{old} → {plan.plan_name} ({tenant.name}): {fmt_money(plan.price, currency='INR')}"
+			f" per {plan.billing_interval}",
+		)
+	return s.admin_tenant_detail(frappe.get_doc("GX Tenant", tenant_id))
+
+
+@endpoint(methods=("POST",), roles=("admin",), idempotent=True)
+def terminate_tenant():
+	"""End a site and its billing for good. A site Core built is backed up and deleted on Press; an
+	imported ERPNext site is the customer's own, so it is left running and only billing stops."""
+	tenant_id = get_str(body(), "id", required=True)
+	if not frappe.db.exists("GX Tenant", tenant_id):
+		raise not_found()
+	tenant = frappe.get_doc("GX Tenant", tenant_id)
+	if tenant.status == "archived":
+		raise ApiError(409, "already_archived", "This site is already terminated.")
+	if tenant.status in ("requested", "provisioning"):
+		raise ApiError(409, "invalid_transition", "This site is still being set up. Wait for it to finish.")
+
+	details = f"{tenant.status} → archived, site {tenant.site_url or '-'}"
+	if tenant.origin == "imported":
+		frappe.db.set_value("GX Tenant", tenant.name, {"status": "archived", "status_message": None})
+		details += " (imported: the site itself is untouched)"
+	else:
+		try:
+			runner.archive(tenant.name)
+		except press.PressError:
+			raise ApiError(502, "press_unavailable", "Press could not be reached right now.") from None
+	subscriptions = set(
+		frappe.get_all(
+			"GX Subscription",
+			{"tenant": tenant.name, "status": ("!=", "canceled")},
+			pluck="name",
+		)
+	)
+	if tenant.subscription:
+		subscriptions.add(tenant.subscription)
+	for name in subscriptions:
+		frappe.db.set_value(
+			"GX Subscription",
+			name,
+			{"status": "canceled", "cancel_at_period_end": 0, "current_period_end": nowdate()},
+		)
+		details += f", subscription {name} canceled"
+	audit("tenant.terminate", "GX Tenant", tenant.name, details)
 	return s.admin_tenant_detail(frappe.get_doc("GX Tenant", tenant.name))
 
 
