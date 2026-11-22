@@ -7,7 +7,7 @@ from frappe.core.doctype.user.user import test_password_strength
 from frappe.utils import cint, now_datetime, sha256_hash
 from frappe.utils.password import check_password, update_password
 
-from growthx_core import accounts, google_signin, signup_codes, tokens
+from growthx_core import accounts, google_signin, microsoft_signin, signup_codes, tokens
 from growthx_core.api.v1 import _serializers as s
 from growthx_core.api.v1._core import (
 	ApiError,
@@ -124,6 +124,25 @@ def google():
 		"email": identity["email"],
 		"name": identity["name"],
 	}
+
+
+@endpoint(methods=("POST",), auth=False, rate_limit=RateLimit(20, 15 * 60))
+def microsoft():
+	"""Sign in with Microsoft: a member of the back office's Entra ID directory is logged in (200).
+	Microsoft never starts a sign-up — an admin creates the GrowthX account first."""
+	data = body()
+	code = get_str(data, "code", required=True, max_length=2048, label="Code")
+	code_verifier = get_str(data, "codeVerifier", max_length=128, label="Code verifier")
+	identity = microsoft_signin.verified_identity(code, code_verifier)
+
+	user = _growthx_user(identity["email"])
+	if not user:
+		if _email_taken(identity["email"]):
+			# A disabled account, or a staff account without a GrowthX role.
+			raise ApiError(403, "account_unavailable", "This account can't sign in here.")
+		raise ApiError(404, "no_account", "There's no GrowthX account for this Microsoft account.")
+	accounts.link_microsoft(user, identity["sub"])
+	return s.auth_session(tokens.issue(user, _client(data)), user)
 
 
 @endpoint(

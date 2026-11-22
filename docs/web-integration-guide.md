@@ -95,6 +95,7 @@ A slash (`{GROWTHX_API_URL}/catalogue.products`) is not a Frappe method and retu
 | POST | `auth.login` | none | 1 | `POST /auth/login` |
 | POST | `auth.signup` | none | 2 | `POST /auth/signup` |
 | POST | `auth.google` | none | 2 | *new* (§5.12) |
+| POST | `auth.microsoft` | none | 2 | *new* (§5.12b) |
 | POST | `auth.send_signup_code` | none | 2 | *new* (§5.4) |
 | POST | `auth.change_password` | any | 2 | *new* (§5.13) |
 | POST | `auth.logout_others` | any | 2 | *new* (§5.13) |
@@ -566,6 +567,33 @@ Core sends Google the redirect URI from its config, so it must be exactly the on
 email-and-password account can also sign in with Google (same email); a Google-only account can set a password
 later with "Forgot password".
 
+### 5.12b Sign in with Microsoft (web)
+
+For the back office's own people (`teambackoffice.com`): an admin creates their GrowthX account first, then they
+sign in with their Microsoft account. Microsoft never starts a sign-up.
+
+1. **"Continue with Microsoft"** → redirect to
+   `https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize` with `client_id`,
+   `redirect_uri={website}/api/auth/microsoft/callback`, `response_type=code`, `scope=openid profile email`, a
+   random `state` (short-lived httpOnly cookie) and PKCE (`code_challenge`, `S256`). The client ID is public; the
+   secret is only on Core, as `microsoft_oauth_client_id` / `microsoft_oauth_client_secret` /
+   `microsoft_oauth_tenant_id` (the directory ID; `organizations` accepts any work account).
+2. **`GET /api/auth/microsoft/callback`** (Next.js route): check `state`, then server-to-server:
+
+```http
+POST {GROWTHX_API_URL}.auth.microsoft     {"code": "<code>", "codeVerifier": "<if PKCE>"}
+```
+
+- `200` → the same session as `auth.login`: store it and go to the dashboard.
+- `404 no_account` → no GrowthX account for this Microsoft account; nothing is created.
+- `400 microsoft_failed` (code used, expired, redirect URI mismatch, or a token from another directory),
+  `403 account_unavailable` (disabled or staff account), `503 microsoft_unavailable` → back to the login page
+  with a message.
+
+The account is matched by email (`preferred_username`), so it must be the address on the GrowthX user. Core
+records the Microsoft link (`User Social Login`, provider `microsoft`). Admin-panel access still comes from the
+`GrowthX Admin` role.
+
 ### 5.13 Account settings (any role)
 
 - `user.hasPassword` (in `auth.me` and every session) is `false` for a Google sign-up that never set a password: show
@@ -636,11 +664,12 @@ below is phase 2. Phase 2 keeps the phase 1 response shapes.
 | 400 | `bad_request` | Body isn't a JSON object |
 | 400 | `invalid_reset_key` | Reset key unknown, used or expired |
 | 400 | `google_failed`, `google_signup_expired` | Google sign-in (§5.12) |
+| 400 | `microsoft_failed` | Microsoft sign-in (§5.12b) |
 | 400 | `email_code_expired` | Sign-up email code expired, never sent, or 5 wrong tries (§5.4) |
-| 403 | `email_not_verified`, `account_unavailable` | Google sign-in (§5.12) |
+| 403 | `email_not_verified`, `account_unavailable` | Google sign-in (§5.12); Microsoft sign-in (§5.12b) |
 | 409 | `domain_exists`, `domain_taken` | Custom domains (§5.15) |
 | 403 | `not_linked` | "Sign in with GrowthX": not this site's owner; has `loginUrl` (§5.16) |
-| 404 | `site_not_found`, `no_account` | "Sign in with GrowthX" (§5.16) |
+| 404 | `site_not_found`, `no_account` | "Sign in with GrowthX" (§5.16); Microsoft sign-in with no account (§5.12b) |
 | 409 | `site_unavailable` | "Sign in with GrowthX": the site is suspended (§5.16) |
 | 403 | `plan_required` | Custom domains on a trial (§5.15) |
 | 409 | `no_password`, `invalid_transition` | Account settings (§5.13); admin customer actions (§5.9) |
@@ -658,6 +687,7 @@ below is phase 2. Phase 2 keeps the phase 1 response shapes.
 | 500 | `internal_error` | Show a friendly message with `reference` |
 | 503 | `payment_unavailable` | Gateway not configured or unreachable |
 | 503 | `google_unavailable` | Google sign-in not configured or Google unreachable |
+| 503 | `microsoft_unavailable` | Microsoft sign-in not configured or Microsoft unreachable |
 | 503 | `email_unavailable` | The sign-up code email couldn't be sent |
 | 503 | `hosting_unavailable` | Press couldn't be reached to remove a custom domain (§5.15) |
 
