@@ -9,6 +9,7 @@ from frappe.utils.password import check_password, update_password
 
 from growthx_core import (
 	accounts,
+	apple_signin,
 	github_signin,
 	google_signin,
 	microsoft_signin,
@@ -162,6 +163,13 @@ def _oauth_input(data) -> tuple[str, str | None]:
 	return code, get_str(data, "codeVerifier", max_length=128, label="Code verifier")
 
 
+def _apple_extras(data) -> dict:
+	return {
+		"nonce": get_str(data, "nonce", max_length=128, label="Nonce"),
+		"name": get_str(data, "name", max_length=300, label="Name"),
+	}
+
+
 @endpoint(methods=("POST",), auth=False, rate_limit=RateLimit(20, 15 * 60))
 def google():
 	"""Sign in with Google: an existing account is logged in (200); a new email gets a sign-up
@@ -176,6 +184,16 @@ def github():
 	"""Sign in or sign up with GitHub, like Google, with the primary verified email. Never admin."""
 	data = body()
 	identity = github_signin.verified_identity(*_oauth_input(data))
+	return _social_login(identity, data)
+
+
+@endpoint(methods=("POST",), auth=False, rate_limit=RateLimit(20, 15 * 60))
+def apple():
+	"""Sign in or sign up with Apple, like Google. `nonce` is the one the website sent Apple, `name` the
+	one Apple posts only on the first authorization. Never admin; a private-relay email is an ordinary
+	email that matches an account only if identical."""
+	data = body()
+	identity = apple_signin.verified_identity(*_oauth_input(data), **_apple_extras(data))
 	return _social_login(identity, data)
 
 
@@ -588,17 +606,19 @@ VERIFIERS = {
 	accounts.GOOGLE: google_signin,
 	accounts.MICROSOFT: microsoft_signin,
 	accounts.GITHUB: github_signin,
+	accounts.APPLE: apple_signin,
 }
 
 
 @endpoint(methods=("POST",), rate_limit=RateLimit(10, 15 * 60, by_user=True))
 def link_provider():
-	"""Link Google, Microsoft or GitHub to the logged-in account: the same `code` flow as signing in,
+	"""Link Google, Microsoft, GitHub or Apple to the logged-in account: the same `code` flow as signing in,
 	sent with the user's own token. The provider account must not belong to another user."""
 	data = body()
 	provider = get_choice(data, "provider", tuple(VERIFIERS), required=True)
 	user = current_user()
-	identity = VERIFIERS[provider].verified_identity(*_oauth_input(data))
+	extras = _apple_extras(data) if provider == accounts.APPLE else {}
+	identity = VERIFIERS[provider].verified_identity(*_oauth_input(data), **extras)
 	if provider == accounts.MICROSOFT and identity["staff"]:
 		raise ApiError(409, "not_linkable", "Staff Microsoft accounts sign in with the staff login.")
 	owner = accounts.user_by_social(provider, identity["id"])

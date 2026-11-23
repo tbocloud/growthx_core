@@ -1,6 +1,6 @@
-# Social sign-in setup (Microsoft and GitHub)
+# Social sign-in setup (Microsoft, GitHub and Apple)
 
-Google sign-in is already configured. Microsoft and GitHub need an app each; nothing works until the keys below are
+Google sign-in is already configured. Microsoft, GitHub and Apple need an app each (Apple: see `docs/apple-signin-setup.md`); nothing works until the keys below are
 set, and each provider answers `503 <provider>_unavailable` (button hidden on the website) until then.
 
 ## 1. Microsoft Entra app (one multi-tenant registration)
@@ -72,7 +72,7 @@ Scope requested: `read:user user:email`. Core uses only the primary, verified em
 
 ## 3. Checklist after configuring
 
-1. `https://tbogrowthx.com/login` shows Continue with Google / Microsoft / GitHub (each only when its env is set).
+1. `https://tbogrowthx.com/login` shows Continue with Google / Microsoft / GitHub / Apple (each only when its env is set).
 2. A teambackoffice.com person signs in with Microsoft and lands in `/admin`.
 3. A personal Microsoft or GitHub account with a new email gets the sign-up form (email read-only); after submitting it
    has a customer account.

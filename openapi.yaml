@@ -677,16 +677,79 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /growthx_core.api.v1.auth.apple:
+    post:
+      tags: [auth]
+      summary: Sign in or sign up with Apple (web)
+      description: |
+        Like `auth.google`. The Next.js server sends the user to Apple (Services ID, scope `name email`,
+        `response_mode=form_post`, `state` and `nonce`), receives `code` (and, on the first authorization only, the
+        user's name) as a **form POST** at `<website>/api/auth/apple/callback` and posts them here
+        **server-to-server**. Core signs a short-lived ES256 client secret with the Sign in with Apple key, exchanges the
+        code with Apple and checks the ID token (`iss`, `aud`, `exp`, `nonce`). The `sub` is the stable id. The email
+        must be verified; it may be a private-relay address (`@privaterelay.appleid.com`), which is then just an email
+        and matches an existing account only if identical. Apple never opens an admin account.
+
+        - An account is linked to this Apple id, or the email belongs to an account: **200**, logged in.
+        - A new email: **202** with a `signupToken` for `auth.signup` (`socialToken`). With `signInOnly: true`: **404
+          `no_account`**.
+        Rate-limited per IP address.
+      operationId: appleSignin
+      x-phase: 2
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, maxLength: 2048, description: "`code` from Apple's POST to the callback" }
+                nonce: { type: string, maxLength: 128, description: "The nonce the website sent Apple; when given, the ID token's `nonce` must equal it" }
+                name: { type: string, maxLength: 300, description: "The name Apple posts with the first authorization only (the ID token has none)" }
+                client: { $ref: "#/components/schemas/ClientKind" }
+                signInOnly: { type: boolean, description: "A new email gets `404 no_account` instead of a `202`" }
+      responses:
+        "200":
+          description: Logged in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthSession" }
+        "202": { $ref: "#/components/responses/SocialSignupRequired" }
+        "400":
+          description: "`apple_failed`: the code is invalid, used or expired, the nonce or the token's claims don't match, or the redirect URI doesn't match"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: "`email_not_verified`: Apple shared no verified email. `account_unavailable`: disabled, staff or admin account"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "`no_account`: with `signInOnly`, there's no GrowthX account for this Apple account"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503":
+          description: "`apple_unavailable`: Apple sign-in isn't configured on this Core, or Apple can't be reached"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /growthx_core.api.v1.auth.link_provider:
     post:
       tags: [auth]
-      summary: Link Google, Microsoft or GitHub to the logged-in account
+      summary: Link Google, Microsoft, GitHub or Apple to the logged-in account
       description: |
         Account settings. The same `code` flow as signing in (the callback runs in link mode), sent with the user's own
         token. Returns the user (`socialLogins` now includes the provider). `409 already_linked`: that provider account
         belongs to another GrowthX user; `409 provider_linked`: a different account of this provider is linked
         (unlink it first); `409 not_linkable`: a staff Microsoft account. Errors from the provider are as in
-        `auth.google`, `auth.microsoft` and `auth.github`. 10 per 15 minutes per user.
+        `auth.google`, `auth.microsoft`, `auth.github` and `auth.apple` (which also takes `nonce`). 10 per 15 minutes per user.
       operationId: linkProvider
       x-phase: 2
       requestBody:
@@ -697,7 +760,7 @@ paths:
               type: object
               required: [provider, code]
               properties:
-                provider: { type: string, enum: [google, microsoft, github] }
+                provider: { type: string, enum: [google, microsoft, github, apple] }
                 code: { type: string, maxLength: 2048 }
                 codeVerifier: { type: string, maxLength: 128 }
       responses:
@@ -722,7 +785,7 @@ paths:
   /growthx_core.api.v1.auth.unlink_provider:
     post:
       tags: [auth]
-      summary: Unlink Google, Microsoft or GitHub from the logged-in account
+      summary: Unlink Google, Microsoft, GitHub or Apple from the logged-in account
       description: |
         Returns the user. `404 not_linked`; `409 last_sign_in_method` when it is the only way to sign in and the account
         has no password (`user.hasPassword: false`; set one with Forgot password first). 10 per 15 minutes per user.
@@ -736,7 +799,7 @@ paths:
               type: object
               required: [provider]
               properties:
-                provider: { type: string, enum: [google, microsoft, github] }
+                provider: { type: string, enum: [google, microsoft, github, apple] }
       responses:
         "200":
           description: Unlinked
@@ -921,13 +984,13 @@ paths:
               required: [accountType]
               description: |
                 Either `email`, `password`, `name` and `emailCode` (from `auth.send_signup_code`), or `socialToken`
-                (from `auth.google`, `auth.microsoft` or `auth.github`), with which `name` defaults to the provider's name.
+                (from `auth.google`, `auth.microsoft`, `auth.github` or `auth.apple`), with which `name` defaults to the provider's name.
               properties:
                 accountType: { type: string, enum: [customer, partner] }
                 socialToken:
                   type: string
                   description: |
-                    The `signupToken` from `auth.google`, `auth.microsoft` or `auth.github` (202). The account gets the
+                    The `signupToken` from `auth.google`, `auth.microsoft`, `auth.github` or `auth.apple` (202). The account gets the
                     provider's email; any `email` sent is ignored. If the 202 said `emailVerified: false` (a Microsoft
                     work account), `emailCode` is required as without a token. Otherwise as `googleSignupToken`.
                 googleSignupToken:
@@ -4878,7 +4941,7 @@ components:
               expiresAt: { type: string, format: date-time, description: 30 minutes from now }
               email: { type: string, format: email }
               name: { type: string, description: "The provider account's name; may be empty" }
-              provider: { type: string, enum: [google, microsoft, github] }
+              provider: { type: string, enum: [google, microsoft, github, apple] }
               emailVerified: { type: boolean, description: "False for a Microsoft work account whose email isn't verified: `auth.signup` then needs `emailCode`" }
     Ok:
       description: OK
@@ -5029,7 +5092,7 @@ components:
             "Change password".
         socialLogins:
           type: array
-          items: { type: string, enum: [google, microsoft, github] }
+          items: { type: string, enum: [google, microsoft, github, apple] }
           description: "The providers linked to the account (Account settings, link and unlink)."
 
     ProvisioningHealth:
