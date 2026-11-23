@@ -70,7 +70,8 @@ def create_user(email: str, full_name: str, password: str, role: str, phone: str
 GOOGLE = "google"
 MICROSOFT = "microsoft"
 GITHUB = "github"
-SOCIAL_PROVIDERS = (GOOGLE, MICROSOFT, GITHUB)
+APPLE = "apple"
+SOCIAL_PROVIDERS = (GOOGLE, MICROSOFT, GITHUB, APPLE)
 ADMIN_ROLE = "GrowthX Admin"
 
 
@@ -116,7 +117,7 @@ def user_by_social(provider: str, userid: str) -> str | None:
 
 
 def social_providers(user: str) -> list[str]:
-	"""The providers (google, microsoft, github) the user can sign in with, in a fixed order."""
+	"""The providers (google, microsoft, github, apple) the user can sign in with, in a fixed order."""
 	linked = set(frappe.get_all("User Social Login", filters={"parent": user}, pluck="provider"))
 	return [p for p in SOCIAL_PROVIDERS if p in linked]
 

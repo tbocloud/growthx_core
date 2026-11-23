@@ -101,6 +101,7 @@ A slash (`{GROWTHX_API_URL}/catalogue.products`) is not a Frappe method and retu
 | POST | `auth.google` | none | 2 | *new* (§5.12) |
 | POST | `auth.microsoft` | none | 2 | *new* (§5.12b) |
 | POST | `auth.github` | none | 2 | *new* (§5.12c) |
+| POST | `auth.apple` | none | 2 | *new* (§5.12d) |
 | POST | `auth.link_provider` | any | 2 | *new* (§5.13) |
 | POST | `auth.unlink_provider` | any | 2 | *new* (§5.13) |
 | POST | `auth.send_signup_code` | none | 2 | *new* (§5.4) |
@@ -623,6 +624,19 @@ email (`403 email_not_verified` if there is none) and the numeric GitHub id as t
 `403 account_unavailable` (disabled, staff, or an admin account: GitHub never opens admin), `400 github_failed`,
 `503 github_unavailable`, `429`.
 
+### 5.12d Sign in or sign up with Apple (web)
+
+Like Google, with three differences. **"Continue with Apple"** → `https://appleid.apple.com/auth/authorize` with
+`client_id` (the Services ID), `redirect_uri={website}/api/auth/apple/callback`, `response_type=code`,
+`response_mode=form_post` (required with `scope=name email`), `state` and `nonce` (no PKCE). Apple then sends the
+visitor back with a **cross-site form POST** (`code`, `state`, and a `user` JSON with the name on the *first*
+authorization only), so the website's flow cookie must be `SameSite=None; Secure`. The callback posts
+`POST {GROWTHX_API_URL}.auth.apple {"code", "nonce", "name"?}`. Core checks `iss`, `aud`, `exp` and the nonce and uses
+`sub` as the stable id; the email must be verified and may be a private-relay address (`@privaterelay.appleid.com`),
+which only matches an existing account when identical. Responses are as for Google: `200` session, `202` with a
+`signupToken`, `404 no_account` with `signInOnly`, `403 email_not_verified`/`account_unavailable` (Apple never opens
+admin), `400 apple_failed`, `503 apple_unavailable`, `429`. Setup: `docs/apple-signin-setup.md`.
+
 **Signup tokens** are provider-agnostic (`gxs_…`, 30 minutes, one account). `auth.signup` takes `socialToken`;
 `googleSignupToken` still works as the same field.
 
@@ -634,8 +648,8 @@ email (`403 email_not_verified` if there is none) and the numeric GitHub id as t
   stored tokens**, because every other session (this one's old tokens included) is revoked. `newPassword`: 10–128
   characters, a letter and a number. Errors: `422 wrong_password` (`fields.currentPassword`), `422` with
   `fields.newPassword`, `409 no_password`, `429` after 5 tries in 15 minutes.
-- `user.socialLogins` (`["google","microsoft","github"]` subset) lists the linked sign-in providers. Link one:
-  start the provider's redirect in link mode, then `POST auth.link_provider {provider, code, codeVerifier}` with the
+- `user.socialLogins` (`["google","microsoft","github","apple"]` subset) lists the linked sign-in providers. Link one:
+  start the provider's redirect in link mode, then `POST auth.link_provider {provider, code, codeVerifier}` (Apple: `nonce` instead of `codeVerifier`) with the
   user's token (`409 already_linked`, `provider_linked`, `not_linkable`). Unlink: `POST auth.unlink_provider {provider}`
   (`404 not_linked`; `409 last_sign_in_method` when it is the last way in and there is no password). Both return the user.
 - `POST auth.logout_others {}` → `{ok: true, revoked: <n>}`; this session stays.
@@ -710,7 +724,7 @@ Emails (best effort, text escaped, subject `[TKT-00001] ...`): new ticket -> sup
 | 400 | `bad_request` | Body isn't a JSON object |
 | 400 | `invalid_reset_key` | Reset key unknown, used or expired |
 | 400 | `google_failed`, `google_signup_expired` | Google sign-in (§5.12) |
-| 400 | `microsoft_failed`, `github_failed` | Microsoft sign-in (§5.12b); GitHub sign-in (§5.12c) |
+| 400 | `microsoft_failed`, `github_failed`, `apple_failed` | Microsoft sign-in (§5.12b); GitHub sign-in (§5.12c); Apple sign-in (§5.12d) |
 | 400 | `email_code_expired` | Sign-up email code expired, never sent, or 5 wrong tries (§5.4) |
 | 403 | `email_not_verified`, `account_unavailable` | Google sign-in (§5.12); Microsoft sign-in (§5.12b) |
 | 409 | `domain_exists`, `domain_taken` | Custom domains (§5.15) |
@@ -739,6 +753,7 @@ Emails (best effort, text escaped, subject `[TKT-00001] ...`): new ticket -> sup
 | 503 | `google_unavailable` | Google sign-in not configured or Google unreachable |
 | 503 | `microsoft_unavailable` | Microsoft sign-in not configured or Microsoft unreachable |
 | 503 | `github_unavailable` | GitHub sign-in not configured or GitHub unreachable |
+| 503 | `apple_unavailable` | Apple sign-in not configured or Apple unreachable |
 | 503 | `email_unavailable` | The sign-up code email couldn't be sent |
 | 503 | `hosting_unavailable` | Press couldn't be reached to remove a custom domain (§5.15) |
 
