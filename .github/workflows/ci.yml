@@ -9,8 +9,10 @@ on:
   pull_request:
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Pull requests: a new push replaces the older run. main: each run gets its own group, so no run is cancelled
+  # or dropped from the queue and every merge gets a result (on 22 Nov quick merges cancelled the main runs).
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   FRAPPE_VERSION: v16.35.0
