@@ -194,7 +194,7 @@ def cancel_open_checkouts(account_name: str, product: str):
 		_cancel(row)
 
 
-def _make_invoice(account, plan, buyer):
+def _make_invoice(account, plan, buyer, remarks: str | None = None):
 	"""The plan's GST tax invoice (submitted), for the buyer from tax_invoice.buyer()."""
 	product_name = frappe.db.get_value("GX Product", plan.product, "product_name")
 	customer = ensure_customer(account)
@@ -216,7 +216,7 @@ def _make_invoice(account, plan, buyer):
 						"description": f"{product_name}, {plan.plan_name} plan",
 					}
 				],
-				"remarks": f"GrowthX {product_name} {plan.plan_name}, paid online (PayU)",
+				"remarks": remarks or f"GrowthX {product_name} {plan.plan_name}, paid online (PayU)",
 			}
 		)
 		tax_invoice.apply(si, buyer, plan, seller)

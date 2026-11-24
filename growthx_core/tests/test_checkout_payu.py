@@ -448,6 +448,85 @@ class TestCheckoutPayU(IntegrationTestCase):
 			return row.payment_request
 		self.skipTest("this ERPNext set-up made no Payment Request")
 
+	# ------------------------------------------------------------ Record payment: GST invoice (bank transfer)
+
+	def _bank(self):
+		bank = frappe.db.get_value(
+			"Account", {"company": COMPANY, "account_type": ("in", ["Bank", "Cash"]), "is_group": 0}
+		)
+		if not bank:
+			self.skipTest("the test company has no Bank or Cash account")
+		return bank
+
+	def _invoices(self):
+		customer = frappe.db.get_value("GX Account", self.account, "customer")
+		return frappe.get_all(
+			"Sales Invoice",
+			{"customer": customer, "docstatus": 1},
+			["name", "status", "grand_total", "remarks"],
+		)
+
+	def _payment_audit(self):
+		return frappe.get_all(
+			"GX Audit Log",
+			{"action": "customer.record_payment"},
+			pluck="details",
+			order_by="creation desc",
+			limit=1,
+		)[0]
+
+	def test_record_payment_makes_a_paid_gst_invoice(self):
+		bank = self._bank()
+		with patch.dict(frappe.local.conf, {"growthx_bank_account": bank}):
+			status, res = self._record_payment(reference="NEFT-INV-1")
+		self.assertEqual(status, 200, res)
+		invoices = self._invoices()
+		self.assertEqual(len(invoices), 1, _last_error())
+		si = invoices[0]
+		self.assertEqual((si.status, si.grand_total), ("Paid", 150000))
+		self.assertIn("bank transfer, reference NEFT-INV-1", si.remarks)
+		self.assertTrue(frappe.db.get_value("Sales Invoice", si.name, "taxes_and_charges"))
+		entries = frappe.get_all(
+			"Payment Entry Reference", {"reference_name": si.name, "docstatus": 1}, pluck="parent"
+		)
+		self.assertEqual(len(entries), 1)
+		self.assertEqual(
+			frappe.db.get_value("Payment Entry", entries[0], ["paid_to", "reference_no", "paid_amount"]),
+			(bank, "NEFT-INV-1", 150000),
+		)
+		self.assertIn(f"invoice {si.name}", self._payment_audit())
+		self.assertEqual(
+			frappe.db.get_value("GX Subscription", {"account": self.account}, ["status", "gateway"]),
+			("active", "manual"),
+		)
+
+	def test_record_payment_without_a_bank_account_still_records_it(self):
+		with patch.dict(frappe.local.conf, {"growthx_bank_account": None}):
+			status, res = self._record_payment(reference="NEFT-NOBANK")
+		self.assertEqual(status, 200, res)
+		self.assertEqual(self._invoices(), [])
+		self.assertNotIn("invoice", self._payment_audit())  # switched off: the audit line is as before
+		self.assertEqual(
+			frappe.db.get_value("GX Subscription", {"account": self.account}, "status"), "active"
+		)
+
+	def test_record_payment_without_billing_details_still_records_it(self):
+		address = billing_details.address_name(frappe.db.get_value("GX Account", self.account, "customer"))
+		frappe.db.set_value("Address", address, "disabled", 1)
+		with patch.dict(frappe.local.conf, {"growthx_bank_account": self._bank()}):
+			status, res = self._record_payment(reference="NEFT-NOADDR")
+		self.assertEqual(status, 200, res)
+		self.assertEqual(self._invoices(), [])
+		self.assertIn("no GST invoice (no_billing_details)", self._payment_audit())
+
+	def test_record_payment_with_a_wrong_bank_account_makes_no_invoice(self):
+		group = frappe.db.get_value("Account", {"company": COMPANY, "is_group": 1})
+		with patch.dict(frappe.local.conf, {"growthx_bank_account": group}):
+			status, res = self._record_payment(reference="NEFT-GROUP")
+		self.assertEqual(status, 200, res)
+		self.assertEqual(self._invoices(), [])
+		self.assertIn("no GST invoice (bank_account_invalid)", self._payment_audit())
+
 	def test_record_payment_cancels_the_open_checkout(self):
 		_, body = self._checkout()
 		row = self._checkout_docs(body["reference"])
