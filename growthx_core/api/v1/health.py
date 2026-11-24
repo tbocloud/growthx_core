@@ -12,6 +12,18 @@ SCHEDULER_LATE_AFTER = timedelta(minutes=5)
 RESUME_PENDING = "growthx_core.provisioning.runner.resume_pending"
 JOB_PREFIX = "gx-provision::"  # runner.enqueue
 FAILED_JOBS_WINDOW = timedelta(hours=24)
+# health.payments: how far back a payment error counts, and how long a taken payment may wait to be applied.
+PAYMENT_ERRORS_WINDOW = timedelta(minutes=60)
+PAID_NOT_APPLIED_AFTER = timedelta(minutes=30)
+# Error Log titles of the payment path: frappe_payu's own ("PayU: ..."), a 500 in Core's billing endpoints,
+# and Core's payment hooks.
+PAYMENT_ERROR_TITLES = (
+	"PayU%",
+	"GrowthX API error in growthx_core.api.v1.billing.%",
+	"GrowthX: checkout %",
+	"GrowthX: could not flag checkout%",
+	"GrowthX: online payment unavailable%",
+)
 
 
 @endpoint(methods=("GET",), auth=False)
@@ -125,3 +137,73 @@ def _scheduler_inactive() -> bool:
 	from frappe.utils.scheduler import is_scheduler_inactive
 
 	return is_scheduler_inactive(verbose=False)
+
+
+@endpoint(methods=("GET",), auth=False, rate_limit=RateLimit(60, 60))
+def payments():
+	"""For DevOps' payment alert: 200 when online payment looks healthy, 503 with `problems` when not.
+	Counts only; no customer, invoice or payment data. With online payment off it stays 200."""
+	now = now_datetime()
+	errors = _payment_errors(now - PAYMENT_ERRORS_WINDOW)
+	needs_attention = frappe.db.count("GX Checkout", {"status": "needs_attention"})
+	unapplied = _paid_not_applied(now)
+	problems = []
+	if errors:
+		problems.append("payment_errors")
+	if needs_attention:
+		problems.append("checkouts_need_attention")
+	if unapplied:
+		problems.append("paid_not_applied")
+	result = {
+		"status": "alert" if problems else "ok",
+		"paymentErrors": errors,
+		"checkoutsNeedAttention": needs_attention,
+		"paidNotApplied": unapplied,
+		"problems": problems,
+	}
+	return (503 if problems else 200), result
+
+
+def _payment_errors(since) -> int:
+	"""Error Log entries of the payment path since `since`."""
+	return len(
+		frappe.get_all(
+			"Error Log",
+			filters={"creation": (">=", since)},
+			or_filters=[["method", "like", title] for title in PAYMENT_ERROR_TITLES],
+			pluck="name",
+			limit=1000,
+		)
+	)
+
+
+def _paid_not_applied(now) -> int:
+	"""Money taken but no plan activated after 30 minutes: a PayU attempt still Authorized (frappe_payu's
+	15-minute check should have finished it), or a Paid payment request whose checkout is still pending
+	(the Payment Entry hook didn't run)."""
+	from growthx_core.billing import payu
+
+	cutoff = now - PAID_NOT_APPLIED_AFTER
+	authorized = frappe.db.count(
+		"Integration Request",
+		{
+			"integration_request_service": "PayU",
+			"request_description": "PayU payment attempt",
+			"status": payu.AUTHORIZED_ATTEMPT_STATUS,
+			"modified": ("<=", cutoff),
+			"creation": (">=", now - timedelta(days=14)),
+		},
+	)
+	pending = frappe.get_all(
+		"GX Checkout",
+		filters={"status": "pending", "payment_request": ("is", "set")},
+		pluck="payment_request",
+	)
+	paid = (
+		frappe.db.count(
+			"Payment Request", {"name": ("in", pending), "status": "Paid", "modified": ("<=", cutoff)}
+		)
+		if pending
+		else 0
+	)
+	return authorized + paid
