@@ -158,6 +158,36 @@ paths:
               schema: { $ref: "#/components/schemas/ProvisioningHealth" }
         "429": { $ref: "#/components/responses/RateLimited" }
 
+  /growthx_core.api.v1.health.payments:
+    get:
+      tags: [health]
+      summary: Online-payment health, for the payment alert
+      description: |
+        For DevOps monitoring: alert on any status other than 200. Counts only, no customer, invoice or payment
+        data. Stays 200 while online payment is off. Rate-limited to 60 per minute per IP address.
+
+        `problems` (503):
+        - `payment_errors`: Error Log entries of the payment path in the last 60 minutes (frappe_payu's "PayU: ...",
+          a 500 in `billing.*`, "GrowthX: checkout ... paid but not activated", "online payment unavailable").
+        - `checkouts_need_attention`: checkouts flagged `needs_attention` (e.g. a cancelled Payment Entry).
+        - `paid_not_applied`: money taken but no plan activated 30 minutes later: a PayU attempt still Authorized,
+          or a Paid payment request whose checkout is still pending.
+      operationId: healthPayments
+      x-phase: 2
+      security: []
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaymentsHealth" }
+        "503":
+          description: At least one problem
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaymentsHealth" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
   # ---------------------------------------------------------------- catalogue (public)
   /growthx_core.api.v1.catalogue.products:
     get:
@@ -5120,6 +5150,18 @@ components:
           type: array
           items: { type: string, enum: [google, microsoft, github, apple] }
           description: "The providers linked to the account (Account settings, link and unlink)."
+
+    PaymentsHealth:
+      type: object
+      required: [status, paymentErrors, checkoutsNeedAttention, paidNotApplied, problems]
+      properties:
+        status: { type: string, enum: [ok, alert] }
+        paymentErrors: { type: integer, description: Payment-path Error Log entries in the last 60 minutes }
+        checkoutsNeedAttention: { type: integer }
+        paidNotApplied: { type: integer }
+        problems:
+          type: array
+          items: { type: string, enum: [payment_errors, checkouts_need_attention, paid_not_applied] }
 
     ProvisioningHealth:
       type: object
