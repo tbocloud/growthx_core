@@ -37,7 +37,7 @@ from growthx_core.api.v1._core import (
 	validation_error,
 	web_url,
 )
-from growthx_core.billing import payments, payu
+from growthx_core.billing import manual_invoice, payments, payu
 from growthx_core.billing.payments import set_customer_status as _set_customer_status
 from growthx_core.partners import commissions as commission_ops
 from growthx_core.provisioning import press, runner
@@ -278,7 +278,9 @@ def record_payment():
 	account becomes active (a suspended customer's sites come back). The period runs from paidOn, or
 	for a renewal from the current period end if that's later. A reference already recorded on the
 	subscription is refused. A one-time (lifetime) plan has no period end and can't be paid again.
-	Stored in the audit log; no invoice yet (billing isn't built)."""
+	A GST tax invoice, paid by a Payment Entry for the transfer, is made when GST invoicing and
+	site_config growthx_bank_account are set up (billing.manual_invoice); the audit line names it, or why
+	there is none."""
 	data = body()
 	account_id = get_str(data, "id", required=True)
 	plan_id = get_str(data, "plan", required=True)
@@ -303,8 +305,9 @@ def _record_manual_payment(account, plan, reference: str, amount: int, paid_on: 
 	"already paid offline"). `account` is the locked GX Account document."""
 	# The customer mustn't also pay online for what's recorded here (409 if a payment is under way).
 	payu.cancel_open_checkouts(account.name, plan.product)
+	invoice, no_invoice = manual_invoice.make(account, plan, reference, amount / 100, paid_on)
 	_sub, details, period_end = payments.apply_payment(
-		account, plan, reference, paid_on, "manual", amount=amount / 100
+		account, plan, reference, paid_on, "manual", amount=amount / 100, sales_invoice=invoice
 	)
 	audit(
 		"customer.record_payment",
@@ -312,7 +315,8 @@ def _record_manual_payment(account, plan, reference: str, amount: int, paid_on: 
 		account.name,
 		f"{details}: {fmt_money(amount / 100, currency='INR')} for {plan.plan_name}"
 		f" (plan price {payments.plan_price(plan)}) paid on {paid_on.isoformat()}, reference {reference},"
-		f" active {f'until {period_end.isoformat()}' if period_end else 'for life'}",
+		f" active {f'until {period_end.isoformat()}' if period_end else 'for life'}"
+		+ (f", invoice {invoice}" if invoice else f", no GST invoice ({no_invoice})" if no_invoice else ""),
 	)
 
 
