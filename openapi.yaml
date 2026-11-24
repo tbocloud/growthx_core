@@ -3563,6 +3563,32 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /growthx_core.api.v1.admin.products:
+    get:
+      tags: [admin]
+      summary: Every app, hidden ones included
+      description: |
+        The admin panel's list of apps (Plans → Add a plan, the Plans list). Unlike `catalogue.products`
+        it includes `hidden` apps, which are never sold on the website (e.g. ERPNext Direct, added by the
+        team with `admin.add_direct_site`), so an admin can add plans to them and see those plans.
+      operationId: adminListProducts
+      x-phase: 2
+      x-roles: [admin]
+      responses:
+        "200":
+          description: All apps, in catalogue order
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Product" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   /growthx_core.api.v1.admin.create_plan:
     post:
       tags: [admin]
@@ -5144,7 +5170,10 @@ components:
         name: { type: string, example: GrowthX Solar }
         category: { type: string, example: Solar installers }
         summary: { type: string }
-        availability: { type: string, enum: [available, coming_soon] }
+        availability:
+          type: string
+          enum: [available, coming_soon, hidden]
+          description: "`hidden` apps are never in `catalogue.products`; only `admin.products` lists them."
 
     Plan:
       type: object

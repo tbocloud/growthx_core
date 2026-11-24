@@ -97,7 +97,7 @@ commission status (refunds), `lead` notification category, and an OTP step befor
 
 ## 6. Implementation status (22 Nov 2026, production)
 
-All 127 operations in `openapi.yaml` are implemented in `growthx_core/api/v1/`. They pass CI on a fresh bench (`bench --site test_site run-tests --app growthx_core`) and an end-to-end HTTP smoke test (`growthx-web/src/mocks/contract.test.ts`). They run in production: Core on `growthx-core.tbogrowthx.com` (Press release group `bench-0016`), reached at `api.tbogrowthx.com`.
+All 138 operations in `openapi.yaml` are implemented in `growthx_core/api/v1/`. They pass CI on a fresh bench (`bench --site test_site run-tests --app growthx_core`) and an end-to-end HTTP smoke test (`growthx-web/src/mocks/contract.test.ts`). They run in production: Core on `growthx-core.tbogrowthx.com` (Press release group `bench-0016`), reached at `api.tbogrowthx.com`.
 
 | Area | State | What's still missing |
 |---|---|---|
