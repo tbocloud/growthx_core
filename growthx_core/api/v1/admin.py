@@ -437,6 +437,18 @@ def _plan_id(product: str, plan_name: str, interval: str) -> str:
 	return slug(f"{product} {plan_name}{suffix}") or slug(plan_name) or "plan"
 
 
+@endpoint(methods=("GET",), roles=("admin",))
+def products():
+	"""Admin → Plans and Products: every app, including the `hidden` ones the public catalogue leaves out
+	(ERPNext Direct is sold only by the team), so an admin can add a plan to them and see their plans."""
+	rows = frappe.get_all(
+		"GX Product",
+		fields=["name", "slug", "product_name", "category", "summary", "availability"],
+		order_by="sort_order asc, product_name asc",
+	)
+	return {"items": [s.product(r) for r in rows]}
+
+
 @endpoint(methods=("POST",), roles=("admin",), idempotent=True)
 def create_plan():
 	"""A new plan on the catalogue: what a customer can be sold and what `assign_plan` bills. Its
