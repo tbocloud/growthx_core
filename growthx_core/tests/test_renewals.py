@@ -35,12 +35,24 @@ class RecordingPressClient(press.FakePressClient):
 class TestSettingsDefaults(IntegrationTestCase):
 	def test_settings_defaults_are_safe(self):
 		s = frappe.get_single("GX Billing Settings")
-		self.assertEqual((s.enabled, s.dry_run, s.send_emails, s.suspend_sites), (0, 1, 0, 0))
-		self.assertEqual(s.online_payments, 0)
-		self.assertEqual(s.paid_reminder_days, "7,3,1")
-		self.assertEqual(s.grace_warning_days, "1,3,5")
-		self.assertEqual(s.suspend_after_days, 7)
-		self.assertEqual(s.trial_archive_after_days, 30)
+		checks = {"enabled": 0, "send_emails": 0, "suspend_sites": 0, "dry_run": 1, "online_payments": 0}
+		days = {
+			"paid_reminder_days": "7,3,1",
+			"yearly_extra_reminder_days": "30",
+			"grace_warning_days": "1,3,5",
+			"trial_reminder_days": "3,1",
+		}
+		caps = {
+			"suspend_after_days": 7,
+			"trial_archive_after_days": 30,
+			"trial_archive_warning_days": 5,
+			"max_suspensions_per_run": 3,
+			"max_archives_per_run": 2,
+			"sync_max_suspensions_per_run": 1,
+		}
+		for expected in (checks, days, caps):
+			for field, value in expected.items():
+				self.assertEqual(s.get(field), value, field)
 
 
 class RenewalsCase(IntegrationTestCase):

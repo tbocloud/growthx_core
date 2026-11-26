@@ -74,7 +74,7 @@
    "fieldname": "yearly_extra_reminder_days",
    "fieldtype": "Data",
    "label": "Yearly Extra Reminder Days",
-   "default": "30,14"
+   "default": "30"
   },
   {
    "fieldname": "grace_warning_days",
@@ -104,7 +104,7 @@
    "fieldname": "trial_archive_warning_days",
    "fieldtype": "Int",
    "label": "Trial Archive Warning Days",
-   "default": "7"
+   "default": "5"
   },
   {
    "fieldname": "limits_section",
@@ -115,19 +115,19 @@
    "fieldname": "max_suspensions_per_run",
    "fieldtype": "Int",
    "label": "Max Suspensions Per Run",
-   "default": "10"
+   "default": "3"
   },
   {
    "fieldname": "max_archives_per_run",
    "fieldtype": "Int",
    "label": "Max Archives Per Run",
-   "default": "5"
+   "default": "2"
   },
   {
    "fieldname": "sync_max_suspensions_per_run",
    "fieldtype": "Int",
    "label": "Sync Max Suspensions Per Run",
-   "default": "10"
+   "default": "1"
   },
   {
    "fieldname": "platform_section",
@@ -150,7 +150,7 @@
  "index_web_pages_for_search": 0,
  "issingle": 1,
  "links": [],
- "modified": "2026-11-26 10:00:00.000000",
+ "modified": "2026-11-26 14:00:00.000000",
  "modified_by": "Administrator",
  "module": "Billing",
  "name": "GX Billing Settings",
