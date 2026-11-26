@@ -22,7 +22,15 @@
   "gateway_section",
   "gateway",
   "gateway_subscription_id",
-  "last_payment_id"
+  "last_payment_id",
+  "renewal_section",
+  "due_date",
+  "grace_until",
+  "final_warning_on",
+  "archive_due_on",
+  "notified_stages",
+  "suspended_at",
+  "suspended_by"
  ],
  "fields": [
   {
@@ -135,11 +143,54 @@
    "fieldname": "last_payment_id",
    "fieldtype": "Data",
    "label": "Last Payment ID"
+  },
+  {
+   "fieldname": "renewal_section",
+   "fieldtype": "Section Break",
+   "label": "Renewal"
+  },
+  {
+   "fieldname": "due_date",
+   "fieldtype": "Date",
+   "label": "Due Date",
+   "description": "Day 0 while never paid."
+  },
+  {
+   "fieldname": "grace_until",
+   "fieldtype": "Date",
+   "label": "Grace Until"
+  },
+  {
+   "fieldname": "final_warning_on",
+   "fieldtype": "Date",
+   "label": "Final Warning On"
+  },
+  {
+   "fieldname": "archive_due_on",
+   "fieldtype": "Date",
+   "label": "Archive Due On"
+  },
+  {
+   "fieldname": "notified_stages",
+   "fieldtype": "Small Text",
+   "label": "Notified Stages",
+   "description": "Comma-separated stage numbers already emailed, e.g. -7,-3."
+  },
+  {
+   "fieldname": "suspended_at",
+   "fieldtype": "Datetime",
+   "label": "Suspended At"
+  },
+  {
+   "fieldname": "suspended_by",
+   "fieldtype": "Select",
+   "label": "Suspended By",
+   "options": "\nbilling\nadmin"
   }
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-11-03 12:00:00.000000",
+ "modified": "2026-11-26 10:00:00.000000",
  "modified_by": "Administrator",
  "module": "Billing",
  "name": "GX Subscription",

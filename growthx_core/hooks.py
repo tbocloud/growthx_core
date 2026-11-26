@@ -261,7 +261,17 @@ fixtures = [
 	{
 		"dt": "Role",
 		"filters": [
-			["name", "in", ["GrowthX Customer", "GrowthX Partner", "GrowthX Admin", "GrowthX Content Editor"]]
+			[
+				"name",
+				"in",
+				[
+					"GrowthX Customer",
+					"GrowthX Partner",
+					"GrowthX Admin",
+					"GrowthX Content Editor",
+					"GrowthX Site Sync",
+				],
+			]
 		],
 	},
 ]
