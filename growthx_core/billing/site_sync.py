@@ -114,11 +114,16 @@ def report_platform_sites(sites) -> dict:
 	return {"stored": len(sites), "matched": match_all()}
 
 
+def _single(field: str):
+	# Straight from tabSingles: get_single_value caches in Redis, which a rolled-back write leaves stale.
+	return frappe.db.get_value("Singles", {"doctype": SETTINGS, "field": field}, "value")
+
+
 def _platform_list() -> list | None:
 	"""The stored list, or None when the job has never reported one."""
-	if not frappe.db.get_single_value(SETTINGS, "platform_sites_at"):
+	if not _single("platform_sites_at"):
 		return None
-	raw = frappe.db.get_single_value(SETTINGS, "platform_sites")
+	raw = _single("platform_sites")
 	try:
 		rows = frappe.parse_json(raw) if raw else []
 	except ValueError:
