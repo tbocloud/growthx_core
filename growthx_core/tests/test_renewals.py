@@ -9,7 +9,9 @@ from frappe.tests import IntegrationTestCase
 from frappe.utils import add_days, add_months, get_datetime, getdate, now_datetime, nowdate
 
 from growthx_core import accounts
-from growthx_core.api.v1._core import web_url
+from growthx_core.api.v1 import _serializers as s
+from growthx_core.api.v1 import admin
+from growthx_core.api.v1._core import iso, web_url
 from growthx_core.billing import payments, renewal_emails, renewals
 from growthx_core.provisioning import press, runner
 from growthx_core.tests import test_admin_direct as direct_tests
@@ -1005,3 +1007,329 @@ class TestRenewalJob(RenewalsCase):
 		self._run("2026-12-26 11:00:00")
 		self.assertEqual(self._emails(sub), [("trial_ended", 0)])
 		self.assertEqual(self._status(sub), "suspended")
+
+
+class TestRenewalInfo(RenewalsCase):
+	"""renewals.renewal_info: the stage, days left and dates the customer's Billing page renders."""
+
+	def _info(self, sub, today="2026-12-26"):
+		return renewals.renewal_info(sub, today=getdate(today))
+
+	def _expect(self, info, stage, days, expires, suspends=None, archives=None, can_pay=True, advance=False):
+		self.assertEqual(
+			info,
+			{
+				"stage": stage,
+				"daysLeft": days,
+				"expiresAt": iso(expires),
+				"suspendsAt": iso(suspends),
+				"archivesAt": iso(archives),
+				"canPay": can_pay,
+				"payInAdvance": advance,
+			},
+		)
+
+	def test_renewal_info_stages(self):
+		# paid, outside the reminder window: nothing to pay yet
+		_, sub, _t = self._gx_customer("active", current_period_end="2027-01-20")
+		self._expect(self._info(sub), "paid", 25, "2027-01-20", can_pay=False, advance=True)
+		# inside it (7 days): renew now, and the suspension date it would lead to
+		_, sub, _t = self._gx_customer("active", current_period_end="2026-12-29")
+		self._expect(self._info(sub), "due_soon", 3, "2026-12-29", suspends="2027-01-05")
+		# a yearly plan is reminded 30 days ahead
+		_, sub, _t = self._customer("provisioned", "active", current_period_end="2027-01-20", plan=YEARLY)
+		self._expect(self._info(sub), "due_soon", 25, "2027-01-20", suspends="2027-01-27")
+		# first payment still owed: due 26 Dec, final warning planned for 31 Dec, suspended 2 Jan
+		_, sub, _t = self._gx_customer("past_due")
+		frappe.db.set_value("GX Subscription", sub.name, "due_date", "2026-12-26")
+		sub.reload()
+		self._expect(self._info(sub), "first_due", 7, "2026-12-26", suspends="2027-01-02")
+		# expired 2 days ago; an admin's extra days push the suspension out
+		_, sub, _t = self._gx_customer("past_due", current_period_end="2026-12-24")
+		self._expect(self._info(sub), "expired", 5, "2026-12-24", suspends="2026-12-31")
+		frappe.db.set_value("GX Subscription", sub.name, "grace_until", "2027-01-10")
+		sub.reload()
+		self._expect(self._info(sub), "expired", 15, "2026-12-24", suspends="2027-01-10")
+		# the job has not run yet on day 0: still active, but already expired
+		_, sub, _t = self._gx_customer("active", current_period_end="2026-12-26")
+		self._expect(self._info(sub), "expired", 7, "2026-12-26", suspends="2027-01-02")
+		# a GrowthX trial: ends 29 Dec; paused on 30 Dec, a day after the last reminder
+		_, sub, _t = self._gx_customer("trialing", trial_ends_at="2026-12-29 15:00:00")
+		self._expect(self._info(sub), "trial", 3, "2026-12-29", suspends="2026-12-30")
+		# ... past its last day but not paused yet
+		self._expect(self._info(sub, "2026-12-30"), "trial_ended", 1, "2026-12-29", suspends="2026-12-31")
+		# suspended for non-payment
+		_, sub, tenant = self._gx_customer("suspended", current_period_end="2026-12-10")
+		frappe.db.set_value("GX Tenant", tenant.name, "status", "suspended")
+		self._expect(self._info(sub), "suspended", 0, "2026-12-10")
+		# a never-paid trial the job paused: the day it will be deleted
+		_, sub, tenant = self._gx_customer("suspended", trial_ends_at="2026-12-20 12:00:00")
+		frappe.db.set_value("GX Tenant", tenant.name, "status", "suspended")
+		frappe.db.set_value(
+			"GX Subscription", sub.name, {"suspended_by": "billing", "archive_due_on": "2027-01-05"}
+		)
+		sub.reload()
+		self._expect(self._info(sub), "trial_ended", 10, "2026-12-20", archives="2027-01-05")
+		# once the deletion warning is out, the notice period runs from it
+		frappe.db.set_value("GX Subscription", sub.name, "archive_warning_on", "2026-12-30")
+		sub.reload()
+		self._expect(self._info(sub, "2026-12-31"), "trial_ended", 5, "2026-12-20", archives="2027-01-05")
+		# a direct customer whose billing starts later follows the paid timeline
+		_, sub, tenant = self._direct_customer("trialing", trial_ends_at="2026-12-29")
+		self._expect(self._info(sub), "due_soon", 3, "2026-12-29", suspends="2027-01-05")
+
+	def test_renewal_info_is_none_where_nothing_renews(self):
+		_, sub, _t = self._gx_customer("active", current_period_end="2027-01-20")
+		frappe.db.set_value("GX Subscription", sub.name, "billing_interval", "one_time")
+		sub.reload()
+		self.assertIsNone(self._info(sub))
+		_, sub, _t = self._gx_customer("canceled", current_period_end="2026-12-24")
+		self.assertIsNone(self._info(sub))
+
+	def test_subscription_serializer_carries_renewal(self):
+		_, sub, _t = self._gx_customer("active", current_period_end="2026-12-29")
+		with patch.object(renewals, "_now", return_value=get_datetime("2026-12-26 10:00:00")):
+			data = s.subscription(sub)
+		self.assertEqual((data["renewal"]["stage"], data["renewal"]["daysLeft"]), ("due_soon", 3))
+
+
+class TestRenewalAdminApi(RenewalsCase):
+	def setUp(self):
+		super().setUp()
+		self.commit = patch.object(frappe.db, "commit")  # the job commits per subscription
+		self.commit.start()
+		# Only this test's subscriptions take part: park every other live one (tearDown rolls it back).
+		frappe.db.sql(
+			"update `tabGX Subscription` set status = 'canceled' where status in %(live)s",
+			{"live": renewals.LIVE},
+		)
+
+	def tearDown(self):
+		self.commit.stop()
+		super().tearDown()
+
+	def _at(self, when, fn=None, data=None, **kwargs):
+		with patch.object(renewals, "_now", return_value=get_datetime(when)):
+			if fn is None:
+				return renewals.run()
+			return direct_tests._call(fn, data, **kwargs)
+
+	def _suspend(self, sub, tenant, **extra):
+		frappe.db.set_value("GX Tenant", tenant.name, "status", "suspended")
+		frappe.db.set_value(
+			"GX Subscription",
+			sub.name,
+			{
+				"status": "suspended",
+				"suspended_by": "billing",
+				"suspended_at": "2026-12-24 10:00:00",
+				**extra,
+			},
+		)
+
+	def _suspended_past_due(self, direct=False):
+		make = self._direct_customer if direct else self._gx_customer
+		account, sub, tenant = make("past_due", current_period_end="2026-12-17")
+		frappe.db.set_value(
+			"GX Subscription",
+			sub.name,
+			{"notified_stages": "-7,-3,-1,0,1,3,5", "final_warning_on": "2026-12-22"},
+		)
+		self._suspend(sub, tenant)
+		return account, sub, tenant
+
+	def _row(self, sub):
+		return frappe.db.get_value("GX Subscription", sub.name, "*", as_dict=True)
+
+	def test_extend_grace_restores_and_delays_suspension(self):
+		account, sub, tenant = self._suspended_past_due()
+		status, body = self._at(
+			"2026-12-26 10:00:00", admin.extend_grace, {"id": sub.name, "until": "2027-01-05"}
+		)
+		self.assertEqual(status, 200, body)
+		self.assertEqual((body["subscriptionId"], body["stage"]), (sub.name, "expired"))
+		self.assertEqual(body["suspendsAt"], iso("2027-01-05"))
+		row = self._row(sub)
+		self.assertEqual((row.status, getdate(row.grace_until)), ("past_due", getdate("2027-01-05")))
+		self.assertFalse(row.suspended_by or row.suspended_at)
+		self.assertEqual(frappe.db.get_value("GX Tenant", tenant.name, "status"), "ready")
+		self.assertIn(("resume_site", tenant.press_site_id), self.press.calls)
+		self.assertEqual(frappe.db.get_value("GX Account", account.name, "status"), "active")
+		log = frappe.get_last_doc("GX Audit Log", {"action": "renewal.extend_grace"})
+		self.assertEqual(log.reference_name, sub.name)
+		# the job leaves it alone until the new date, without repeating the warnings already sent
+		self._at("2026-12-27 10:00:00")
+		self._at("2027-01-04 10:00:00")
+		self.assertEqual(frappe.db.get_value("GX Tenant", tenant.name, "status"), "ready")
+		self.assertEqual(
+			self.press.calls.count(("suspend_site", tenant.press_site_id)), 0, "suspended before the new date"
+		)
+		self._at("2027-01-05 10:00:00")
+		self.assertEqual(self._row(sub).status, "suspended")
+		self.assertEqual(frappe.db.get_value("GX Tenant", tenant.name, "status"), "suspended")
+
+	def test_extend_grace_on_a_paused_trial_restores_the_trial_and_is_kept(self):
+		_, sub, tenant = self._gx_customer("trialing", trial_ends_at="2026-12-20 12:00:00")
+		self._suspend(
+			sub,
+			tenant,
+			notified_stages="-3,-1,0",
+			final_warning_on="2026-12-19",
+			archive_due_on="2027-01-19",
+			archive_warning_on="2027-01-14",
+		)
+		status, body = self._at(
+			"2026-12-26 10:00:00", admin.extend_grace, {"id": sub.name, "until": "2026-12-30"}
+		)
+		self.assertEqual(status, 200, body)
+		row = self._row(sub)
+		self.assertEqual(row.status, "trialing")
+		self.assertFalse(row.archive_due_on or row.archive_warning_on or row.suspended_by)
+		self.assertEqual(frappe.db.get_value("GX Tenant", tenant.name, "status"), "ready")
+		self.assertEqual((body["stage"], body["suspendsAt"]), ("trial_ended", iso("2026-12-30")))
+		self._at("2026-12-29 10:00:00")
+		self.assertEqual(self._row(sub).status, "trialing")
+		self._at("2026-12-30 10:00:00")
+		self.assertEqual(self._row(sub).status, "suspended")
+
+	def test_extend_grace_on_a_running_subscription_only_moves_the_date(self):
+		_, sub, tenant = self._gx_customer("past_due", current_period_end="2026-12-24")
+		status, body = self._at(
+			"2026-12-26 10:00:00", admin.extend_grace, {"id": sub.name, "until": "2027-01-10"}
+		)
+		self.assertEqual(status, 200, body)
+		self.assertEqual((self._row(sub).status, self.press.calls), ("past_due", []))
+		self.assertEqual(body["suspendsAt"], iso("2027-01-10"))
+
+	def test_extend_grace_keeps_an_admin_suspension(self):
+		_, sub, tenant = self._gx_customer("suspended", current_period_end="2026-12-24")
+		frappe.db.set_value("GX Subscription", sub.name, "suspended_by", "admin")
+		frappe.db.set_value("GX Tenant", tenant.name, "status", "suspended")
+		status, _body = self._at(
+			"2026-12-26 10:00:00", admin.extend_grace, {"id": sub.name, "until": "2027-01-10"}
+		)
+		self.assertEqual(status, 200)
+		self.assertEqual(self._row(sub).status, "suspended")
+		self.assertEqual(frappe.db.get_value("GX Tenant", tenant.name, "status"), "suspended")
+
+	def test_extend_grace_refused_when_press_cannot_resume(self):
+		_, sub, tenant = self._suspended_past_due()
+		with patch.object(renewals, "resume_subscription_site") as resume:  # it logs and leaves it suspended
+			status, body = self._at(
+				"2026-12-26 10:00:00", admin.extend_grace, {"id": sub.name, "until": "2027-01-05"}
+			)
+		resume.assert_called_once()
+		self.assertEqual((status, body["error"]["code"]), (502, "press_unavailable"))
+
+	def test_extend_grace_validation(self):
+		_, sub, _t = self._suspended_past_due()
+		for until, field in (
+			("2026-12-25", "until"),  # past
+			("2026-12-26", "until"),  # today is not in the future
+			("2027-02-25", "until"),  # 61 days
+			("5 Jan", "until"),
+			(None, "until"),
+		):
+			status, body = self._at(
+				"2026-12-26 10:00:00", admin.extend_grace, {"id": sub.name, "until": until}
+			)
+			self.assertEqual(status, 422, until)
+			self.assertIn(field, body["error"]["fields"])
+		status, _ = self._at(
+			"2026-12-26 10:00:00", admin.extend_grace, {"id": sub.name, "until": "2027-02-24"}
+		)
+		self.assertEqual(status, 200)  # 60 days is the limit
+		status, _ = self._at("2026-12-26 10:00:00", admin.extend_grace, {"id": "nope", "until": "2027-01-05"})
+		self.assertEqual(status, 404)
+		account, sub2, _t = self._gx_customer("past_due", current_period_end="2026-12-24")
+		frappe.set_user(account.user)
+		status, _ = self._at(
+			"2026-12-26 10:00:00",
+			admin.extend_grace,
+			{"id": sub2.name, "until": "2027-01-05"},
+			auth_patched=False,
+		)
+		self.assertEqual(status, 403)
+
+	def test_extend_grace_refused_for_a_canceled_subscription(self):
+		_, sub, _t = self._gx_customer("canceled", current_period_end="2026-12-24")
+		status, body = self._at(
+			"2026-12-26 10:00:00", admin.extend_grace, {"id": sub.name, "until": "2027-01-05"}
+		)
+		self.assertEqual((status, body["error"]["code"]), (409, "invalid_transition"))
+
+	def test_reactivate_refused_for_billing_suspension(self):
+		account, sub, tenant = self._suspended_past_due()
+		frappe.db.set_value("GX Account", account.name, "status", "suspended")
+		status, body = self._at(
+			"2026-12-26 10:00:00",
+			admin.update_customer_status,
+			{"id": account.name, "action": "reactivate"},
+		)
+		self.assertEqual((status, body["error"]["code"]), (409, "billing_suspended"))
+		self.assertIn("Give extra days", body["error"]["message"])
+		self.assertEqual(frappe.db.get_value("GX Tenant", tenant.name, "status"), "suspended")
+		# an admin's own suspension can still be reactivated here
+		frappe.db.set_value("GX Subscription", sub.name, "suspended_by", "admin")
+		status, _ = self._at(
+			"2026-12-26 10:00:00",
+			admin.update_customer_status,
+			{"id": account.name, "action": "reactivate"},
+		)
+		self.assertEqual(status, 200)
+
+	def test_admin_renewals_lists(self):
+		_, expiring, t1 = self._gx_customer("active", current_period_end="2026-12-30")
+		_, yearly, t2 = self._customer("provisioned", "active", current_period_end="2027-01-20", plan=YEARLY)
+		self._gx_customer("active", current_period_end="2027-01-20")  # not yet
+		_, past, t3 = self._gx_customer("past_due", current_period_end="2026-12-24")
+		_, susp, t4 = self._suspended_past_due()
+		self._gx_customer("trialing", trial_ends_at="2026-12-29 15:00:00")  # in no list
+		_, direct, t5 = self._direct_customer("active", current_period_end="2027-01-20")
+		for tenant in (t1, t2, t3, t4, t5):
+			frappe.db.set_value("GX Tenant", tenant.name, "platform_site", f"{tenant.name}.press")
+		frappe.db.set_value(
+			"GX Tenant", t5.name, {"sync_status": "Not found", "sync_message": "No such site on Press"}
+		)
+		_, unmatched, t6 = self._direct_customer(
+			"active", current_period_end="2027-01-20"
+		)  # no platform_site
+		_, _healthy, t7 = self._direct_customer("active", current_period_end="2027-01-20")
+		frappe.db.set_value("GX Tenant", t7.name, {"platform_site": "healthy.press", "sync_status": "ok"})
+		status, body = self._at("2026-12-26 10:00:00", admin.renewals)
+		self.assertEqual(status, 200, body)
+		ids = {key: [i["subscriptionId"] for i in body[key]] for key in body}
+		self.assertEqual(ids["expiring"], [expiring.name, yearly.name])  # a yearly plan counts 30 days
+		self.assertEqual(
+			(ids["pastDue"], ids["suspended"]),
+			([past.name], [susp.name]),
+			"trial and healthy ones are in no list",
+		)
+		self.assertEqual(set(ids["syncProblems"]), {direct.name, unmatched.name})
+		item = body["pastDue"][0]
+		self.assertEqual(
+			set(item),
+			{
+				"subscriptionId",
+				"accountId",
+				"accountName",
+				"site",
+				"origin",
+				"planName",
+				"stage",
+				"expiresAt",
+				"suspendsAt",
+				"archivesAt",
+				"syncStatus",
+				"syncMessage",
+			},
+		)
+		self.assertEqual(
+			(item["stage"], item["origin"], item["planName"], item["suspendsAt"]),
+			("expired", "provisioned", "Monthly", iso("2026-12-31")),
+		)
+		self.assertEqual(body["suspended"][0]["stage"], "suspended")
+		problem = {i["subscriptionId"]: i for i in body["syncProblems"]}[direct.name]
+		self.assertEqual(
+			(problem["syncStatus"], problem["syncMessage"]), ("Not found", "No such site on Press")
+		)

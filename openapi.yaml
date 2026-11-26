@@ -3166,7 +3166,7 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
-          description: "`invalid_transition`: the action doesn't apply to the customer's status (or there's no trial to extend)"
+          description: "`invalid_transition`: the action doesn't apply to the customer's status (or there's no trial to extend). `billing_suspended`: a reactivate for a customer whose site the renewal job suspended for non-payment; use `admin.extend_grace` (Give extra days) instead"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -3862,6 +3862,82 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: "`already_archived`, `invalid_transition`: terminated already, or still being set up"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /growthx_core.api.v1.admin.renewals:
+    get:
+      tags: [admin]
+      summary: Admin → Renewals
+      description: |
+        Four lists, each oldest deadline first. `expiring`: active subscriptions ending within 7 days (30 for a
+        yearly plan). `pastDue`: the first payment is owed or the plan has expired, with the suspension day.
+        `suspended`: sites switched off (with the deletion day for a never-paid trial). `syncProblems`: ERPNext
+        Direct sites the Press-side sync job couldn't find or act on (`syncStatus` `Not found`, `held` or
+        `error`), or hasn't matched to a Press site yet. Sites not built yet, failed or archived are left out.
+        Dates are ISO 8601 UTC, calendar days in IST (see decision 14).
+      operationId: adminListRenewals
+      x-phase: 2
+      x-roles: [admin]
+      responses:
+        "200":
+          description: The lists
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [expiring, pastDue, suspended, syncProblems]
+                properties:
+                  expiring: { type: array, items: { $ref: "#/components/schemas/RenewalItem" } }
+                  pastDue: { type: array, items: { $ref: "#/components/schemas/RenewalItem" } }
+                  suspended: { type: array, items: { $ref: "#/components/schemas/RenewalItem" } }
+                  syncProblems: { type: array, items: { $ref: "#/components/schemas/RenewalItem" } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /growthx_core.api.v1.admin.extend_grace:
+    post:
+      tags: [admin]
+      summary: Give extra days
+      description: |
+        Moves a subscription's suspension later: it isn't suspended before `until` (a day after today, at most
+        60 days ahead). If the renewal job suspended it for non-payment, it comes back (a trial is `trialing`
+        again, a paid plan `past_due`) and its site is resumed on Press. Reminders and warnings already sent
+        stay recorded, so the customer is not warned again; the suspension email goes out at the end. A site an
+        admin suspended stays suspended: use Reactivate. Audit-logged as `renewal.extend_grace`.
+      operationId: adminExtendGrace
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, until]
+              properties:
+                id: { type: string, description: Subscription id }
+                until: { type: string, format: date, example: "2027-01-05" }
+      responses:
+        "200":
+          description: The subscription's row, as listed in Renewals
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RenewalItem" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`invalid_transition`: the subscription is canceled"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "502":
+          description: "`press_unavailable`: Press could not resume the site; nothing changed"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -5393,6 +5469,53 @@ components:
           description: Null during a trial and for a `one_time` (lifetime) plan, which never expires.
         cancelAtPeriodEnd: { type: boolean, default: false }
         siteId: { type: string, nullable: true }
+        renewal:
+          allOf: [{ $ref: "#/components/schemas/Renewal" }]
+          nullable: true
+          description: Null for a paid lifetime plan and a canceled subscription
+
+    Renewal:
+      type: object
+      description: |
+        Where a subscription is on its renewal timeline, computed by Core (the same rules as the hourly renewal
+        job), so clients show it without date logic of their own. Dates are calendar days in IST. Null for a
+        paid lifetime plan and a canceled subscription.
+      required: [stage, daysLeft, expiresAt, suspendsAt, archivesAt, canPay, payInAdvance]
+      properties:
+        stage:
+          type: string
+          enum: [paid, due_soon, first_due, expired, suspended, trial, trial_ended]
+          description: |
+            `paid`: paid up, outside the reminder window. `due_soon`: inside it (7 days before the end, 30 for a
+            yearly plan). `first_due`: the first payment is owed. `expired`: the end has passed, in grace.
+            `suspended`: the site is off. `trial`: a GrowthX trial is running. `trial_ended`: the trial is over
+            (about to be paused, or paused and awaiting deletion).
+        daysLeft:
+          type: integer
+          description: Whole days to the next deadline, never negative. The end (`paid`, `due_soon`, `trial`), the suspension day (`first_due`, `expired`, `trial_ended` before the pause), the deletion day (`trial_ended` once paused), else 0.
+        expiresAt: { type: string, format: date-time, nullable: true, description: "The renewal date (day 0), or the last day of a trial" }
+        suspendsAt: { type: string, format: date-time, nullable: true, description: "When the site will be suspended (in `due_soon`, the day it would be if the plan isn't renewed); null once suspended or when nothing will suspend it" }
+        archivesAt: { type: string, format: date-time, nullable: true, description: "When a paused never-paid trial's site will be deleted; otherwise null" }
+        canPay: { type: boolean, description: "False only in `paid`" }
+        payInAdvance: { type: boolean, description: "True in `paid`; offer a small \"Pay in advance\" link" }
+
+    RenewalItem:
+      type: object
+      description: One row of Admin → Renewals. `subscriptionId`, `planName` and `stage` are null for an ERPNext Direct site with no live subscription.
+      required: [subscriptionId, accountId, accountName, site, origin, planName, stage, expiresAt, suspendsAt, archivesAt, syncStatus, syncMessage]
+      properties:
+        subscriptionId: { type: string, nullable: true }
+        accountId: { type: string }
+        accountName: { type: string, nullable: true }
+        site: { type: string, nullable: true, description: "The Press site name if matched, else the site's host" }
+        origin: { type: string, enum: [provisioned, imported] }
+        planName: { type: string, nullable: true }
+        stage: { type: string, nullable: true, enum: [paid, due_soon, first_due, expired, suspended, trial, trial_ended, null] }
+        expiresAt: { type: string, format: date-time, nullable: true }
+        suspendsAt: { type: string, format: date-time, nullable: true }
+        archivesAt: { type: string, format: date-time, nullable: true }
+        syncStatus: { type: string, nullable: true, description: "The Press-side job's last report for an imported site: `Not found`, `held`, `error`, or its normal states" }
+        syncMessage: { type: string, nullable: true }
 
     InvoiceStatus:
       type: string
