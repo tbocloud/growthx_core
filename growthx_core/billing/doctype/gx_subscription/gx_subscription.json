@@ -28,6 +28,7 @@
   "grace_until",
   "final_warning_on",
   "archive_due_on",
+  "archive_warning_on",
   "notified_stages",
   "suspended_at",
   "suspended_by"
@@ -171,6 +172,12 @@
    "label": "Archive Due On"
   },
   {
+   "fieldname": "archive_warning_on",
+   "fieldtype": "Date",
+   "label": "Archive Warning On",
+   "description": "The day the deletion warning was emailed; the site is archived no sooner than the warning period after it."
+  },
+  {
    "fieldname": "notified_stages",
    "fieldtype": "Small Text",
    "label": "Notified Stages",
@@ -190,7 +197,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-11-26 10:00:00.000000",
+ "modified": "2026-11-26 18:00:00.000000",
  "modified_by": "Administrator",
  "module": "Billing",
  "name": "GX Subscription",

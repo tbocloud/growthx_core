@@ -267,7 +267,12 @@ def _extend_trial(account, days: int) -> str:
 		raise ApiError(409, "invalid_transition", "This customer has no trial subscription to extend.")
 	old = sub[0].trial_ends_at
 	new = max(now_datetime(), get_datetime(old) if old else now_datetime()) + timedelta(days=days)
-	frappe.db.set_value("GX Subscription", sub[0].name, "trial_ends_at", new)
+	# A new end date: the renewal job reminds again before it (the reminders sent were for the old one).
+	frappe.db.set_value(
+		"GX Subscription",
+		sub[0].name,
+		{"trial_ends_at": new, "notified_stages": None, "final_warning_on": None},
+	)
 	return f"+{days} days: trial ends {iso(new)} (was {iso(old) if old else 'not set'})"
 
 
@@ -521,6 +526,9 @@ def _move_subscription_to_plan(sub, plan):
 			"gst_rate": plan.gst_rate,
 			"current_period_end": period_end,
 			"cancel_at_period_end": 0,
+			# A moved period: the renewal job's reminders and warnings start again for the new end.
+			"notified_stages": None,
+			"final_warning_on": None,
 		}
 	)
 	sub.save(ignore_permissions=True)

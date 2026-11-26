@@ -115,6 +115,7 @@ def apply_payment(
 			"suspended_at": None,
 			"suspended_by": None,
 			"archive_due_on": None,
+			"archive_warning_on": None,
 		}
 	)
 	sub.save(ignore_permissions=True)
@@ -125,7 +126,15 @@ def apply_payment(
 	elif account.status == "active":
 		details = "renewal"
 	else:
-		details = set_customer_status(account, "active", "suspended", "ready", "resume_site")
+		# Another subscription's site that billing suspended stays suspended until that one is paid.
+		unpaid = frappe.get_all(
+			"GX Subscription",
+			{"account": account.name, "suspended_by": "billing", "name": ("!=", sub.name)},
+			pluck="tenant",
+		)
+		details = set_customer_status(
+			account, "active", "suspended", "ready", "resume_site", keep=set(filter(None, unpaid))
+		)
 	# After the status change: the customer now counts as an active client for the partner's tier.
 	commissions.record_for_payment(
 		account,
@@ -148,9 +157,11 @@ def plan_price(plan) -> str:
 	return f"{text} + {flt(plan.gst_rate):g}% GST" if flt(plan.gst_rate) else text
 
 
-def set_customer_status(account, new_status: str, site_from: str, site_to: str, press_action: str) -> str:
-	"""Change the account's status and move its sites from `site_from` to `site_to` on Press. A site
-	Press refuses keeps its status and is named in the audit details."""
+def set_customer_status(
+	account, new_status: str, site_from: str, site_to: str, press_action: str, keep: set | None = None
+) -> str:
+	"""Change the account's status and move its sites from `site_from` to `site_to` on Press, except the
+	tenants in `keep`. A site Press refuses keeps its status and is named in the audit details."""
 	previous = account.status
 	account.status = new_status
 	account.save(ignore_permissions=True)
@@ -159,6 +170,8 @@ def set_customer_status(account, new_status: str, site_from: str, site_to: str, 
 	for t in frappe.get_all(
 		"GX Tenant", {"account": account.name, "status": site_from}, ["name", "press_site_id", "origin"]
 	):
+		if keep and t.name in keep:
+			continue
 		try:
 			# An imported (ERPNext Direct) site is the customer's own: its status moves, Press isn't asked.
 			if t.press_site_id and t.origin != "imported":

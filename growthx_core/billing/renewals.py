@@ -89,30 +89,46 @@ def never_paid(account: str) -> bool:
 def suspend_subscription(sub_name: str, by: str = "billing") -> bool:
 	"""Suspend the subscription's site. A GrowthX (provisioned) site is suspended on Press first and
 	Core changes only if that succeeds; an ERPNext Direct (imported) site is the customer's own, so
-	only status changes here. A never-paid GrowthX trial also gets an archive date. The account becomes
-	`suspended` once none of its subscriptions is live. Returns False if Press refused (logged, nothing
-	changed)."""
-	sub = frappe.db.get_value("GX Subscription", sub_name, ["name", "account", "tenant"], as_dict=True)
+	only status changes here. Only a GrowthX trial (still `trialing`) of a never-paid account gets an
+	archive date: a paid plan, a direct customer or a cancelled plan is never archived by billing. The
+	account becomes `suspended` once none of its subscriptions is live. Returns False if Press refused
+	(logged, nothing changed)."""
+	sub = frappe.db.get_value(
+		"GX Subscription", sub_name, ["name", "account", "tenant", "status"], as_dict=True
+	)
 	if not sub or not sub.tenant:
 		return False
 	tenant = frappe.db.get_value("GX Tenant", sub.tenant, ["name", "origin", "press_site_id"], as_dict=True)
 	if not tenant:
 		return False
 	imported = tenant.origin == "imported"
-	if not imported and tenant.press_site_id:
+	on_press = not imported and bool(tenant.press_site_id)
+	if on_press:
 		try:
 			runner.get_client().suspend_site(tenant.press_site_id)
 		except Exception:
 			frappe.log_error(title=f"GrowthX: suspend_site failed for {tenant.name}")
 			return False
-	values = {"status": "suspended", "suspended_at": _now(), "suspended_by": by}
-	if not imported and never_paid(sub.account):
-		days = cint(frappe.db.get_single_value("GX Billing Settings", "trial_archive_after_days"))
-		values["archive_due_on"] = add_days(_today(), days)
-	frappe.db.set_value("GX Tenant", tenant.name, "status", "suspended")
-	frappe.db.set_value("GX Subscription", sub_name, values)
-	sync_account_status(sub.account)
-	audit("renewal.suspend", "GX Subscription", sub_name, f"site {tenant.name} suspended ({by})")
+	try:
+		values = {"status": "suspended", "suspended_at": _now(), "suspended_by": by}
+		if not imported and sub.status == "trialing" and never_paid(sub.account):
+			days = cint(frappe.db.get_single_value("GX Billing Settings", "trial_archive_after_days"))
+			values["archive_due_on"] = add_days(_today(), days)
+		frappe.db.set_value("GX Tenant", tenant.name, "status", "suspended")
+		frappe.db.set_value("GX Subscription", sub_name, values)
+		sync_account_status(sub.account)
+		audit("renewal.suspend", "GX Subscription", sub_name, f"site {tenant.name} suspended ({by})")
+	except Exception:
+		if on_press:
+			# Core rolls back but the site stays off on Press: DevOps must resume it (or retry the suspension).
+			# Deferred, so the log survives the caller's rollback.
+			frappe.log_error(
+				title=f"GrowthX: Press suspended {tenant.press_site_id} but Core was not updated",
+				reference_doctype="GX Subscription",
+				reference_name=sub_name,
+				defer_insert=True,
+			)
+		raise
 	return True
 
 
@@ -139,6 +155,7 @@ def day0(sub, tenant=None) -> date | None:
 	- a GrowthX trial: the trial's last day (it is over from the next midnight);
 	- an ERPNext Direct customer whose billing starts later (`trialing`): the start date;
 	- otherwise the current period's end, or for a first payment the due date;
+	- a never-paid `past_due` subscription made before due dates were stored: the day it was created;
 	- a paid lifetime plan: None (nothing to renew)."""
 	if sub.billing_interval == "one_time" and sub.status == "active":
 		return None
@@ -148,7 +165,9 @@ def day0(sub, tenant=None) -> date | None:
 		return _date(sub.trial_ends_at)
 	if sub.current_period_end or sub.due_date:
 		return _date(sub.current_period_end or sub.due_date)
-	# A GrowthX trial the job paused: its archive dates count from the trial's end.
+	if sub.status == "past_due" and not sub.get("last_payment_id"):
+		return _date(sub.get("creation"))
+	# A GrowthX trial the job paused: its emails name the day the trial ended.
 	return _date(sub.trial_ends_at) if sub.status == "suspended" else None
 
 
@@ -171,8 +190,16 @@ def _days(settings, field: str) -> list[int]:
 	return parse_days(settings.get(field)) or parse_days(DEFAULT_DAYS[field])
 
 
+class _Changed(Exception):
+	"""The subscription changed under the job (a payment, an admin): it is left for the next run."""
+
+
 class _Run:
-	"""One run of the job: the settings, today's date and the counts."""
+	"""One run of the job: the settings, today's date and the counts.
+
+	Locking: a subscription is locked after its account (GX Account, then GX Subscription), the order
+	payments use, so the two never deadlock. Each checkpoint commits, which releases both; the next step
+	locks them again in that order and checks that nobody changed the subscription in between."""
 
 	def __init__(self, settings):
 		self.today = _today()
@@ -189,7 +216,8 @@ class _Run:
 		self.max_suspensions = cint(settings.max_suspensions_per_run)
 		self.max_archives = cint(settings.max_archives_per_run)
 		self.counts = {"emails": 0, "past_due": 0, "suspended": 0, "archived": 0, "held": 0}
-		self.seen = {}  # the subscription's WATCHED fields as read (and locked) at the start
+		self.sub_name = self.account_name = None
+		self.seen = {}  # the subscription's WATCHED fields as first read under the lock
 
 	# ------------------------------------------------------------ one subscription, isolated
 
@@ -199,25 +227,54 @@ class _Run:
 		self.checkpoint()
 		try:
 			self._process(name)
+		except _Changed:
+			self._undo()
 		except Exception:
-			try:
-				frappe.db.rollback(save_point=SAVEPOINT)
-			except Exception:
-				frappe.db.rollback()  # the savepoint went with a commit (runner.archive's): undo what followed
+			self._undo()
 			frappe.log_error(title=f"GrowthX: renewal job failed for {name}")
 		frappe.db.commit()
+		self.sub_name = self.account_name = None
 
-	def checkpoint(self):
-		"""Keep what is done so far (an email that went out must stay recorded) and start a new savepoint."""
+	def _undo(self):
+		try:
+			frappe.db.rollback(save_point=SAVEPOINT)
+		except Exception:
+			frappe.db.rollback()  # the savepoint went with a commit (runner.archive's): undo what followed
+
+	def checkpoint(self, sub=None):
+		"""Keep what is done so far (an email queued must stay recorded) and start a new savepoint. With
+		`sub`, lock it again (account first) and stop if it changed meanwhile."""
 		frappe.db.commit()
 		frappe.db.savepoint(SAVEPOINT)
+		if sub is not None and not self._unchanged(sub):
+			raise _Changed
+
+	def _lock(self):
+		"""Lock the account, then the subscription (the order payments use). Returns the subscription's
+		status and WATCHED fields."""
+		frappe.db.get_value("GX Account", self.account_name, "name", for_update=True)
+		return frappe.db.get_value(
+			"GX Subscription", self.sub_name, ["status", *WATCHED], as_dict=True, for_update=True
+		)
+
+	def _unchanged(self, sub) -> bool:
+		"""Lock again and check that nobody changed the subscription since it was read: a payment that
+		waited for the lock must never be followed by a suspension, an archive or a stale record."""
+		row = self._lock()
+		return bool(row) and row.status == sub.status and all(row[f] == self.seen[f] for f in WATCHED)
 
 	def _process(self, name: str):
-		# Locked: a payment for this subscription waits until we commit, and we wait for one in progress.
-		sub = frappe.get_doc("GX Subscription", name, for_update=True)
+		self.account_name = frappe.db.get_value("GX Subscription", name, "account")
+		if not self.account_name:
+			return
+		self.sub_name = name
+		row = self._lock()
+		if not row:
+			return
+		self.seen = {field: row[field] for field in WATCHED}
+		sub = frappe.get_doc("GX Subscription", name)
 		if sub.status not in LIVE or (sub.billing_interval == "one_time" and sub.status == "active"):
 			return  # a paid lifetime plan has nothing to renew
-		self.seen = {field: sub.get(field) for field in WATCHED}
 		tenant = sub.tenant and frappe.db.get_value(
 			"GX Tenant",
 			sub.tenant,
@@ -251,11 +308,15 @@ class _Run:
 	# ------------------------------------------------------------ paid plans and ERPNext Direct
 
 	def _paid(self, sub, tenant, account, start: date, offset: int):
+		self._drop_stale_warnings(sub, start)  # a final warning is never sent before day 0
+		if cint(sub.cancel_at_period_end):
+			if offset >= 0 and sub.status in ("active", "past_due"):
+				self._cancel_at_period_end(sub, tenant, account, start)
+			return  # and no reminders for a plan the customer cancelled
 		stages = paid_stages(
 			self.reminder_days, self.warning_days, self.yearly_days, sub.billing_interval == "year"
 		)
-		cancelling = bool(cint(sub.cancel_at_period_end))
-		if self.send_emails and not cancelling:  # no reminders for a plan the customer cancelled
+		if self.send_emails:
 			stage = stage_to_send(stages, offset, parse_sent(sub.notified_stages))
 			if stage is not None:
 				final = stage == self.final
@@ -267,20 +328,22 @@ class _Run:
 					self._record(sub, [s for s in stages if s <= stage], final_warning=final)
 		if offset >= 0 and sub.status in ("active", "trialing"):
 			self._past_due(sub, f"day 0 was {start}")
-		if sub.status != "past_due" or not self.suspend_sites:
-			return
-		if cancelling:
-			# Cancelled at period end: suspended on day 0 (no grace), canceled, and never archived.
-			if offset >= 0 and not self._held("suspended", self.max_suspensions):
-				self._cancel(sub)
+		if sub.status != "past_due":
 			return
 		on = suspension_day(
 			start, self.suspend_after, self.final, _date(sub.final_warning_on), _date(sub.grace_until)
 		)
-		if on is None or self.today < on or self._held("suspended", self.max_suspensions):
+		if on is None:
+			return  # never suspended before the final warning has gone out
+		if self.today < on:
+			if self.dry:
+				self._would(sub, f"suspend on {on}")
 			return
-		if self._suspend(sub, "after the final warning") and self.send_emails:
-			self._email(sub, tenant, account, "suspended", None, {"due": start})
+		if self._may_suspend(sub, on, "unpaid after the final warning") and self._suspend(
+			sub, on, "unpaid after the final warning"
+		):
+			if self.send_emails:
+				self._email(sub, tenant, account, "suspended", None, {"due": start})
 
 	def _paid_kind(self, sub, stage: int) -> str:
 		if stage < 0:
@@ -296,23 +359,50 @@ class _Run:
 		planned = max(self.today, start + timedelta(days=self.final))
 		return suspension_day(start, self.suspend_after, self.final, sent or planned, _date(sub.grace_until))
 
-	def _cancel(self, sub):
-		if not self._suspend(sub, "at period end (cancelled)"):
-			return
+	def _cancel_at_period_end(self, sub, tenant, account, start: date):
+		"""Cancelled at period end (Ruling 5): on day 0 one notice, status `canceled`, and the site suspended
+		only if suspend_sites is on and the notice went out. Never archived."""
+		notified = 0 in parse_sent(sub.notified_stages)
+		if (
+			self.suspend_sites
+			and (notified or self.send_emails)
+			and self._held("suspended", self.max_suspensions)
+		):
+			return  # the cancel waits for the suspension, next run
+		if self.send_emails and not notified:
+			dates = {"due": start, "suspend": self.today if self.suspend_sites else None}
+			if not self._email(sub, tenant, account, "canceled", 0, dates):
+				return  # nothing changes until the notice is out: retried next run
+			self._record(sub, [0])
+			notified = True
+		reason = "cancelled at period end"
+		if self.suspend_sites and notified:
+			if not self._suspend(sub, self.today, reason):
+				return  # Press refused: still active, retried next run (the notice is not sent again)
+		else:
+			why = "suspend_sites is off" if notified else "no notice was sent"
+			self._would(sub, f"suspend on {self.today} ({reason}; {why})")
+		self._set_canceled(sub)
+
+	def _set_canceled(self, sub):
 		if self.dry:
+			self._would(sub, "cancel (cancel_at_period_end)")
+			sub.status = "canceled"
 			return
-		sub.reload()  # suspend_subscription wrote the row
+		sub.reload()  # suspend_subscription may have written the row
 		sub.status = "canceled"
 		sub.archive_due_on = None
-		sub.save(ignore_permissions=True)
-		audit("renewal.suspend", "GX Subscription", sub.name, "subscription canceled at period end")
-		self.checkpoint()
+		sub.save(ignore_permissions=True)  # on_update keeps the account's status in step
+		audit("renewal.cancel", "GX Subscription", sub.name, "canceled at period end, as the customer asked")
+		self.checkpoint(sub)
 
 	# ------------------------------------------------------------ GrowthX trials
 
 	def _trial(self, sub, tenant, account, start: date, offset: int):
 		reminders = sorted(-d for d in self.trial_days)
 		last = reminders[-1]
+		# The last reminder is never sent before its day: an earlier one belongs to an earlier trial end.
+		self._drop_stale_warnings(sub, start + timedelta(days=last))
 		if self.send_emails:
 			stage = stage_to_send(reminders, offset, parse_sent(sub.notified_stages))
 			if stage is not None:
@@ -324,19 +414,25 @@ class _Run:
 					self._record(sub, [s for s in reminders if s <= stage], final_warning=stage == last)
 		# Paused from the day after the trial's last day, and never less than a day after the last reminder.
 		warned = _date(sub.final_warning_on)
-		if offset < 1 or not self.suspend_sites or not warned or self.today < warned + timedelta(days=1):
+		if not warned:
 			return
-		if self._held("suspended", self.max_suspensions):
+		on = max(start, warned) + timedelta(days=1)
+		if self.today < on:
+			if self.dry:
+				self._would(sub, f"suspend on {on}")
+			return
+		if not self._may_suspend(sub, on, "trial ended"):
 			return
 		if self.send_emails and 0 not in parse_sent(sub.notified_stages):
 			if not self._email(sub, tenant, account, "trial_ended", 0, {"due": start}):
 				return  # the site is paused once the customer has been told: retried next run
 			self._record(sub, [0])
-		self._suspend(sub, "trial ended")
+		self._suspend(sub, on, "trial ended")
 
 	def _paused_trial(self, sub, tenant, account):
-		"""A never-paid GrowthX site the job paused: warn, then archive on `archive_due_on`. The warning must
-		have gone out first; a late one moves the archive date so the customer always gets the full notice."""
+		"""A never-paid GrowthX trial site the job paused: a warning from `archive_due_on` minus the warning
+		days, then the archive, no sooner than `archive_due_on` and the full warning period after the warning
+		actually went out (`archive_warning_on`)."""
 		due = _date(sub.archive_due_on)
 		if (
 			sub.suspended_by != "billing"
@@ -344,32 +440,50 @@ class _Run:
 			or tenant.status != "suspended"
 			or cint(sub.cancel_at_period_end)  # cancelled at period end: never archived
 			or not due
-			or not self.suspend_sites
+			or not never_paid(sub.account)
 		):
 			return
-		start = day0(sub, tenant)
-		if start is None or not never_paid(sub.account):
+		notice = timedelta(days=self.archive_warning_days)
+		warned = _date(sub.archive_warning_on)
+		ended = _date(sub.trial_ends_at) or _date(sub.suspended_at) or due
+		if not self.suspend_sites:
+			if self.today >= due:
+				self._would(
+					sub, f"archive on {max(due, (warned or self.today) + notice)} (suspend_sites is off)"
+				)
 			return
-		if (due - start).days not in parse_sent(sub.notified_stages):
-			# The warning is recorded as the archive day's offset, so a moved archive date gets its own.
-			if not self.send_emails or self.today < due - timedelta(days=self.archive_warning_days):
+		if not warned:
+			if self.today < due - notice:
 				return
-			due = max(due, self.today + timedelta(days=max(self.archive_warning_days, 1)))
-			dates = {"due": start, "archive": due}
-			if self._email(sub, tenant, account, "trial_archive_warning", None, dates):
-				self._record(sub, [(due - start).days], archive_due_on=due)
+			on = max(due, self.today + notice)
+			if not self.send_emails:
+				if self.today >= due:
+					self._would(sub, f"archive on {on} (no deletion warning: send_emails is off)")
+				return
+			if self._email(
+				sub, tenant, account, "trial_archive_warning", None, {"due": ended, "archive": on}
+			):
+				self._record(sub, archive_warning=True)
+				if self.dry:
+					self._would(sub, f"archive on {on}")
 			return
-		if self.today < due or self._held("archived", self.max_archives):
+		on = max(due, warned + notice)
+		if self.today < on:
+			if self.dry:
+				self._would(sub, f"archive on {on}")
+			return
+		if self._held("archived", self.max_archives):
 			return
 		if self.dry:
-			self._would(sub, f"archive {tenant.name}")
+			self._would(sub, f"archive on {on}")
 		elif not self._unchanged(sub) or not archive_trial(sub.name):
 			return
 		else:
-			self.checkpoint()
+			sub.status = "canceled"
+			self.checkpoint(sub)
 		self.counts["archived"] += 1
 		if self.send_emails:
-			self._email(sub, tenant, account, "trial_archived", None, {"due": start})
+			self._email(sub, tenant, account, "trial_archived", None, {"due": ended})
 
 	def _finish_archive(self, sub, tenant, account):
 		"""The tenant is archived but the subscription isn't canceled yet (the job stopped between the two):
@@ -383,11 +497,25 @@ class _Run:
 			self._would(sub, f"finish archiving {tenant.name}")
 			return
 		if self._unchanged(sub) and archive_trial(sub.name):
-			self.checkpoint()
+			sub.status = "canceled"
+			self.checkpoint(sub)
 			if self.send_emails:
-				self._email(sub, tenant, account, "trial_archived", None, {"due": day0(sub, tenant) or due})
+				ended = _date(sub.trial_ends_at) or _date(sub.suspended_at) or due
+				self._email(sub, tenant, account, "trial_archived", None, {"due": ended})
 
 	# ------------------------------------------------------------ actions (dry_run: audit lines only)
+
+	def _drop_stale_warnings(self, sub, earliest: date):
+		"""A final warning dated before it could have been sent belongs to an earlier timeline (an admin
+		moved the trial end or the period): forget the stages sent so the new timeline warns again."""
+		warned = _date(sub.final_warning_on)
+		if not warned or warned >= earliest:
+			return
+		values = {"notified_stages": None, "final_warning_on": None}
+		if self.dry:
+			sub.update(values)
+		else:
+			sub.db_set(values, update_modified=False)
 
 	def _email(self, sub, tenant, account, kind: str, stage: int | None, dates: dict) -> bool:
 		if self.dry:
@@ -397,49 +525,54 @@ class _Run:
 		self.counts["emails"] += 1
 		return True
 
-	def _record(self, sub, stages, final_warning: bool = False, archive_due_on: date | None = None):
-		"""Note the stages as sent (an email that failed is not noted, so it is tried again next run)."""
-		values = {"notified_stages": format_sent(parse_sent(sub.notified_stages) | set(stages))}
+	def _record(self, sub, stages=(), final_warning: bool = False, archive_warning: bool = False):
+		"""Note what was sent (an email that failed is not noted, so it is tried again next run)."""
+		values = {}
+		if stages:
+			values["notified_stages"] = format_sent(parse_sent(sub.notified_stages) | set(stages))
 		if final_warning:
 			values["final_warning_on"] = self.today
-		if archive_due_on:
-			values["archive_due_on"] = archive_due_on
+		if archive_warning:
+			values["archive_warning_on"] = self.today
 		if self.dry:
 			sub.update(values)
 			return
+		if not self._unchanged(sub):
+			raise _Changed  # paid meanwhile: the old timeline's record must not land on the new period
 		sub.db_set(values, update_modified=False)
-		self.checkpoint()
+		self.checkpoint(sub)
 
 	def _past_due(self, sub, details: str):
 		if self.dry:
-			self._would(sub, f"{sub.status} → past_due ({details})")
+			self._would(sub, f"set past_due ({details})")
 			sub.status = "past_due"
 		else:
 			sub.status = "past_due"
 			sub.save(ignore_permissions=True)  # on_update keeps the account's status in step
 			audit("renewal.past_due", "GX Subscription", sub.name, details)
-			self.checkpoint()
+			self.checkpoint(sub)
 		self.counts["past_due"] += 1
 
-	def _suspend(self, sub, reason: str) -> bool:
+	def _may_suspend(self, sub, on: date, reason: str) -> bool:
+		"""The subscription is due for suspension: False (with a `renewal.would` line) while suspend_sites is
+		off, or (held) when this run's cap is reached."""
+		if not self.suspend_sites:
+			self._would(sub, f"suspend on {on} ({reason}; suspend_sites is off)")
+			return False
+		return not self._held("suspended", self.max_suspensions)
+
+	def _suspend(self, sub, on: date, reason: str) -> bool:
 		if self.dry:
-			self._would(sub, f"suspend ({reason})")
+			self._would(sub, f"suspend on {on} ({reason})")
 		elif not self._unchanged(sub):
-			return False  # paid (or changed by an admin) meanwhile: the next run looks at it afresh
+			raise _Changed  # paid (or changed by an admin) meanwhile: the next run looks at it afresh
 		elif not suspend_subscription(sub.name):
 			return False  # Press refused: logged; retried next run, and not counted against the cap
 		else:
-			self.checkpoint()
+			sub.status = "suspended"
+			self.checkpoint(sub)
 		self.counts["suspended"] += 1
 		return True
-
-	def _unchanged(self, sub) -> bool:
-		"""Lock the row again (a checkpoint's commit released it) and check that nobody changed it since it
-		was read: a payment that waited for the lock must never be followed by a suspension or an archive."""
-		row = frappe.db.get_value(
-			"GX Subscription", sub.name, ["status", *WATCHED], as_dict=True, for_update=True
-		)
-		return bool(row) and row.status == sub.status and all(row[f] == self.seen[f] for f in WATCHED)
 
 	def _held(self, count: str, cap: int) -> bool:
 		"""True if this run's cap is reached: the subscription waits for the next run."""
@@ -449,4 +582,9 @@ class _Run:
 		return True
 
 	def _would(self, sub, what: str):
-		audit("renewal.would", "GX Subscription", sub.name, what)
+		"""A `renewal.would` line, at most once a day per subscription (the job runs hourly)."""
+		details = f"{self.today}: would {what}"
+		if not frappe.db.exists(
+			"GX Audit Log", {"action": "renewal.would", "reference_name": sub.name, "details": details}
+		):
+			audit("renewal.would", "GX Subscription", sub.name, details)

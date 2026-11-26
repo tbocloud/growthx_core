@@ -2,7 +2,8 @@
 due and when; this module only writes and sends it.
 
 Every email names the account, the site, the plan and its price, and the date that matters, and links to the
-customer's billing page. While online payment is off (GX Billing Settings.online_payments, which mirrors the
+customer's billing page. Emails are queued (Email Queue sends them and retries delivery), so "sent" means
+queued without an error. While online payment is off (GX Billing Settings.online_payments, which mirrors the
 website's switch), it asks for a bank transfer instead of offering Pay now. The wording is a first draft
 for Sammish to approve.
 """
@@ -10,9 +11,9 @@ for Sammish to approve.
 from datetime import date
 
 import frappe
-from frappe.utils import cint
+from frappe.utils import cint, now_datetime, sha256_hash
 
-from growthx_core import accounts, direct
+from growthx_core import accounts
 from growthx_core.api.v1._core import audit, web_url
 from growthx_core.billing import payments
 
@@ -23,6 +24,7 @@ KINDS = (
 	"paid_final",
 	"first_due",
 	"suspended",
+	"canceled",
 	"trial_reminder",
 	"trial_ended",
 	"trial_archive_warning",
@@ -45,19 +47,49 @@ def send(sub, tenant, account, kind: str, stage: int | None, dates: dict) -> boo
 	subject, paragraphs = _CONTENT[kind](sub, site, what, dates)
 	if kind != "trial_archived":
 		paragraphs.append(_how_to_pay(billing))
+	key = None
 	if kind == "first_due" and not accounts.has_password(account.user):
-		link = direct.issue_password_link(account.user)
+		key = frappe.generate_hash()
+		link = web_url(f"/reset-password?key={key}")
 		paragraphs.append(
 			f'You have not set a password yet: <a href="{esc(link)}">set it here</a> to sign in'
 			" (the link works once and expires in 24 hours)."
 		)
 	paragraphs.append(f'Your billing page: <a href="{esc(billing)}">{esc(billing)}</a>')
 	html = f"<p>Hello {esc(account.account_name)},</p>" + "".join(f"<p>{p}</p>" for p in paragraphs)
-	if not direct.send_email(account.contact_email, subject, html):
+	if not _queue(account.contact_email, subject, html, sub.name):
 		return False
+	if key:
+		_store_password_key(account.user, key)  # only now: an email that failed leaves the old link working
 	where = "" if stage is None else f" (day {stage:+d})"
 	audit("renewal.email", "GX Subscription", sub.name, f"{kind}{where} to {account.contact_email}")
 	return True
+
+
+def _queue(email: str, subject: str, html: str, sub_name: str) -> bool:
+	"""Queue the email (not sent inline, so no commit happens mid-job). False if it could not be queued."""
+	try:
+		frappe.sendmail(
+			recipients=[email],
+			subject=subject,
+			message=html,
+			reference_doctype="GX Subscription",
+			reference_name=sub_name,
+			now=False,
+		)
+		return True
+	except Exception:
+		frappe.log_error(title="GrowthX: could not queue a renewal email")
+		return False
+
+
+def _store_password_key(user: str, key: str):
+	"""The same single-use key growthx_core.direct.issue_password_link stores (hashed; 24 hours)."""
+	frappe.db.set_value(
+		"User",
+		user,
+		{"reset_password_key": sha256_hash(key), "last_reset_password_key_generated_on": now_datetime()},
+	)
 
 
 def _site(tenant) -> str:
@@ -169,6 +201,16 @@ def _suspended(sub, site, what, dates):
 	)
 
 
+def _canceled(sub, site, what, dates):
+	lines = [f"As you asked, your plan for {what} ended on <b>{_day(dates['due'])}</b> and is now cancelled."]
+	if dates.get("suspend"):
+		lines.append(
+			f"Your site is suspended from <b>{_day(dates['suspend'])}</b>. Your data stays safe: if you change"
+			" your mind, pay and the site comes back."
+		)
+	return (f"Your GrowthX plan for {site} is cancelled", lines)
+
+
 def _trial_reminder(sub, site, what, dates):
 	due, pause = dates["due"], _day(dates["suspend"])
 	n = (due - dates["today"]).days
@@ -229,6 +271,7 @@ _CONTENT = {
 	"paid_final": _paid_final,
 	"first_due": _first_due,
 	"suspended": _suspended,
+	"canceled": _canceled,
 	"trial_reminder": _trial_reminder,
 	"trial_ended": _trial_ended,
 	"trial_archive_warning": _trial_archive_warning,
