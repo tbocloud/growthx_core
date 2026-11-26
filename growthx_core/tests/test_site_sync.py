@@ -263,7 +263,7 @@ class TestSitePayment(RenewalsCase):
 		self._assert_billing_redirect("shop.customer.in")
 
 	def test_archived_tenant_gets_neutral_page(self):
-		_, _, tenant = self._gx_customer("cancelled", current_period_end="2026-11-01")
+		_, _, tenant = self._gx_customer("canceled", current_period_end="2026-11-01")
 		frappe.db.set_value("GX Tenant", tenant.name, "status", "archived")
 		self._assert_neutral(site_sync.host_of(tenant.site_url))
 
