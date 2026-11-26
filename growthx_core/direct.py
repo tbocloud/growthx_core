@@ -109,20 +109,24 @@ def issue_password_link(user: str) -> str:
 	return web_url(f"/reset-password?key={key}")
 
 
-def _send(email: str, subject: str, html: str) -> bool:
+def send_email(email: str, subject: str, html: str) -> bool:
+	"""Send a billing email now. False if it could not be sent (the Error Log has the cause)."""
 	try:
 		frappe.sendmail(recipients=[email], subject=subject, message=html, now=True)
 		return True
 	except Exception:
-		# e.g. no outgoing email account: the admin sees `emailSent: false` and the Error Log has the cause.
-		frappe.log_error(title="GrowthX: could not send an ERPNext Direct email")
+		# e.g. no outgoing email account: the admin sees `emailSent: false`, the renewal job retries next run.
+		frappe.log_error(title="GrowthX: could not send a billing email")
 		return False
+
+
+_send = send_email  # the earlier name
 
 
 def send_invite(account, site: str, plan, user: str) -> bool:
 	esc = frappe.utils.escape_html
 	link = issue_password_link(user)
-	return _send(
+	return send_email(
 		account.contact_email,
 		"Pay for your ERPNext site on GrowthX",
 		f"<p>Hello {esc(account.account_name)},</p>"
@@ -149,7 +153,7 @@ def send_payment_link(account, site: str, plan, user: str, with_password: bool) 
 			f'<p>You have not set a password yet: <a href="{esc(issue_password_link(user))}">set it here</a>'
 			" (the link works once and expires in 24 hours).</p>"
 		)
-	return _send(account.contact_email, "Your GrowthX payment link", html)
+	return send_email(account.contact_email, "Your GrowthX payment link", html)
 
 
 def random_password() -> str:
