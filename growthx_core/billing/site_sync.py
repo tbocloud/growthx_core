@@ -116,7 +116,10 @@ def report_platform_sites(sites) -> dict:
 
 def _single(field: str):
 	# Straight from tabSingles: get_single_value caches in Redis, which a rolled-back write leaves stale.
-	return frappe.db.get_value("Singles", {"doctype": SETTINGS, "field": field}, "value")
+	rows = frappe.db.sql(
+		"select `value` from `tabSingles` where `doctype` = %s and `field` = %s", (SETTINGS, field)
+	)
+	return rows[0][0] if rows else None
 
 
 def _platform_list() -> list | None:
