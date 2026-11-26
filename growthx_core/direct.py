@@ -14,6 +14,7 @@ from frappe.utils import sha256_hash
 
 from growthx_core import accounts
 from growthx_core.api.v1._core import ApiError, validation_error, web_url
+from growthx_core.billing.site_sync import core_sites
 from growthx_core.provisioning import press, runner
 
 PRODUCT_PREFIX = "erpnext-direct"
@@ -37,8 +38,7 @@ def normalize_site(value) -> str:
 	host = host.rstrip(".")
 	if not HOST_RE.match(host) or host.endswith((".local", ".localhost", ".internal")):
 		raise validation_error({"site": "Enter the site's domain, like acme.example.com."})
-	own = {frappe.local.site, urlsplit(web_url()).hostname, urlsplit(frappe.utils.get_url()).hostname}
-	if host in own:
+	if host in core_sites():
 		raise validation_error({"site": "That is a GrowthX address, not a customer's site."})
 	return host
 

@@ -268,7 +268,7 @@ def _extend_trial(account, days: int) -> str:
 	sub = frappe.get_all(
 		"GX Subscription",
 		{"account": account.name, "status": "trialing"},
-		["name", "trial_ends_at"],
+		["name", "trial_ends_at", "due_date", "tenant"],
 		order_by="creation desc",
 		limit=1,
 	)
@@ -277,21 +277,30 @@ def _extend_trial(account, days: int) -> str:
 	old = sub[0].trial_ends_at
 	new = max(now_datetime(), get_datetime(old) if old else now_datetime()) + timedelta(days=days)
 	# A new end date: the renewal job reminds again before it (the reminders sent were for the old one).
-	frappe.db.set_value(
-		"GX Subscription",
-		sub[0].name,
-		{"trial_ends_at": new, "notified_stages": None, "final_warning_on": None},
-	)
-	return f"+{days} days: trial ends {iso(new)} (was {iso(old) if old else 'not set'})"
+	values = {"trial_ends_at": new, "notified_stages": None, "final_warning_on": None}
+	direct = sub[0].tenant and frappe.db.get_value("GX Tenant", sub[0].tenant, "origin") == "imported"
+	if direct and sub[0].due_date:
+		# ERPNext Direct "billing starts later": the start date (its day 0 and first period) moves as much.
+		shift = getdate(new) - getdate(old) if old else None
+		values["due_date"] = getdate(sub[0].due_date) + shift if shift is not None else getdate(new)
+	frappe.db.set_value("GX Subscription", sub[0].name, values)
+	details = f"+{days} days: trial ends {iso(new)} (was {iso(old) if old else 'not set'})"
+	if "due_date" in values:
+		details += (
+			f", billing starts {values['due_date'].isoformat()} (was {getdate(sub[0].due_date).isoformat()})"
+		)
+	return details
 
 
 @endpoint(methods=("POST",), roles=("admin",), idempotent=True)
 def record_payment():
 	"""A payment made to us directly (bank transfer) while there's no payment gateway: the customer's
 	subscription for the plan's product becomes active on that plan for one billing period, and the
-	account becomes active (a suspended customer's sites come back). The period runs from paidOn, or
-	for a renewal from the current period end if that's later. A reference already recorded on the
-	subscription is refused. A one-time (lifetime) plan has no period end and can't be paid again.
+	account becomes active (a suspended customer's sites come back). Where the period starts is
+	payments._period_start: a renewal paid early or in grace continues from the current period end, one
+	paid after a suspension starts on paidOn, a first payment starts on its due date; a period that would
+	already be over on paidOn starts on paidOn. A reference already recorded on the subscription is
+	refused. A one-time (lifetime) plan has no period end and can't be paid again.
 	A GST tax invoice, paid by a Payment Entry for the transfer, is made when GST invoicing and
 	site_config growthx_bank_account are set up (billing.manual_invoice); the audit line names it, or why
 	there is none."""
@@ -598,6 +607,13 @@ def terminate_tenant():
 		raise ApiError(409, "already_archived", "This site is already terminated.")
 	if tenant.status in ("requested", "provisioning"):
 		raise ApiError(409, "invalid_transition", "This site is still being set up. Wait for it to finish.")
+	if tenant.origin == "imported" and tenant.status == "suspended":
+		# Once archived it leaves the Press-side job's list, so nothing would ever switch the site back on.
+		raise ApiError(
+			409,
+			"site_suspended",
+			"Reactivate or give extra days first, so the site is running again before billing ends.",
+		)
 
 	details = f"{tenant.status} → archived, site {tenant.site_url or '-'}"
 	if tenant.origin == "imported":
@@ -672,9 +688,11 @@ TENANT_FIELDS = [
 @endpoint(methods=("GET",), roles=("admin",))
 def renewals():
 	"""Admin → Renewals: `expiring` (active, ending within 7 days; 30 for a yearly plan), `pastDue`,
-	`suspended` (with the day a paused trial is deleted) and `syncProblems` (ERPNext Direct sites the
-	Press-side job couldn't find or act on, or hasn't matched to a Press site yet). Sites that aren't built
-	or are archived are left out, as the job leaves them alone."""
+	`suspended` (with the day a paused trial is deleted), `syncProblems` (ERPNext Direct sites the
+	Press-side job couldn't find or act on, or hasn't matched to a Press site yet), `resumePending` (paid
+	or given extra days, but the site is still off: Press refused the resume, and the job tries again each
+	hour) and `unscheduled` (live subscriptions with no date to renew from, which the job can't follow).
+	Sites that aren't built or are archived are left out, as the job leaves them alone."""
 	job = renewal_jobs.new_job()
 	subs = frappe.get_all(
 		"GX Subscription", {"status": ("in", renewal_jobs.LIVE)}, ["*"], order_by="creation asc"
@@ -693,15 +711,29 @@ def renewals():
 		TENANT_FIELDS,
 	)
 	accounts_by_id = dict(frappe.get_all("GX Account", fields=["name", "account_name"], as_list=True))
+	suspended_accounts = set(frappe.get_all("GX Account", {"status": "suspended"}, pluck="name"))
 	plan_names = dict(frappe.get_all("GX Plan", fields=["name", "plan_name"], as_list=True))
-	lists = {"expiring": [], "pastDue": [], "suspended": [], "syncProblems": []}
+	lists = {
+		"expiring": [],
+		"pastDue": [],
+		"suspended": [],
+		"syncProblems": [],
+		"resumePending": [],
+		"unscheduled": [],
+	}
 	by_sub = {x.name: x for x in subs}
 	for sub in subs:
 		tenant = tenants.get(sub.tenant)
 		if not tenant or tenant.status in ("archived", *renewal_jobs.SITES_NOT_LIVE):
 			continue
+		if renewal_jobs.resume_pending(sub, tenant, sub.account in suspended_accounts):
+			lists["resumePending"].append(_renewal_item(sub, tenant, accounts_by_id, plan_names, job))
+			continue
 		info = renewal_jobs.renewal_info(sub, tenant, _job=job)
 		if not info:
+			if not (sub.billing_interval == "one_time" and sub.status == "active"):
+				# No period end, due date or trial end (e.g. a site billed outside Core): nothing to follow.
+				lists["unscheduled"].append(_renewal_item(sub, tenant, accounts_by_id, plan_names, job))
 			continue
 		item = _renewal_item(sub, tenant, accounts_by_id, plan_names, job)
 		stage = info["stage"]
@@ -762,6 +794,8 @@ def extend_grace():
 	if sub.status not in renewal_jobs.LIVE:
 		raise ApiError(409, "invalid_transition", "A canceled subscription has no suspension to delay.")
 	tenant = frappe.db.get_value("GX Tenant", sub.tenant, TENANT_FIELDS, as_dict=True) if sub.tenant else None
+	if tenant and tenant.status == "archived":
+		raise ApiError(409, "tenant_archived", "This site is terminated: it has no suspension to delay.")
 	restored = sub.status == "suspended" and sub.suspended_by == "billing"
 	trial = restored and bool(tenant and tenant.origin != "imported") and renewal_jobs.was_trial(sub)
 	values = {"grace_until": until}
@@ -769,13 +803,16 @@ def extend_grace():
 		values.update(
 			{
 				"status": "trialing" if trial else "past_due",
-				"suspended_at": None,
 				"suspended_by": None,
 				# set again, afresh, if the site is suspended again
 				"archive_due_on": None,
 				"archive_warning_on": None,
 			}
 		)
+		# A paid plan keeps `suspended_at`: paid now, it is a renewal after a suspension, so the new period
+		# starts on the payment day (payments._period_start). A trial has no period to continue.
+		if trial:
+			values["suspended_at"] = None
 	if restored and trial:
 		# The trial_ended email goes out again just before the second pause; the reminders stay recorded.
 		values["notified_stages"] = format_sent(parse_sent(sub.notified_stages) - {0}) or None

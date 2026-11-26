@@ -8,6 +8,7 @@ white-label leak, and the outside link makes spam filters treat GrowthX mail as 
 import frappe
 
 from growthx_core import website_content
+from growthx_core.billing.doctype.gx_billing_settings import gx_billing_settings as billing_settings
 from growthx_core.partners import program
 from growthx_core.setup import defaults
 
@@ -16,6 +17,8 @@ EMAIL_FOOTER = "TBO GrowthX · https://tbogrowthx.com"
 
 def after_install():
 	apply_settings()
+	# Renewal settings: their defaults stored (a patch does it on sites installed before them).
+	billing_settings.fill_defaults()
 
 
 def after_migrate():

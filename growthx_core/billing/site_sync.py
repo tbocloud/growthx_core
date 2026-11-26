@@ -6,7 +6,7 @@
 
 The same contract as frappe_payu's Site Billing. Core never calls Press for these sites: it lists the
 state each imported tenant should be in, and records what the job says it did. A tenant's own status is
-never changed by a report.
+never changed by a report. Core's own sites (`core_sites`) are never listed, whatever a tenant says.
 """
 
 from urllib.parse import urlsplit
@@ -15,10 +15,26 @@ import frappe
 from frappe import _
 from frappe.utils import cint, now_datetime
 
+from growthx_core.api.v1._core import web_url
+from growthx_core.billing.doctype.gx_billing_settings.gx_billing_settings import get_int
+
 SYNC_ROLE = "GrowthX Site Sync"
 ACTIONS = ("", "suspended", "reactivated", "held", "error")
 SETTINGS = "GX Billing Settings"
 NOT_ON_PLATFORM = "Not on platform"
+# Always Core's own (or the platform's), never a customer's site; site_config `growthx_core_sites` adds more.
+CORE_SITES = ("growthx-core.tbogrowthx.com", "core-test.tbogrowthx.com", "tbocloud.in")
+
+
+def core_sites() -> set[str]:
+	"""Hosts that must never be suspended for billing or added as an ERPNext Direct site: CORE_SITES, the
+	ones in site_config `growthx_core_sites` (a list, or comma-separated) and this Core's own hosts."""
+	extra = frappe.conf.get("growthx_core_sites") or []
+	if isinstance(extra, str):
+		extra = extra.split(",")
+	hosts = {*CORE_SITES, frappe.local.site, web_url(), frappe.utils.get_url()}
+	hosts.update(h for h in extra if isinstance(h, str))
+	return {host_of(h) for h in hosts if h} - {""}
 
 
 def _require_sync_role():
@@ -31,6 +47,7 @@ def _require_sync_role():
 def get_site_states() -> dict:
 	_require_sync_role()
 	settings = frappe.get_single(SETTINGS)
+	denied = core_sites()
 	tenant, sub = frappe.qb.DocType("GX Tenant"), frappe.qb.DocType("GX Subscription")
 	rows = (
 		frappe.qb.from_(tenant)
@@ -38,6 +55,7 @@ def get_site_states() -> dict:
 		.on(sub.name == tenant.subscription)
 		.select(
 			tenant.platform_site,
+			tenant.site_url,
 			tenant.status,
 			sub.name.as_("subscription"),
 			sub.status.as_("billing_status"),
@@ -52,6 +70,8 @@ def get_site_states() -> dict:
 	)
 	sites = []
 	for row in rows:
+		if row.platform_site.strip().lower().rstrip(".") in denied or host_of(row.site_url) in denied:
+			continue  # Core's own site: never the job's to suspend, whatever the tenant says
 		suspended = row.status == "suspended"
 		sites.append(
 			{
@@ -63,8 +83,11 @@ def get_site_states() -> dict:
 			}
 		)
 	return {
-		"enabled": bool(cint(settings.enabled) and cint(settings.suspend_sites)),
-		"max_suspensions_per_run": cint(settings.sync_max_suspensions_per_run) or 1,
+		# A dry run changes nothing anywhere, so the job doesn't either (Ruling 18).
+		"enabled": bool(
+			cint(settings.enabled) and cint(settings.suspend_sites) and not cint(settings.dry_run)
+		),
+		"max_suspensions_per_run": get_int(settings, "sync_max_suspensions_per_run"),
 		"sites": sites,
 	}
 
@@ -113,8 +136,12 @@ def report_platform_sites(sites) -> dict:
 	if not sites:
 		# An empty list is a glitch, not a platform with no sites: storing it would unlist every tenant.
 		return {"stored": 0, "matched": 0, "ignored": True}
-	frappe.db.set_single_value(SETTINGS, "platform_sites", frappe.as_json(sites))
-	frappe.db.set_single_value(SETTINGS, "platform_sites_at", now_datetime())
+	# Not as an edit of the settings (`modified` stays): an admin's open form can still be saved.
+	frappe.db.set_single_value(
+		SETTINGS,
+		{"platform_sites": frappe.as_json(sites), "platform_sites_at": now_datetime()},
+		update_modified=False,
+	)
 	return {"stored": len(sites), "matched": match_all()}
 
 

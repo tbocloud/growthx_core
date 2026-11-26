@@ -1,6 +1,7 @@
 """The desired-state list for the Press-side job, its reports, and platform-site matching."""
 
 import json
+from unittest.mock import patch
 
 import frappe
 from frappe.utils import add_months, nowdate
@@ -82,6 +83,33 @@ class TestSiteSync(RenewalsCase):
 		settings.save()
 		result = site_sync.get_site_states()
 		self.assertEqual((result["enabled"], result["max_suspensions_per_run"]), (False, 3))
+
+	def test_core_sites_are_never_listed(self):
+		_, by_platform = self._direct()
+		frappe.db.set_value("GX Tenant", by_platform.name, "platform_site", "core-test.tbogrowthx.com")
+		_, by_address = self._direct()
+		frappe.db.set_value(
+			"GX Tenant",
+			by_address.name,
+			{"site_url": "https://GrowthX-Core.tbogrowthx.com/app", "platform_site": "renamed.press.example"},
+		)
+		_, configured = self._direct()
+		frappe.db.set_value("GX Tenant", configured.name, "platform_site", "erp.our-own.example.com")
+		_, customer = self._direct()
+		frappe.db.set_value("GX Tenant", customer.name, "platform_site", "customer.example.com")
+		for tenant in (by_platform, by_address, configured, customer):
+			frappe.db.set_value("GX Tenant", tenant.name, "status", "suspended")
+		with patch.dict(frappe.local.conf, {"growthx_core_sites": ["ERP.our-own.example.com"]}):
+			listed = [row["site"] for row in site_sync.get_site_states()["sites"]]
+		self.assertEqual(listed, ["customer.example.com"])
+		self.assertTrue({"tbocloud.in", "growthx-core.tbogrowthx.com"} <= site_sync.core_sites())
+
+	def test_the_sync_job_is_off_during_a_dry_run(self):
+		self.assertTrue(site_sync.get_site_states()["enabled"])
+		settings = frappe.get_single("GX Billing Settings")
+		settings.dry_run = 1
+		settings.save()
+		self.assertFalse(site_sync.get_site_states()["enabled"])  # a dry run suspends nothing anywhere
 
 	def test_report_updates_tenant_sync_fields(self):
 		_, tenant = self._direct("active")
@@ -207,6 +235,17 @@ class TestSiteSync(RenewalsCase):
 
 
 class TestAddDirectSiteMatching(direct_tests.DirectCase):
+	def test_core_sites_cannot_be_added(self):
+		for site in ("core-test.tbogrowthx.com", "https://growthx-core.tbogrowthx.com/app", "tbocloud.in"):
+			status, body = self._add(site=site)
+			self.assertEqual((status, list(body["error"]["fields"])), (422, ["site"]), site)
+		with patch.dict(
+			frappe.local.conf, {"growthx_core_sites": "erp.our-own.example.com, other.example.com"}
+		):
+			status, body = self._add(site="erp.our-own.example.com")
+		self.assertEqual((status, list(body["error"]["fields"])), (422, ["site"]))
+		self.assertEqual(frappe.db.count("GX Tenant", {"product": direct_tests.PRODUCT}), 0)
+
 	def test_add_direct_site_warns_when_not_on_platform_list(self):
 		status, body = self._add()
 		self.assertNotIn("not_on_platform_list", body["warnings"])  # no list known: nothing to compare with

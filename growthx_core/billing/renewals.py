@@ -10,6 +10,17 @@ subscription along its timeline:
   (archived) 30 days later, after a warning.
 Days are calendar days in the site's time zone (Asia/Kolkata). Nothing happens unless GX Billing Settings
 is enabled; with dry_run, the job only writes `renewal.would` audit lines.
+
+Switching it on (Ruling 15):
+- **Step 1:** `enabled` on, `send_emails` on, `suspend_sites` off, `dry_run` off (or on, to only log).
+  While `suspend_sites` is off the job sends the reminders before day 0 and the day-0 email, but no
+  warning after day 0 and nothing that names a suspension or pause day; no final warning is recorded,
+  a plan cancelled at period end is left as it is, and the customer's renewal info has no `suspendsAt`.
+  `renewal.would` lines say what would be suspended once it is on.
+- **Step 2:** `suspend_sites` on. The warnings then run from that day, so every final notice is fresh
+  and no site is suspended sooner than two days after it.
+The first live run (enabled, dry_run off) records `started_on`: a subscription made before it gets its
+first day 0 no sooner than 7 days later, so every existing customer gets the whole timeline.
 """
 
 from datetime import date, timedelta
@@ -19,6 +30,7 @@ from frappe.utils import add_days, cint, getdate, now_datetime
 
 from growthx_core.api.v1._core import audit, iso
 from growthx_core.billing import renewal_emails
+from growthx_core.billing.doctype.gx_billing_settings.gx_billing_settings import get_int, int_setting
 from growthx_core.billing.doctype.gx_subscription.gx_subscription import sync_account_status
 from growthx_core.billing.renewal_schedule import (
 	final_stage,
@@ -32,6 +44,10 @@ from growthx_core.billing.renewal_schedule import (
 from growthx_core.provisioning import runner
 
 LIVE = ("trialing", "active", "past_due", "suspended")
+# Live and not suspended: a subscription whose site should be running.
+RUNNING = ("trialing", "active", "past_due")
+# A subscription made before the job's first live run gets its first day 0 no sooner than this.
+FIRST_NOTICE_DAYS = 7
 # Sites the job leaves alone: not built yet, or their build failed (an admin retries or archives those).
 SITES_NOT_LIVE = ("requested", "provisioning", "failed")
 # What a day list falls back to when its setting is blank or has no valid day in it.
@@ -58,10 +74,11 @@ def _date(value) -> date | None:
 	return getdate(value) if value else None
 
 
-def resume_subscription_site(sub_name: str) -> None:
+def resume_subscription_site(sub_name: str, why: str = "after payment") -> None:
 	"""Bring the subscription's site back after a payment. A GrowthX (provisioned) site is resumed on
 	Press; an ERPNext Direct (imported) site is the customer's own and only changes status here. If
-	Press refuses, the error is logged and the tenant stays suspended."""
+	Press refuses, the error is logged and the tenant stays suspended (the hourly job tries again:
+	`resume_pending`)."""
 	tenant_name = frappe.db.get_value("GX Subscription", sub_name, "tenant")
 	if not tenant_name:
 		return
@@ -77,7 +94,13 @@ def resume_subscription_site(sub_name: str) -> None:
 			frappe.log_error(title=f"GrowthX: resume_site failed for {tenant.name}")
 			return
 	frappe.db.set_value("GX Tenant", tenant.name, "status", "ready")
-	audit("renewal.resume", "GX Subscription", sub_name, f"site {tenant.name} resumed after payment")
+	audit("renewal.resume", "GX Subscription", sub_name, f"site {tenant.name} resumed {why}")
+
+
+def resume_pending(sub, tenant, account_suspended: bool) -> bool:
+	"""The site is off although the subscription is live and not suspended (paid, or given extra days)
+	and no admin suspended the whole account: Press refused to resume it."""
+	return bool(tenant) and tenant.status == "suspended" and sub.status in RUNNING and not account_suspended
 
 
 def never_paid(account: str) -> bool:
@@ -112,8 +135,7 @@ def suspend_subscription(sub_name: str, by: str = "billing") -> bool:
 	try:
 		values = {"status": "suspended", "suspended_at": _now(), "suspended_by": by}
 		if not imported and sub.status == "trialing" and never_paid(sub.account):
-			days = cint(frappe.db.get_single_value("GX Billing Settings", "trial_archive_after_days"))
-			values["archive_due_on"] = add_days(_today(), days)
+			values["archive_due_on"] = add_days(_today(), int_setting("trial_archive_after_days"))
 		frappe.db.set_value("GX Tenant", tenant.name, "status", "suspended")
 		frappe.db.set_value("GX Subscription", sub_name, values)
 		sync_account_status(sub.account)
@@ -179,6 +201,15 @@ def run() -> dict:
 	job = _Run(settings)
 	if not cint(settings.enabled):
 		return job.counts
+	if not job.started_on:
+		if job.dry:
+			job.first_day = job.today  # a dry run shows what going live today would do
+		else:
+			# The first live run: subscriptions made before today get at least FIRST_NOTICE_DAYS.
+			job.started_on = job.first_day = job.today
+			frappe.db.set_single_value("GX Billing Settings", "started_on", job.today, update_modified=False)
+			audit("renewal.started", details=f"renewals live from {job.today}")
+			frappe.db.commit()
 	for name in frappe.get_all(
 		"GX Subscription", filters={"status": ("in", LIVE)}, order_by="creation asc", pluck="name"
 	):
@@ -216,10 +247,13 @@ class _Run:
 		self.warning_days = _days(settings, "grace_warning_days")
 		self.trial_days = _days(settings, "trial_reminder_days")
 		self.final = final_stage(self.warning_days)
-		self.suspend_after = cint(settings.suspend_after_days)
-		self.archive_warning_days = cint(settings.trial_archive_warning_days)
-		self.max_suspensions = cint(settings.max_suspensions_per_run)
-		self.max_archives = cint(settings.max_archives_per_run)
+		self.suspend_after = get_int(settings, "suspend_after_days")
+		self.archive_warning_days = get_int(settings, "trial_archive_warning_days")
+		self.max_suspensions = get_int(settings, "max_suspensions_per_run")
+		self.max_archives = get_int(settings, "max_archives_per_run")
+		self.started_on = _date(settings.get("started_on"))
+		# Subscriptions made before this day get their first day 0 FIRST_NOTICE_DAYS after it, at the earliest.
+		self.first_day = self.started_on
 		self.counts = {"emails": 0, "past_due": 0, "suspended": 0, "archived": 0, "held": 0}
 		self.sub_name = self.account_name = None
 		self.seen = {}  # the subscription's WATCHED fields as first read under the lock
@@ -268,6 +302,18 @@ class _Run:
 		row = self._lock()
 		return bool(row) and row.status == sub.status and all(row[f] == self.seen[f] for f in WATCHED)
 
+	def start(self, sub, tenant=None) -> date | None:
+		"""Day 0 (`day0`), for a subscription made before the first live run no sooner than
+		FIRST_NOTICE_DAYS after it: every existing customer gets the whole timeline from switch-on."""
+		start = day0(sub, tenant)
+		first = self.first_day
+		if start is None or not first or sub.status == "suspended":
+			return start
+		created = _date(sub.get("creation"))
+		if created and created < first:
+			return max(start, first + timedelta(days=FIRST_NOTICE_DAYS))
+		return start
+
 	def _process(self, name: str):
 		self.account_name = frappe.db.get_value("GX Subscription", name, "account")
 		if not self.account_name:
@@ -287,7 +333,10 @@ class _Run:
 			as_dict=True,
 		)
 		account = frappe.db.get_value(
-			"GX Account", sub.account, ["name", "account_name", "contact_email", "user"], as_dict=True
+			"GX Account",
+			sub.account,
+			["name", "account_name", "contact_email", "user", "status"],
+			as_dict=True,
 		)
 		if not tenant or not account:
 			return
@@ -296,12 +345,14 @@ class _Run:
 			return
 		if tenant.status in SITES_NOT_LIVE:
 			return
+		if resume_pending(sub, tenant, account.status == "suspended") and not self._resume(sub, tenant):
+			return
 		if tenant.status == "suspended" and sub.suspended_by != "billing":
 			return  # an admin's suspension (customer_action suspend, account-wide): the admin lifts it
 		if sub.status == "suspended":
 			self._paused_trial(sub, tenant, account)
 			return
-		start = day0(sub, tenant)
+		start = self.start(sub, tenant)
 		if start is None:
 			return
 		offset = (self.today - start).days
@@ -321,15 +372,23 @@ class _Run:
 		stages = paid_stages(
 			self.reminder_days, self.warning_days, self.yearly_days, sub.billing_interval == "year"
 		)
+		if not self.suspend_sites:
+			# No warnings after day 0 until suspension is live: they would name a day nothing happens.
+			stages = [s for s in stages if s <= 0]
 		if self.send_emails:
 			stage = stage_to_send(stages, offset, parse_sent(sub.notified_stages))
-			if stage is not None:
+			kind = stage is not None and self._paid_kind(sub, stage)
+			if kind == "first_due" and _date(sub.get("creation")) == self.today:
+				# Added today: the invite already asked them to pay, and this email would replace its
+				# set-password link (Ruling 17). Counted as sent.
+				self._record(sub, [s for s in stages if s <= stage])
+			elif stage is not None:
 				final = stage == self.final
 				dates = {
 					"due": start,
 					"suspend": self._suspends_on(sub, start, self.today if final else None),
 				}
-				if self._email(sub, tenant, account, self._paid_kind(sub, stage), stage, dates):
+				if self._email(sub, tenant, account, kind, stage, dates):
 					self._record(sub, [s for s in stages if s <= stage], final_warning=final)
 		if offset >= 0 and sub.status in ("active", "trialing"):
 			self._past_due(sub, f"day 0 was {start}")
@@ -339,9 +398,13 @@ class _Run:
 			start, self.suspend_after, self.final, _date(sub.final_warning_on), _date(sub.grace_until)
 		)
 		if on is None:
-			return  # never suspended before the final warning has gone out
+			# Never suspended before the final warning has gone out. With suspend_sites off: the day it
+			# would be if suspension went live today (a fresh final notice, then the notice period).
+			if not self.suspend_sites:
+				self._would(sub, f"suspend on {self._planned(sub, start, None)} (suspend_sites is off)")
+			return
 		if self.today < on:
-			if self.dry:
+			if self.dry or not self.suspend_sites:
 				self._would(sub, f"suspend on {on}")
 			return
 		if self._may_suspend(sub, on, "unpaid after the final warning") and self._suspend(
@@ -364,9 +427,14 @@ class _Run:
 			return "paid_expired" if sub.current_period_end else "first_due"  # never paid: the first payment
 		return "paid_final" if stage == self.final else "paid_warning"
 
-	def _suspends_on(self, sub, start: date, final_warning_on: date | None) -> date:
-		"""The suspension day to tell the customer: the real one once the final warning is out, else the one
-		it will be if the final warning goes on its day (or today, if that is already past)."""
+	def _suspends_on(self, sub, start: date, final_warning_on: date | None) -> date | None:
+		"""The suspension day to tell the customer (`_planned`), or None while suspend_sites is off: no day
+		is promised until suspension is live."""
+		return self._planned(sub, start, final_warning_on) if self.suspend_sites else None
+
+	def _planned(self, sub, start: date, final_warning_on: date | None) -> date:
+		"""The suspension day: the real one once the final warning is out, else the one it will be if the
+		final warning goes on its day (or today, if that is already past)."""
 		warned = _date(sub.final_warning_on)
 		sent = final_warning_on or (warned if warned and warned >= start else None)  # (an older one is stale)
 		planned = max(self.today, start + timedelta(days=self.final))
@@ -374,27 +442,25 @@ class _Run:
 
 	def _cancel_at_period_end(self, sub, tenant, account, start: date):
 		"""Cancelled at period end (Ruling 5): on day 0 one notice, status `canceled`, and the site suspended
-		only if suspend_sites is on and the notice went out. Never archived."""
+		if the notice went out. Never archived. While suspend_sites is off nothing changes (Ruling 15): the
+		notice, the cancel and the suspension go together once it is on."""
+		reason = "cancelled at period end"
+		if not self.suspend_sites:
+			self._would(sub, f"cancel and suspend ({reason} on {start}; suspend_sites is off)")
+			return
 		notified = 0 in parse_sent(sub.notified_stages)
-		if (
-			self.suspend_sites
-			and (notified or self.send_emails)
-			and self._held("suspended", self.max_suspensions)
-		):
+		if (notified or self.send_emails) and self._held("suspended", self.max_suspensions):
 			return  # the cancel waits for the suspension, next run
 		if self.send_emails and not notified:
-			dates = {"due": start, "suspend": self.today if self.suspend_sites else None}
-			if not self._email(sub, tenant, account, "canceled", 0, dates):
+			if not self._email(sub, tenant, account, "canceled", 0, {"due": start, "suspend": self.today}):
 				return  # nothing changes until the notice is out: retried next run
 			self._record(sub, [0])
 			notified = True
-		reason = "cancelled at period end"
-		if self.suspend_sites and notified:
+		if notified:
 			if not self._suspend(sub, self.today, reason):
 				return  # Press refused: still active, retried next run (the notice is not sent again)
 		else:
-			why = "suspend_sites is off" if notified else "no notice was sent"
-			self._would(sub, f"suspend on {self.today} ({reason}; {why})")
+			self._would(sub, f"suspend on {self.today} ({reason}; no notice was sent)")
 		self._set_canceled(sub)
 
 	def _set_canceled(self, sub):
@@ -416,22 +482,34 @@ class _Run:
 		last = reminders[-1]
 		# The last reminder is never sent before its day: an earlier one belongs to an earlier trial end.
 		self._drop_stale_warnings(sub, start + timedelta(days=last))
+		sent = parse_sent(sub.notified_stages)
+		if self.suspend_sites and not sub.final_warning_on:
+			# The last reminder went while suspend_sites was off, without a pause day: it goes again with one.
+			sent.discard(last)
+		planned = max(self.today, start + timedelta(days=last))
 		if self.send_emails:
-			stage = stage_to_send(reminders, offset, parse_sent(sub.notified_stages))
+			stage = stage_to_send(reminders, offset, sent)
 			if stage is not None:
-				warned = self.today if stage == last else _date(sub.final_warning_on)
-				planned = max(self.today, start + timedelta(days=last))
-				dates = {"due": start, "suspend": self._trial_pause(sub, start, warned or planned)}
-				if self._email(sub, tenant, account, "trial_reminder", stage, dates):
-					self._record(sub, [s for s in reminders if s <= stage], final_warning=stage == last)
+				# The last reminder is the final warning only once it can name the pause day (suspend_sites).
+				final = stage == last and self.suspend_sites
+				warned = self.today if final else _date(sub.final_warning_on)
+				pause = self._trial_pause(sub, start, warned or planned) if self.suspend_sites else None
+				if self._email(
+					sub, tenant, account, "trial_reminder", stage, {"due": start, "suspend": pause}
+				):
+					self._record(sub, [s for s in reminders if s <= stage], final_warning=final)
 		# Paused from the day after the trial's last day, never less than a day after the last reminder, and
 		# never before an admin's extra days (grace_until) run out.
 		warned = _date(sub.final_warning_on)
 		if not warned:
+			if not self.suspend_sites and offset >= last:
+				self._would(
+					sub, f"suspend on {self._trial_pause(sub, start, planned)} (suspend_sites is off)"
+				)
 			return
 		on = self._trial_pause(sub, start, warned)
 		if self.today < on:
-			if self.dry:
+			if self.dry or not self.suspend_sites:
 				self._would(sub, f"suspend on {on}")
 			return
 		if not self._may_suspend(sub, on, "trial ended"):
@@ -501,10 +579,11 @@ class _Run:
 	def archive_on(self, sub, tenant) -> date | None:
 		"""The day a paused trial's site will be deleted: no sooner than `archive_due_on` and the full warning
 		period after the deletion warning (or, if it isn't out yet, after today). None where the job never
-		archives (not a never-paid GrowthX trial the job paused)."""
+		archives (not a never-paid GrowthX trial the job paused), and while suspend_sites is off."""
 		due = _date(sub.archive_due_on)
 		if (
-			sub.suspended_by != "billing"
+			not self.suspend_sites
+			or sub.suspended_by != "billing"
 			or not due
 			or (tenant and tenant.origin == "imported")
 			or cint(sub.cancel_at_period_end)
@@ -533,6 +612,19 @@ class _Run:
 				self._email(sub, tenant, account, "trial_archived", None, {"due": ended})
 
 	# ------------------------------------------------------------ actions (dry_run: audit lines only)
+
+	def _resume(self, sub, tenant) -> bool:
+		"""The site is still off although the subscription is paid (`resume_pending`): Press refused the
+		resume during the payment. Try again (Ruling 13); True once it is back."""
+		if self.dry:
+			self._would(sub, f"resume {tenant.name} (live subscription, site still suspended)")
+			return False
+		resume_subscription_site(sub.name, "by the renewal job (Press had refused it)")
+		if frappe.db.get_value("GX Tenant", tenant.name, "status") == "suspended":
+			return False  # refused again (logged): tried again next run
+		tenant.status = "ready"
+		self.checkpoint(sub)
+		return True
 
 	def _drop_stale_warnings(self, sub, earliest: date):
 		"""A final warning dated before it could have been sent belongs to an earlier timeline (an admin
@@ -635,7 +727,9 @@ def renewal_info(sub, tenant=None, today: date | None = None, _job: _Run | None 
 	`stage`: paid, due_soon, first_due, expired, suspended, trial, trial_ended. `daysLeft`: whole days to the
 	next deadline (the end for paid and trial, the suspension day once expired, the deletion day for a paused
 	trial; 0 when there is none). `expiresAt`, `suspendsAt`, `archivesAt`: calendar days (IST) as ISO dates or
-	None. `canPay` is False only in `paid` (outside the reminder window); `payInAdvance` is True there."""
+	None; `suspendsAt` and `archivesAt` are None while suspend_sites is off. `canPay` is False only in `paid`
+	(outside the reminder window); `payInAdvance` is True there. A suspended subscription with no dates at
+	all is still `suspended` (with no dates)."""
 	if sub.status not in LIVE or (sub.billing_interval == "one_time" and sub.status == "active"):
 		return None
 	job = _job or new_job()
@@ -643,41 +737,42 @@ def renewal_info(sub, tenant=None, today: date | None = None, _job: _Run | None 
 		job.today = today
 	if tenant is None and sub.tenant:
 		tenant = frappe.db.get_value("GX Tenant", sub.tenant, ["name", "status", "origin"], as_dict=True)
-	start = day0(sub, tenant)
-	if start is None:
-		return None
+	start = job.start(sub, tenant)
 	imported = bool(tenant and tenant.origin == "imported")
 	paused = sub.status == "suspended" or bool(tenant and tenant.status == "suspended")
+	if start is None and not paused:
+		return None
 	cancelled = bool(cint(sub.cancel_at_period_end))
-	offset = (job.today - start).days
 	archives = suspends = None
 	can_pay, advance = True, False
 	if paused:
+		# (start is None only for a suspended subscription made before due dates were stored)
 		stage, days = "suspended", 0
-		if not imported and was_trial(sub):
+		if start and not imported and was_trial(sub):
 			stage = "trial_ended"
 			archives = job.archive_on(sub, tenant)
 			days = max((archives - job.today).days, 0) if archives else 0
 	elif sub.status == "trialing" and not imported:
+		offset = (job.today - start).days
 		reminders = sorted(-d for d in job.trial_days)
 		warned = _date(sub.final_warning_on)
 		planned = max(job.today, start + timedelta(days=reminders[-1]))
-		suspends = job._trial_pause(sub, start, warned or planned)
+		if job.suspend_sites:
+			suspends = job._trial_pause(sub, start, warned or planned)
 		stage = "trial" if offset <= 0 else "trial_ended"
-		days = -offset if offset <= 0 else max((suspends - job.today).days, 0)
-	elif offset < 0:
-		yearly = sub.billing_interval == "year"
-		window = max(job.reminder_days + (job.yearly_days if yearly else []))
-		stage = "due_soon" if -offset <= window else "paid"
+		days = -offset if offset <= 0 else _days_to(suspends, job.today)
+	elif job.today < start:
+		# Inside the reminder window (7 days; a yearly plan's 30-day reminder is an email only), or paid up.
+		offset = (job.today - start).days
+		stage = "due_soon" if -offset <= max(job.reminder_days) else "paid"
 		days, can_pay, advance = -offset, stage != "paid", stage == "paid"
 		if stage == "due_soon" and not cancelled:
 			suspends = job._suspends_on(sub, start, None)
 	else:
 		stage = "first_due" if not sub.current_period_end else "expired"
-		days = 0
 		if not cancelled:
 			suspends = job._suspends_on(sub, start, None)
-			days = max((suspends - job.today).days, 0)
+		days = _days_to(suspends, job.today)
 	if cancelled and not paused:
 		# Cancelled at period end: no grace; the job suspends the site on day 0 (if suspend_sites is on).
 		suspends = start if job.suspend_sites else None
@@ -690,3 +785,7 @@ def renewal_info(sub, tenant=None, today: date | None = None, _job: _Run | None 
 		"canPay": can_pay,
 		"payInAdvance": advance,
 	}
+
+
+def _days_to(day: date | None, today: date) -> int:
+	return max((day - today).days, 0) if day else 0
