@@ -41,6 +41,7 @@ from growthx_core.api.v1._core import (
 from growthx_core.billing import manual_invoice, payments, payu
 from growthx_core.billing import renewals as renewal_jobs
 from growthx_core.billing.payments import set_customer_status as _set_customer_status
+from growthx_core.billing.renewal_schedule import format_sent, parse_sent
 from growthx_core.partners import commissions as commission_ops
 from growthx_core.provisioning import press, runner
 from growthx_core.setup.defaults import default_link
@@ -746,7 +747,8 @@ def extend_grace():
 	"""Give extra days: the subscription is not suspended before `until` (`grace_until`; up to 60 days
 	ahead). If the job suspended it for non-payment, it is brought back (a trial is `trialing` again, a
 	paid plan `past_due`) and its site is resumed, so it runs until `until`. The reminders and warnings
-	already sent stay recorded: the customer was warned, and the suspension email goes out at the end.
+	already sent stay recorded: the customer was warned, and the suspension email goes out at the end (a trial's trial_ended email
+	goes out again, since it is the notice of the second pause).
 	Returns the subscription's Renewals row."""
 	data = body()
 	sub_id = get_str(data, "id", required=True)
@@ -761,9 +763,9 @@ def extend_grace():
 		raise ApiError(409, "invalid_transition", "A canceled subscription has no suspension to delay.")
 	tenant = frappe.db.get_value("GX Tenant", sub.tenant, TENANT_FIELDS, as_dict=True) if sub.tenant else None
 	restored = sub.status == "suspended" and sub.suspended_by == "billing"
+	trial = restored and bool(tenant and tenant.origin != "imported") and renewal_jobs.was_trial(sub)
 	values = {"grace_until": until}
 	if restored:
-		trial = bool(tenant and tenant.origin != "imported") and renewal_jobs.was_trial(sub)
 		values.update(
 			{
 				"status": "trialing" if trial else "past_due",
@@ -774,6 +776,9 @@ def extend_grace():
 				"archive_warning_on": None,
 			}
 		)
+	if restored and trial:
+		# The trial_ended email goes out again just before the second pause; the reminders stay recorded.
+		values["notified_stages"] = format_sent(parse_sent(sub.notified_stages) - {0}) or None
 	sub.update(values)
 	sub.save(ignore_permissions=True)  # on_update keeps the account's status in step
 	if restored:

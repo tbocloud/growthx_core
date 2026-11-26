@@ -1078,6 +1078,28 @@ class TestRenewalInfo(RenewalsCase):
 		_, sub, tenant = self._direct_customer("trialing", trial_ends_at="2026-12-29")
 		self._expect(self._info(sub), "due_soon", 3, "2026-12-29", suspends="2027-01-05")
 
+	def test_renewal_info_cancelled_plan_is_suspended_on_day_zero(self):
+		# The job suspends a plan cancelled at period end on day 0, with no grace
+		_, sub, _t = self._gx_customer("active", current_period_end="2026-12-29")
+		frappe.db.set_value("GX Subscription", sub.name, "cancel_at_period_end", 1)
+		sub.reload()
+		self._expect(self._info(sub), "due_soon", 3, "2026-12-29", suspends="2026-12-29")
+		_, sub, _t = self._gx_customer("active", current_period_end="2027-01-20")
+		frappe.db.set_value("GX Subscription", sub.name, "cancel_at_period_end", 1)
+		sub.reload()
+		self._expect(
+			self._info(sub), "paid", 25, "2027-01-20", suspends="2027-01-20", can_pay=False, advance=True
+		)
+		_, sub, _t = self._gx_customer("past_due", current_period_end="2026-12-24")
+		frappe.db.set_value("GX Subscription", sub.name, "cancel_at_period_end", 1)
+		sub.reload()
+		self._expect(self._info(sub), "expired", 0, "2026-12-24", suspends="2026-12-24")
+		# with suspend_sites off nothing suspends it
+		settings = frappe.get_single("GX Billing Settings")
+		settings.suspend_sites = 0
+		settings.save()
+		self._expect(self._info(sub), "expired", 0, "2026-12-24")
+
 	def test_renewal_info_is_none_where_nothing_renews(self):
 		_, sub, _t = self._gx_customer("active", current_period_end="2027-01-20")
 		frappe.db.set_value("GX Subscription", sub.name, "billing_interval", "one_time")
@@ -1104,7 +1126,20 @@ class TestRenewalAdminApi(RenewalsCase):
 			{"live": renewals.LIVE},
 		)
 
+		self.sent = []  # (subscription, kind, stage) of every email that went out
+		real_send = renewal_emails.send
+
+		def spy(sub, tenant, account, kind, stage, dates):
+			ok = real_send(sub, tenant, account, kind, stage, dates)
+			if ok:
+				self.sent.append((sub.name, kind, stage))
+			return ok
+
+		self.send_patch = patch.object(renewal_emails, "send", side_effect=spy)
+		self.send_patch.start()
+
 	def tearDown(self):
+		self.send_patch.stop()
 		self.commit.stop()
 		super().tearDown()
 
@@ -1164,8 +1199,10 @@ class TestRenewalAdminApi(RenewalsCase):
 		self.assertEqual(
 			self.press.calls.count(("suspend_site", tenant.press_site_id)), 0, "suspended before the new date"
 		)
+		self.assertEqual(self.sent, [], "no reminder repeats before the new date")
 		self._at("2027-01-05 10:00:00")
 		self.assertEqual(self._row(sub).status, "suspended")
+		self.assertEqual(self.sent, [(sub.name, "suspended", None)])
 		self.assertEqual(frappe.db.get_value("GX Tenant", tenant.name, "status"), "suspended")
 
 	def test_extend_grace_on_a_paused_trial_restores_the_trial_and_is_kept(self):
@@ -1187,10 +1224,14 @@ class TestRenewalAdminApi(RenewalsCase):
 		self.assertFalse(row.archive_due_on or row.archive_warning_on or row.suspended_by)
 		self.assertEqual(frappe.db.get_value("GX Tenant", tenant.name, "status"), "ready")
 		self.assertEqual((body["stage"], body["suspendsAt"]), ("trial_ended", iso("2026-12-30")))
+		self.assertEqual(
+			self._row(sub).notified_stages, "-3,-1"
+		)  # the reminders stay; only trial_ended is due
 		self._at("2026-12-29 10:00:00")
-		self.assertEqual(self._row(sub).status, "trialing")
+		self.assertEqual((self._row(sub).status, self.sent), ("trialing", []))
 		self._at("2026-12-30 10:00:00")
 		self.assertEqual(self._row(sub).status, "suspended")
+		self.assertEqual(self.sent, [(sub.name, "trial_ended", 0)])
 
 	def test_extend_grace_on_a_running_subscription_only_moves_the_date(self):
 		_, sub, tenant = self._gx_customer("past_due", current_period_end="2026-12-24")

@@ -678,6 +678,9 @@ def renewal_info(sub, tenant=None, today: date | None = None, _job: _Run | None 
 		if not cancelled:
 			suspends = job._suspends_on(sub, start, None)
 			days = max((suspends - job.today).days, 0)
+	if cancelled and not paused:
+		# Cancelled at period end: no grace; the job suspends the site on day 0 (if suspend_sites is on).
+		suspends = start if job.suspend_sites else None
 	return {
 		"stage": stage,
 		"daysLeft": days,

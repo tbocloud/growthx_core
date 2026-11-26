@@ -3904,7 +3904,7 @@ paths:
         Moves a subscription's suspension later: it isn't suspended before `until` (a day after today, at most
         60 days ahead). If the renewal job suspended it for non-payment, it comes back (a trial is `trialing`
         again, a paid plan `past_due`) and its site is resumed on Press. Reminders and warnings already sent
-        stay recorded, so the customer is not warned again; the suspension email goes out at the end. A site an
+        stay recorded, so the customer is not warned again; the suspension email goes out at the end (for a trial, the trial-ended email is sent again just before the second pause). A site an
         admin suspended stays suspended: use Reactivate. Audit-logged as `renewal.extend_grace`.
       operationId: adminExtendGrace
       x-phase: 2
@@ -5494,7 +5494,7 @@ components:
           type: integer
           description: Whole days to the next deadline, never negative. The end (`paid`, `due_soon`, `trial`), the suspension day (`first_due`, `expired`, `trial_ended` before the pause), the deletion day (`trial_ended` once paused), else 0.
         expiresAt: { type: string, format: date-time, nullable: true, description: "The renewal date (day 0), or the last day of a trial" }
-        suspendsAt: { type: string, format: date-time, nullable: true, description: "When the site will be suspended (in `due_soon`, the day it would be if the plan isn't renewed); null once suspended or when nothing will suspend it" }
+        suspendsAt: { type: string, format: date-time, nullable: true, description: "When the site will be suspended (in `due_soon`, the day it would be if the plan isn't renewed; for a plan cancelled at period end, its end day); null once suspended or when nothing will suspend it" }
         archivesAt: { type: string, format: date-time, nullable: true, description: "When a paused never-paid trial's site will be deleted; otherwise null" }
         canPay: { type: boolean, description: "False only in `paid`" }
         payInAdvance: { type: boolean, description: "True in `paid`; offer a small \"Pay in advance\" link" }
