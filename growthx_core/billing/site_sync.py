@@ -18,6 +18,7 @@ from frappe.utils import cint, now_datetime
 SYNC_ROLE = "GrowthX Site Sync"
 ACTIONS = ("", "suspended", "reactivated", "held", "error")
 SETTINGS = "GX Billing Settings"
+NOT_ON_PLATFORM = "Not on platform"
 
 
 def _require_sync_role():
@@ -109,6 +110,9 @@ def report_platform_sites(sites) -> dict:
 	"""Every non-archived site the platform hosts, so tenants can be matched to it."""
 	_require_sync_role()
 	sites = [row for row in (frappe.parse_json(sites) or []) if isinstance(row, dict) and row.get("site")]
+	if not sites:
+		# An empty list is a glitch, not a platform with no sites: storing it would unlist every tenant.
+		return {"stored": 0, "matched": 0, "ignored": True}
 	frappe.db.set_single_value(SETTINGS, "platform_sites", frappe.as_json(sites))
 	frappe.db.set_single_value(SETTINGS, "platform_sites_at", now_datetime())
 	return {"stored": len(sites), "matched": match_all()}
@@ -178,20 +182,39 @@ def host_of(site_url: str | None) -> str:
 
 
 def match_all() -> int:
-	"""Set `platform_site` on every imported tenant from its site address; returns how many matched."""
+	"""Set `platform_site` on every imported tenant from its site address; returns how many matched.
+	A suspended tenant keeps its `platform_site` even when the list no longer has it (it must stay in
+	the states list to be restored once paid); any other tenant no longer found is marked
+	"Not on platform" for the admin's sync problems."""
 	rows = _platform_list()
 	if rows is None:
 		return 0
 	index = _index(rows)
 	matched = 0
-	for name, site_url, current in frappe.get_all(
+	now = now_datetime()
+	for name, site_url, current, status, sync_status in frappe.get_all(
 		"GX Tenant",
 		filters={"origin": "imported"},
-		fields=["name", "site_url", "platform_site"],
+		fields=["name", "site_url", "platform_site", "status", "sync_status"],
 		as_list=True,
 	):
 		site = _lookup(index, host_of(site_url))
-		matched += bool(site)
-		if (site or None) != (current or None):
-			frappe.db.set_value("GX Tenant", name, "platform_site", site, update_modified=False)
+		if site:
+			matched += 1
+			values = {}
+			if site != current:
+				values["platform_site"] = site
+			if sync_status == NOT_ON_PLATFORM:
+				values.update({"sync_status": None, "sync_message": None})
+		elif status == "suspended" or status == "archived" or not current:
+			continue
+		else:
+			values = {
+				"platform_site": None,
+				"sync_status": NOT_ON_PLATFORM,
+				"sync_message": "This site is no longer on the platform's list of sites.",
+				"sync_checked_at": now,
+			}
+		if values:
+			frappe.db.set_value("GX Tenant", name, values, update_modified=False)
 	return matched

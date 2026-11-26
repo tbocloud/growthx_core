@@ -140,6 +140,42 @@ class TestSiteSync(RenewalsCase):
 		self.assertIsNone(site_sync.match_platform_site("customer.com"))  # never partial
 		self.assertIsNone(site_sync.match_platform_site("x.erp.customer.com"))
 
+	def test_an_empty_list_is_ignored(self):
+		_, tenant = self._direct()
+		host = self._on_platform(tenant)
+		out = site_sync.report_platform_sites("[]")
+		self.assertEqual(out, {"stored": 0, "matched": 0, "ignored": True})
+		self.assertEqual(site_sync.match_platform_site(host), host)
+		tenant.reload()
+		self.assertEqual(tenant.platform_site, host)
+		self.assertIn(host, self._states())
+
+	def test_a_shrunk_list_keeps_a_suspended_tenant_listed(self):
+		sub, tenant = self._direct()
+		host = self._on_platform(tenant)
+		renewals.suspend_subscription(sub.name)
+		_, other = self._direct()
+		site_sync.report_platform_sites(_platform({"site": site_sync.host_of(other.site_url)}))
+		tenant.reload()
+		self.assertEqual((tenant.status, tenant.platform_site), ("suspended", host))
+		self.assertFalse(tenant.sync_status)
+		self.assertEqual(self._states()[host]["desired_state"], "Suspended")
+
+	def test_a_shrunk_list_marks_a_ready_tenant_not_on_platform(self):
+		_, tenant = self._direct()
+		_, other = self._direct()
+		host = self._on_platform(tenant)
+		other_host = site_sync.host_of(other.site_url)
+		site_sync.report_platform_sites(_platform({"site": other_host}))
+		tenant.reload()
+		self.assertEqual((tenant.platform_site, tenant.sync_status), (None, "Not on platform"))
+		self.assertTrue(tenant.sync_message)
+		self.assertNotIn(host, self._states())
+		# it comes back with the list: the mark is lifted
+		site_sync.report_platform_sites(_platform({"site": other_host}, {"site": host}))
+		tenant.reload()
+		self.assertEqual((tenant.platform_site, tenant.sync_status), (host, None))
+
 	def test_role_required(self):
 		self.assertEqual(
 			frappe.get_all("Role", filters={"name": site_sync.SYNC_ROLE}, pluck="name"), [site_sync.SYNC_ROLE]

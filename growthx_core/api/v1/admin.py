@@ -632,7 +632,7 @@ def terminate_tenant():
 
 MAX_GRACE_DAYS = 60
 # Sync states (Press-side job's report) that need an admin: the site wasn't found, was held back, or failed.
-SYNC_PROBLEMS = ("Not found", "held", "error")
+SYNC_PROBLEMS = ("Not found", "Not on platform", "held", "error")
 
 
 def _renewal_item(sub, tenant, accounts_by_id: dict, plan_names: dict, job) -> dict:
