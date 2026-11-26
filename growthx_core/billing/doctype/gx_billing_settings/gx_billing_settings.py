@@ -20,6 +20,8 @@ from growthx_core.billing.renewal_schedule import parse_days
 
 DOCTYPE = "GX Billing Settings"
 DAY_LISTS = ("paid_reminder_days", "yearly_extra_reminder_days", "grace_warning_days", "trial_reminder_days")
+# The Press-side job's platform site list (site_sync.report_platform_sites).
+JOB_FIELDS = ("platform_sites", "platform_sites_at")
 # Numbers that must be at least 1 (suspend_after_days has its own rule).
 AT_LEAST_ONE = (
 	"trial_archive_after_days",
@@ -32,7 +34,9 @@ AT_LEAST_ONE = (
 
 class GXBillingSettings(Document):
 	def validate(self):
-		# Set by the job, never by hand: a form opened before the first live run must not clear it.
+		# Written by the jobs, never by hand: a form opened before they wrote must not put its stale copy back.
+		for field in JOB_FIELDS:
+			self.set(field, frappe.db.get_single_value(DOCTYPE, field, cache=False))
 		self.started_on = self.started_on or frappe.db.get_single_value(DOCTYPE, "started_on", cache=False)
 		errors = []
 		for field in DAY_LISTS:

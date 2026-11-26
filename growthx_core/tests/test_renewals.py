@@ -148,15 +148,19 @@ class TestSettingsRules(IntegrationTestCase):
 		form = frappe.get_single("GX Billing Settings")  # an admin opens the form...
 		site_sync.report_platform_sites(json.dumps([{"site": "a.example.com"}]))  # ...the job reports...
 		form.max_archives_per_run = 1
-		form.save()  # ...and the admin's save still goes through (no "document modified")
+		form.save()  # ...and the admin's save still goes through (no "document modified")...
 		self.assertEqual(frappe.get_single("GX Billing Settings").max_archives_per_run, 1)
+		# ...without putting back the list it loaded (none): the job's report stays
 		self.assertTrue(site_sync.platform_list_known())
+		self.assertEqual(site_sync.match_platform_site("a.example.com"), "a.example.com")
 
 	def test_started_on_is_kept_by_a_form_opened_before_it_was_set(self):
 		billing_settings.fill_defaults()
 		frappe.db.set_single_value("GX Billing Settings", "started_on", None)
 		form = frappe.get_single("GX Billing Settings")
-		frappe.db.set_single_value("GX Billing Settings", "started_on", "2026-12-01")  # the first live run
+		frappe.db.set_single_value(  # the first live run, as the job writes it
+			"GX Billing Settings", "started_on", "2026-12-01", update_modified=False
+		)
 		form.save()
 		self.assertEqual(
 			getdate(frappe.db.get_single_value("GX Billing Settings", "started_on", cache=False)),
