@@ -31,9 +31,8 @@ def resume_subscription_site(sub_name: str) -> None:
 
 def never_paid(account: str) -> bool:
 	"""True if none of the account's subscriptions has ever recorded a payment."""
-	return not frappe.db.exists(
-		"GX Subscription", {"account": account, "last_payment_id": ["not in", ["", None]]}
-	)
+	paid = frappe.get_all("GX Subscription", {"account": account}, pluck="last_payment_id")
+	return not any(paid)
 
 
 def suspend_subscription(sub_name: str, by: str = "billing") -> bool:
