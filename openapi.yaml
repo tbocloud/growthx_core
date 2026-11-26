@@ -189,6 +189,39 @@ paths:
         "429": { $ref: "#/components/responses/RateLimited" }
 
   # ---------------------------------------------------------------- catalogue (public)
+  /growthx_core.api.v1.site_payment.go:
+    get:
+      tags: [tenant]
+      summary: Pay now target for Press's suspended-site page
+      description: |
+        The Pay now button on the platform's suspended page links here with the host the visitor used.
+        Public, read-only, rate-limited to 30 per minute per IP address.
+
+        - `302` to `{web}/login?next=/customer/billing` when GrowthX bills a site with this host (a provisioned
+          tenant's address or active custom domain; an imported tenant's address or platform site) and the
+          tenant isn't archived. Matching is exact and case-insensitive; scheme, port and path are ignored.
+        - `200` with a small HTML page ("This site is paused. Please contact the provider who manages it.")
+          for every other host. It carries no customer data and doesn't say whether the site exists.
+      operationId: sitePayment
+      x-phase: 2
+      security: []
+      parameters:
+        - name: site
+          in: query
+          required: true
+          description: The host the visitor used, e.g. `shop.example.com`.
+          schema: { type: string }
+      responses:
+        "302":
+          description: Go to sign-in, then the Billing page
+          headers:
+            Location: { schema: { type: string } }
+        "200":
+          description: Neutral "site is paused" page
+          content:
+            text/html:
+              schema: { type: string }
+        "429": { $ref: "#/components/responses/RateLimited" }
   /growthx_core.api.v1.catalogue.products:
     get:
       tags: [catalogue]

@@ -5,6 +5,8 @@ import json
 import frappe
 from frappe.utils import add_months, nowdate
 
+from growthx_core.api.v1 import site_payment
+from growthx_core.api.v1._core import web_url
 from growthx_core.billing import renewals, site_sync
 from growthx_core.tests import test_admin_direct as direct_tests
 from growthx_core.tests.test_renewals import RenewalsCase
@@ -217,3 +219,58 @@ class TestAddDirectSiteMatching(direct_tests.DirectCase):
 		status, body = self._add(site="gamma.example.com", email="gamma@example.com", phone="9822222222")
 		self.assertNotIn("not_on_platform_list", body["warnings"])
 		self.assertEqual(self._tenant(body).platform_site, "gamma.example.com")
+
+
+class TestSitePayment(RenewalsCase):
+	NEUTRAL = "This site is paused. Please contact the provider who manages it."
+
+	def _go(self, site):
+		frappe.local.form_dict = frappe._dict({"site": site})
+		frappe.local.request = None
+		frappe.local.request_ip = "127.0.0.1"
+		return site_payment.go()
+
+	def _assert_billing_redirect(self, site):
+		response = self._go(site)
+		self.assertEqual(response.status_code, 302, site)
+		self.assertEqual(response.headers["Location"], web_url("/login?next=/customer/billing"))
+
+	def _assert_neutral(self, site):
+		response = self._go(site)
+		self.assertEqual(response.status_code, 200, site)
+		self.assertIn(self.NEUTRAL, response.get_data(as_text=True))
+		self.assertNotIn("Location", response.headers)
+		return response
+
+	def test_billed_site_redirects_to_billing(self):
+		_, _, provisioned = self._gx_customer("suspended", current_period_end="2026-11-01")
+		_, _, imported = self._direct_customer("suspended", current_period_end="2026-11-01")
+		_, _, by_platform = self._direct_customer("suspended", current_period_end="2026-11-01")
+		frappe.db.set_value("GX Tenant", by_platform.name, "platform_site", "platform-name.example.com")
+
+		self._assert_billing_redirect(site_sync.host_of(provisioned.site_url))
+		self._assert_billing_redirect(site_sync.host_of(imported.site_url).upper() + ":443")
+		self._assert_billing_redirect("https://" + site_sync.host_of(imported.site_url) + "/some/path")
+		self._assert_billing_redirect("Platform-Name.example.com")
+
+	def test_active_custom_domain_redirects_but_pending_one_does_not(self):
+		_, _, tenant = self._gx_customer("suspended", current_period_end="2026-11-01")
+		frappe.db.set_value(
+			"GX Tenant", tenant.name, {"custom_domain": "shop.customer.in", "custom_domain_status": "pending"}
+		)
+		self._assert_neutral("shop.customer.in")
+		frappe.db.set_value("GX Tenant", tenant.name, "custom_domain_status", "active")
+		self._assert_billing_redirect("shop.customer.in")
+
+	def test_archived_tenant_gets_neutral_page(self):
+		_, _, tenant = self._gx_customer("cancelled", current_period_end="2026-11-01")
+		frappe.db.set_value("GX Tenant", tenant.name, "status", "archived")
+		self._assert_neutral(site_sync.host_of(tenant.site_url))
+
+	def test_unknown_site_gets_neutral_page_without_details(self):
+		_, _, tenant = self._gx_customer("suspended", current_period_end="2026-11-01")
+		known = self._assert_neutral("unknown.example.com").get_data(as_text=True)
+		host = site_sync.host_of(tenant.site_url)
+		for site in ("", "   ", "example.com", "x" + host, host[1:], "." + host, None):
+			self.assertEqual(self._assert_neutral(site).get_data(as_text=True), known)
+		self.assertNotIn(host, known)
