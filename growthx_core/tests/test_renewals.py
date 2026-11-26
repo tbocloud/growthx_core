@@ -8,7 +8,7 @@ import frappe
 from frappe.tests import IntegrationTestCase
 from frappe.utils import add_days, add_months, getdate, now_datetime, nowdate
 
-from growthx_core.billing import payments
+from growthx_core.billing import payments, renewals
 from growthx_core.provisioning import press, runner
 from growthx_core.tests import test_admin_direct as direct_tests
 
@@ -23,8 +23,11 @@ class RecordingPressClient(press.FakePressClient):
 	def __init__(self, *args, **kwargs):
 		super().__init__(*args, **kwargs)
 		self.calls: list[tuple[str, str]] = []
+		self.fail_suspend = False
 
 	def suspend_site(self, site_id):
+		if self.fail_suspend:
+			raise press.PressError("Press refused")
 		self.calls.append(("suspend_site", site_id))
 
 	def resume_site(self, site_id):
@@ -273,3 +276,79 @@ class TestFirstPaymentDueDate(direct_tests.DirectCase):
 		account, sub = self._added()
 		frappe.db.set_value("GX Subscription", sub.name, "status", "suspended")
 		self.assertEqual(self._pay(account, "2026-12-10"), getdate("2027-01-01"))
+
+
+class TestSuspendAndArchive(RenewalsCase):
+	def setUp(self):
+		super().setUp()
+		self.commit = patch.object(frappe.db, "commit")  # runner.archive commits; keep it rollback-able
+		self.commit.start()
+
+	def tearDown(self):
+		self.commit.stop()
+		super().tearDown()
+
+	def _states(self, sub, tenant):
+		return (
+			frappe.db.get_value("GX Subscription", sub.name, "status"),
+			frappe.db.get_value("GX Tenant", tenant.name, "status"),
+		)
+
+	def test_suspend_gx_site_calls_press_then_marks_suspended(self):
+		_, sub, tenant = self._gx_customer("trialing", trial_ends_at=add_days(now_datetime(), -1))
+		self.assertTrue(renewals.suspend_subscription(sub.name))
+		self.assertEqual(self.press.calls, [("suspend_site", tenant.press_site_id)])
+		self.assertEqual(self._states(sub, tenant), ("suspended", "suspended"))
+		sub.reload()
+		self.assertTrue(sub.suspended_at)
+		self.assertEqual(sub.suspended_by, "billing")
+		self.assertEqual(getdate(sub.archive_due_on), getdate(add_days(nowdate(), 30)))
+		log = frappe.get_last_doc("GX Audit Log", {"action": "renewal.suspend"})
+		self.assertEqual(log.reference_name, sub.name)
+
+	def test_suspend_paid_gx_site_has_no_archive_date(self):
+		account, sub, _t = self._gx_customer("past_due", current_period_end=add_days(nowdate(), -8))
+		frappe.db.set_value("GX Subscription", sub.name, "last_payment_id", "pay-1")
+		self.assertTrue(renewals.suspend_subscription(sub.name, by="admin"))
+		sub.reload()
+		self.assertFalse(sub.archive_due_on)
+		self.assertEqual(sub.suspended_by, "admin")
+
+	def test_suspend_direct_site_never_calls_press(self):
+		_, sub, tenant = self._direct_customer("trialing", trial_ends_at=add_days(now_datetime(), -1))
+		self.assertTrue(renewals.suspend_subscription(sub.name))
+		self.assertEqual(self.press.calls, [])
+		self.assertEqual(self._states(sub, tenant), ("suspended", "suspended"))
+		self.assertFalse(frappe.db.get_value("GX Subscription", sub.name, "archive_due_on"))
+
+	def test_press_error_leaves_subscription_past_due(self):
+		_, sub, tenant = self._gx_customer("past_due", current_period_end=add_days(nowdate(), -8))
+		self.press.fail_suspend = True
+		errors = frappe.db.count("Error Log")
+		self.assertFalse(renewals.suspend_subscription(sub.name))
+		self.assertEqual(self._states(sub, tenant), ("past_due", "ready"))
+		self.assertFalse(frappe.db.get_value("GX Subscription", sub.name, "suspended_at"))
+		self.assertEqual(frappe.db.count("Error Log"), errors + 1)
+
+	def test_archive_refused_for_direct_and_for_once_paid(self):
+		_, dsub, dtenant = self._direct_customer("suspended")
+		frappe.db.set_value("GX Tenant", dtenant.name, "status", "suspended")
+		self.assertFalse(renewals.archive_trial(dsub.name))
+		self.assertEqual(self._states(dsub, dtenant), ("suspended", "suspended"))
+		account, sub, tenant = self._gx_customer("suspended")
+		frappe.db.set_value("GX Tenant", tenant.name, "status", "suspended")
+		frappe.db.set_value("GX Subscription", sub.name, "last_payment_id", "pay-1")
+		self.assertTrue(not renewals.never_paid(account.name))
+		self.assertFalse(renewals.archive_trial(sub.name))
+		self.assertEqual(self._states(sub, tenant), ("suspended", "suspended"))
+		self.assertEqual(self.press.calls, [])
+
+	def test_archive_never_paid_trial(self):
+		account, sub, tenant = self._gx_customer("suspended")
+		frappe.db.set_value("GX Tenant", tenant.name, "status", "suspended")
+		self.assertTrue(renewals.never_paid(account.name))
+		self.assertTrue(renewals.archive_trial(sub.name))
+		self.assertEqual(self._states(sub, tenant), ("canceled", "archived"))
+		self.assertEqual(self.press.calls, [("archive_site", tenant.press_site_id)])
+		log = frappe.get_last_doc("GX Audit Log", {"action": "renewal.archive"})
+		self.assertEqual(log.reference_name, sub.name)
