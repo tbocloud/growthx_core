@@ -24,7 +24,7 @@ from growthx_core.api.v1._core import (
 	not_found,
 	validation_error,
 )
-from growthx_core.billing import billing_details, payments
+from growthx_core.billing import billing_details, payments, site_sync
 from growthx_core.billing import payu as payu_billing
 
 MAX_START_DAYS = 366
@@ -206,6 +206,12 @@ def add_direct_site():
 		}
 	).insert(ignore_permissions=True)
 	sub.db_set("tenant", tenant.name, update_modified=False)
+	platform_site = site_sync.match_platform_site(host)
+	if platform_site:
+		tenant.db_set("platform_site", platform_site, update_modified=False)
+	elif site_sync.platform_list_known():
+		# The job's list of Press sites is known and this address is not on it: it will never be suspended.
+		warnings.append("not_on_platform_list")
 
 	if offline:
 		admin._record_manual_payment(
