@@ -947,13 +947,20 @@ class TestRenewalJob(RenewalsCase):
 			)
 			return True
 
-		with patch.object(renewal_emails, "send", side_effect=paid_meanwhile):
+		failed = f"GrowthX: renewal job failed for {sub.name}"
+		logged_before = frappe.db.count("Error Log", {"method": failed})
+		with (
+			patch.object(renewal_emails, "send", side_effect=paid_meanwhile),
+			patch.object(frappe, "log_error", wraps=frappe.log_error) as log_error,
+		):
 			self._run("2026-12-26 10:00:00")
 		row = frappe.db.get_value("GX Subscription", sub.name, ["status", "notified_stages"], as_dict=True)
 		self.assertEqual((row.status, row.notified_stages), ("active", None))
-		self.assertFalse(
-			frappe.db.exists("Error Log", {"method": f"GrowthX: renewal job failed for {sub.name}"})
-		)
+		# A change under the job is not an error: nothing logged by this run.
+		titles = [c.kwargs.get("title") for c in log_error.call_args_list]
+		trace = frappe.db.get_value("Error Log", {"method": failed}, "error", order_by="creation desc")
+		self.assertNotIn(failed, titles, trace)
+		self.assertEqual(frappe.db.count("Error Log", {"method": failed}), logged_before)
 
 	def test_legacy_past_due_without_due_date_counts_from_creation(self):
 		_, sub, _t = self._direct_customer("past_due")
