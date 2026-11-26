@@ -13,6 +13,7 @@ import frappe
 from frappe.utils import add_months, add_years, cint, flt, fmt_money, getdate
 
 from growthx_core.api.v1._core import ApiError, validation_error
+from growthx_core.billing import renewals
 from growthx_core.partners import commissions
 from growthx_core.provisioning import runner
 
@@ -47,6 +48,27 @@ def check_payable(account, plan) -> str:
 	return name
 
 
+def _period_start(sub, paid_on: date) -> date:
+	"""Where the paid period begins. A renewal paid in time or in grace continues from the old end (no
+	free days, and none lost); after a suspension it begins on the payment day. A first payment begins
+	on the due date (billing start) when there is one."""
+	end = getdate(sub.current_period_end) if sub.current_period_end else None
+	due = getdate(sub.due_date) if sub.get("due_date") else None
+	if sub.status == "active" and end:
+		return max(end, paid_on)
+	if sub.status == "past_due":
+		return end or due or paid_on
+	if sub.status == "suspended":
+		return paid_on if end else due or paid_on
+	if sub.status == "trialing" and due and _is_imported(sub):
+		return max(due, paid_on)
+	return paid_on
+
+
+def _is_imported(sub) -> bool:
+	return bool(sub.tenant) and frappe.db.get_value("GX Tenant", sub.tenant, "origin") == "imported"
+
+
 def apply_payment(
 	account,
 	plan,
@@ -67,9 +89,7 @@ def apply_payment(
 	if sub.last_payment_id == reference:
 		raise ApiError(409, "duplicate_payment", "A payment with this reference is already recorded.")
 	_refuse_lifetime_repeat(sub.status, sub.billing_interval)
-	start = paid_on
-	if sub.status == "active" and sub.current_period_end:
-		start = max(getdate(sub.current_period_end), paid_on)
+	start = _period_start(sub, paid_on)
 	if plan.billing_interval == "one_time":
 		period_end = None  # lifetime: never expires or renews
 	else:
@@ -88,9 +108,17 @@ def apply_payment(
 			"gateway": gateway,
 			"gateway_subscription_id": None,
 			"last_payment_id": reference,
+			"due_date": None,
+			"notified_stages": None,
+			"grace_until": None,
+			"final_warning_on": None,
+			"suspended_at": None,
+			"suspended_by": None,
+			"archive_due_on": None,
 		}
 	)
 	sub.save(ignore_permissions=True)
+	renewals.resume_subscription_site(sub.name)
 	if account.status == "active" and previous_plan != plan.name:
 		old_name = frappe.db.get_value("GX Plan", previous_plan, "plan_name") or previous_plan
 		details = f"plan change, {old_name} → {plan.plan_name}"

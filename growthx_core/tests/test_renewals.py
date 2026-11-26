@@ -6,9 +6,11 @@ from unittest.mock import patch
 
 import frappe
 from frappe.tests import IntegrationTestCase
-from frappe.utils import add_days, add_months, now_datetime, nowdate
+from frappe.utils import add_days, add_months, getdate, now_datetime, nowdate
 
+from growthx_core.billing import payments
 from growthx_core.provisioning import press, runner
+from growthx_core.tests import test_admin_direct as direct_tests
 
 PRODUCT = "test-renewals"
 PLAN = "test-renewals-month"
@@ -171,3 +173,103 @@ class RenewalsCase(IntegrationTestCase):
 		_, _, direct = self._direct_customer("trialing", trial_ends_at=add_days(now_datetime(), 3))
 		self.assertEqual((direct.origin, bool(direct.press_site_id)), ("imported", False))
 		self.assertEqual(frappe.get_single("GX Billing Settings").suspend_sites, 1)
+
+
+RENEWAL_FIELDS = (
+	"due_date",
+	"notified_stages",
+	"grace_until",
+	"final_warning_on",
+	"suspended_at",
+	"suspended_by",
+	"archive_due_on",
+)
+
+
+class TestPaymentPeriods(RenewalsCase):
+	def _pay(self, account, paid_on, plan=PLAN, reference=None):
+		account.reload()
+		plan_doc = frappe.get_doc("GX Plan", plan)
+		sub, _details, end = payments.apply_payment(
+			account, plan_doc, reference or frappe.generate_hash(length=8), getdate(paid_on), "manual"
+		)
+		return sub, end
+
+	def test_grace_payment_continues_from_old_end(self):
+		account, _sub, _t = self._gx_customer("past_due", current_period_end="2026-12-26")
+		_, end = self._pay(account, "2027-01-02")
+		self.assertEqual(end, getdate("2027-01-26"))
+
+	def test_renewal_after_suspension_starts_on_payment_day(self):
+		account, _sub, _t = self._gx_customer("suspended", current_period_end="2026-12-26")
+		_, end = self._pay(account, "2027-01-10")
+		self.assertEqual(end, getdate("2027-02-10"))
+
+	def test_starts_later_paid_early_starts_on_start_date(self):
+		account, sub, _t = self._direct_customer("trialing", trial_ends_at="2026-12-15")
+		frappe.db.set_value("GX Subscription", sub.name, "due_date", "2026-12-15")
+		_, end = self._pay(account, "2026-12-10")
+		self.assertEqual(end, getdate("2027-01-15"))
+
+	def test_payment_clears_renewal_fields(self):
+		account, sub, _t = self._gx_customer("suspended", current_period_end="2026-12-26")
+		frappe.db.set_value(
+			"GX Subscription",
+			sub.name,
+			{
+				"due_date": "2026-12-26",
+				"notified_stages": "7,3",
+				"grace_until": "2027-01-02",
+				"final_warning_on": "2027-01-01",
+				"suspended_at": "2027-01-03 00:00:00",
+				"suspended_by": "renewal",
+				"archive_due_on": "2027-02-01",
+			},
+		)
+		sub, _ = self._pay(account, "2027-01-10")
+		sub.reload()
+		for field in RENEWAL_FIELDS:
+			self.assertFalse(sub.get(field), field)
+
+	def test_payment_after_suspension_restores_the_site(self):
+		account, sub, tenant = self._gx_customer("suspended", current_period_end="2026-12-26")
+		frappe.db.set_value("GX Tenant", tenant.name, "status", "suspended")
+		self._pay(account, "2027-01-10")
+		self.assertIn(("resume_site", tenant.press_site_id), self.press.calls)
+		self.assertEqual(frappe.db.get_value("GX Tenant", tenant.name, "status"), "ready")
+		log = frappe.get_last_doc("GX Audit Log", {"action": "renewal.resume"})
+		self.assertEqual(log.reference_name, sub.name)
+
+	def test_payment_after_suspension_restores_an_imported_site_without_press(self):
+		account, _sub, tenant = self._direct_customer("suspended", current_period_end="2026-12-26")
+		frappe.db.set_value("GX Tenant", tenant.name, "status", "suspended")
+		self._pay(account, "2027-01-10")
+		self.assertEqual(frappe.db.get_value("GX Tenant", tenant.name, "status"), "ready")
+		self.assertEqual(self.press.calls, [])
+
+
+class TestFirstPaymentDueDate(direct_tests.DirectCase):
+	def _added(self):
+		with patch("growthx_core.api.v1.admin_direct.nowdate", return_value="2026-12-01"):
+			status, body = self._add()
+		self.assertEqual(status, 201, body)
+		tenant = self._tenant(body)
+		sub = frappe.get_doc("GX Subscription", tenant.subscription)
+		self.assertEqual(getdate(sub.due_date), getdate("2026-12-01"))
+		return frappe.get_doc("GX Account", tenant.account), sub
+
+	def _pay(self, account, paid_on):
+		account.reload()
+		_, _, end = payments.apply_payment(
+			account, frappe.get_doc("GX Plan", direct_tests.PLAN), "ref-1", getdate(paid_on), "manual"
+		)
+		return end
+
+	def test_first_payment_starts_at_due_date(self):
+		account, _sub = self._added()
+		self.assertEqual(self._pay(account, "2026-12-05"), getdate("2027-01-01"))
+
+	def test_first_payment_while_suspended_starts_at_due_date(self):
+		account, sub = self._added()
+		frappe.db.set_value("GX Subscription", sub.name, "status", "suspended")
+		self.assertEqual(self._pay(account, "2026-12-10"), getdate("2027-01-01"))

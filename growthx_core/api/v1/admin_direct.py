@@ -187,6 +187,8 @@ def add_direct_site():
 			"gst_rate": plan.gst_rate,
 			"billing_interval": plan.billing_interval,
 			"trial_ends_at": datetime.combine(start, time.min) if start else None,
+			# What the first payment's period starts from (an offline payment already made has its own date).
+			"due_date": None if offline else (start or getdate(nowdate())),
 		}
 	).insert(ignore_permissions=True)
 	# No `press_site_id`, no apps, no steps: Core never provisions, suspends or deletes this site.
