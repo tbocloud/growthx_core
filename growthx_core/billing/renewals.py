@@ -300,10 +300,14 @@ class _Run:
 
 	def process(self, name: str):
 		"""One subscription. Its work is committed step by step; if anything fails, what isn't committed yet
-		is undone, the error is logged and the run goes on with the next subscription."""
-		self.checkpoint()
+		is undone, the error is logged and the run goes on with the next subscription.
+		The account is read before the checkpoint, so the next transaction's first read is the lock: MariaDB
+		fixes a snapshot at a transaction's first plain read, and the job must see what an admin committed
+		while it waited for the lock (a Suspend that cancelled a pending resume)."""
 		try:
-			self._process(name)
+			account = frappe.db.get_value("GX Subscription", name, "account")
+			self.checkpoint()
+			self._process(name, account)
 		except _Changed:
 			self._undo()
 		except Exception:
@@ -352,12 +356,11 @@ class _Run:
 			return max(start, first + timedelta(days=FIRST_NOTICE_DAYS))
 		return start
 
-	def _process(self, name: str):
-		self.account_name = frappe.db.get_value("GX Subscription", name, "account")
-		if not self.account_name:
+	def _process(self, name: str, account: str | None):
+		if not account:
 			return
-		self.sub_name = name
-		row = self._lock()
+		self.account_name, self.sub_name = account, name
+		row = self._lock()  # the transaction's first read (see process)
 		if not row:
 			return
 		self.seen = {field: row[field] for field in WATCHED}
