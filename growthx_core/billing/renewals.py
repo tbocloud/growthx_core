@@ -115,11 +115,8 @@ def _mark_resume_pending(sub_name: str, sub, value: int):
 def mark_resume_pending(tenant_name: str):
 	"""Press refused to bring this tenant's site back when the customer's sites were restored (a payment, an
 	admin's Reactivate): its running subscriptions are marked, so the job tries again."""
-	for name in frappe.get_all(
-		"GX Subscription",
-		{"tenant": tenant_name, "status": ("in", RUNNING), "resume_pending": 0},
-		pluck="name",
-		for_update=True,
+	for name in _locked_names(
+		"GX Subscription", {"tenant": tenant_name, "status": ("in", RUNNING), "resume_pending": 0}
 	):
 		frappe.db.set_value("GX Subscription", name, "resume_pending", 1, update_modified=False)
 
@@ -128,10 +125,13 @@ def clear_resume_pending(filters: dict):
 	"""Forget a resume Press refused, for the subscriptions matching `filters`: their site is running again,
 	or an admin suspended the customer (whose suspension the job's retry must never undo)."""
 	# A locking read: an admin's Suspend that waited for the job must also clear a mark the job just set.
-	for name in frappe.get_all(
-		"GX Subscription", {**filters, "resume_pending": 1}, pluck="name", for_update=True
-	):
+	for name in _locked_names("GX Subscription", {**filters, "resume_pending": 1}):
 		frappe.db.set_value("GX Subscription", name, "resume_pending", 0, update_modified=False)
+
+
+def _locked_names(doctype: str, filters: dict) -> list[str]:
+	"""Names matching `filters`, read with a lock (the latest rows, not the transaction's snapshot)."""
+	return [r.name for r in frappe.db.get_values(doctype, filters, ["name"], as_dict=True, for_update=True)]
 
 
 def resume_pending(sub, tenant) -> bool:

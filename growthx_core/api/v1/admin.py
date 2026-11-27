@@ -240,10 +240,10 @@ def update_customer_status():
 		}
 		raise ApiError(409, "invalid_transition", f"A customer who is {account.status} can't {what[action]}.")
 
-	if action == "reactivate" and frappe.get_all(
+	if action == "reactivate" and frappe.db.get_values(
 		"GX Subscription",
 		{"account": account.name, "status": "suspended", "suspended_by": "billing"},
-		limit=1,
+		"name",
 		for_update=True,  # a locking read: sees a suspension the renewal job made while this waited
 	):
 		# Reactivating would be undone by the next hourly run: the admin must say until when.

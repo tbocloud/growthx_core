@@ -1890,24 +1890,25 @@ class TestRenewalAdminApi(RenewalsCase):
 	def _locking_reads(self, fn):
 		"""(doctype, filter fields, for_update) of each GX Tenant / GX Subscription read `fn` makes."""
 		calls = []
-		real_get_all, real_get_value = frappe.get_all, frappe.db.get_value
+		real = {
+			"get_all": frappe.get_all,
+			"get_value": frappe.db.get_value,
+			"get_values": frappe.db.get_values,
+		}
 
-		def note(doctype, filters, kwargs):
-			if doctype in ("GX Tenant", "GX Subscription"):
-				fields = tuple(sorted(filters)) if isinstance(filters, dict) else ("name",)
-				calls.append((doctype, fields, bool(kwargs.get("for_update"))))
+		def spy(name):
+			def read(doctype, filters=None, *args, **kwargs):
+				if doctype in ("GX Tenant", "GX Subscription"):
+					fields = tuple(sorted(filters)) if isinstance(filters, dict) else ("name",)
+					calls.append((doctype, fields, bool(kwargs.get("for_update"))))
+				return real[name](doctype, filters, *args, **kwargs)
 
-		def get_all(doctype, filters=None, *args, **kwargs):
-			note(doctype, filters, kwargs)
-			return real_get_all(doctype, filters, *args, **kwargs)
+			return read
 
-		def get_value(doctype, filters=None, *args, **kwargs):
-			note(doctype, filters, kwargs)
-			return real_get_value(doctype, filters, *args, **kwargs)
-
-		with patch.object(frappe, "get_all", side_effect=get_all):
-			with patch.object(frappe.db, "get_value", side_effect=get_value):
-				fn()
+		with patch.object(frappe, "get_all", side_effect=spy("get_all")):
+			with patch.object(frappe.db, "get_value", side_effect=spy("get_value")):
+				with patch.object(frappe.db, "get_values", side_effect=spy("get_values")):
+					fn()
 		return calls
 
 	def test_admin_actions_and_payments_read_sites_and_marks_under_lock(self):
