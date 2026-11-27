@@ -35,6 +35,8 @@ class TestLockAccount(IntegrationTestCase):
 				"status": "active",
 			}
 		).insert()
+		# Error Log is MyISAM: logs survive rollbacks, and a later test's account can reuse this name.
+		self.earlier_logs = set(frappe.get_all("Error Log", {"method": AFTER_A_WRITE}, pluck="name"))
 		self.log = []  # "commit", and each SQL statement, in order
 		self.commit_patch = patch.object(
 			frappe.db, "commit", side_effect=lambda *args, **kwargs: self.log.append("commit")
@@ -64,9 +66,13 @@ class TestLockAccount(IntegrationTestCase):
 		return "for update" in query and "`tabgx account`" in query
 
 	def _error_logs(self):
-		return frappe.get_all(
-			"Error Log", {"method": AFTER_A_WRITE, "reference_name": self.account.name}, pluck="error"
+		"""This test's "after a write" logs for the account."""
+		rows = frappe.get_all(
+			"Error Log",
+			{"method": AFTER_A_WRITE, "reference_name": self.account.name},
+			["name", "error"],
 		)
+		return [r.error for r in rows if r.name not in self.earlier_logs]
 
 	def test_it_commits_then_takes_the_lock_as_the_transactions_first_read(self):
 		account = self._lock(in_test=False, writes=0)
