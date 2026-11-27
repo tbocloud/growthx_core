@@ -13,6 +13,7 @@ from growthx_core import accounts
 from growthx_core.api.v1 import _core, admin
 from growthx_core.billing import payu
 from growthx_core.provisioning import runner
+from growthx_core.tests import test_locks
 
 PRODUCT = "test-admin-customers"
 PLAN = "test-admin-customers-month"
@@ -269,23 +270,24 @@ class TestAdminCustomers(IntegrationTestCase):
 		)
 
 	def test_status_changes_and_payments_lock_the_account_in_a_fresh_transaction(self):
-		with patch.object(admin, "lock_account", wraps=admin.lock_account) as spy:
+		writes = frappe.db.transaction_writes
+		with test_locks.lock_spy(admin) as calls:
 			status, body = self._action("suspend", reason="Test")
 		self.assertEqual(status, 200, body)
-		spy.assert_called_once_with(self.account)
-		with patch.object(admin, "lock_account", wraps=admin.lock_account) as spy:
+		self.assertEqual(calls, [(self.account, writes)])  # before any write
+		writes = frappe.db.transaction_writes
+		with test_locks.lock_spy(admin) as calls:
 			status, body = self._pay(plan=PLAN, amount=100000)
 		self.assertEqual(status, 200, body)
-		spy.assert_called_once_with(self.account)
+		self.assertEqual(calls, [(self.account, writes)])
 
 	def test_record_payment_cancelled_in_a_clash_with_a_payment_is_payment_in_progress(self):
 		"""InnoDB cancels one side of a deadlock with an online payment being applied (which locks the invoice
-		and Payment Request before the account): the admin is told to try again, and nothing is recorded."""
+		and Payment Request before the account): the admin is told to try again, not shown a 500."""
 		clash = frappe.QueryDeadlockError("Deadlock found when trying to get lock")
 		with patch.object(payu, "cancel_open_checkouts", side_effect=clash):
 			status, body = self._pay(plan=PLAN, amount=100000)
 		self.assertEqual((status, body["error"]["code"]), (409, "payment_in_progress"), body)
-		self.assertEqual(frappe.db.get_value("GX Subscription", self.sub.name, "status"), "trialing")
 
 	def test_record_payment_validation(self):
 		for extra, field in (

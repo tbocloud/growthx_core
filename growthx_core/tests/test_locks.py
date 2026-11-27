@@ -2,20 +2,34 @@
 read after it, plain ones too, sees what others committed while the request waited for it (MariaDB keeps a
 transaction's snapshot from its first plain read, REPEATABLE READ)."""
 
+from contextlib import contextmanager
 from unittest.mock import patch
 
 import frappe
 from frappe.tests import IntegrationTestCase
 
-AFTER_A_WRITE = "GrowthX: lock_account after a write"
+from growthx_core.billing import locks
+
+
+@contextmanager
+def lock_spy(module):
+	"""Spy on `module.lock_account` (the name as that module imported it); the real lock is still taken.
+	Yields the calls, each as (account, the transaction's writes at the call), so a test can check that the
+	endpoint locked the account before writing anything."""
+	calls = []
+	real = module.lock_account
+
+	def spy(name):
+		calls.append((name, frappe.db.transaction_writes))
+		return real(name)
+
+	with patch.object(module, "lock_account", side_effect=spy):
+		yield calls
 
 
 class TestLockAccount(IntegrationTestCase):
 	def setUp(self):
-		from growthx_core.billing import locks
-
 		frappe.set_user("Administrator")
-		self.locks = locks
 		email = f"lock-{frappe.generate_hash(length=6)}@example.com"
 		user = frappe.get_doc(
 			{
@@ -36,7 +50,7 @@ class TestLockAccount(IntegrationTestCase):
 			}
 		).insert()
 		# Error Log is MyISAM: logs survive rollbacks, and a later test's account can reuse this name.
-		self.earlier_logs = set(frappe.get_all("Error Log", {"method": AFTER_A_WRITE}, pluck="name"))
+		self.earlier_logs = set(frappe.get_all("Error Log", {"method": locks.AFTER_A_WRITE}, pluck="name"))
 		self.log = []  # "commit", and each SQL statement, in order
 		self.commit_patch = patch.object(
 			frappe.db, "commit", side_effect=lambda *args, **kwargs: self.log.append("commit")
@@ -59,7 +73,7 @@ class TestLockAccount(IntegrationTestCase):
 			patch.object(frappe.db, "transaction_writes", writes),
 			patch.object(frappe.db, "sql", side_effect=logged),
 		):
-			return self.locks.lock_account(self.account.name)
+			return locks.lock_account(self.account.name)
 
 	@staticmethod
 	def _is_lock(query: str) -> bool:
@@ -69,7 +83,7 @@ class TestLockAccount(IntegrationTestCase):
 		"""This test's "after a write" logs for the account."""
 		rows = frappe.get_all(
 			"Error Log",
-			{"method": AFTER_A_WRITE, "reference_name": self.account.name},
+			{"method": locks.AFTER_A_WRITE, "reference_name": self.account.name},
 			["name", "error"],
 		)
 		return [r.error for r in rows if r.name not in self.earlier_logs]

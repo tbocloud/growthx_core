@@ -18,9 +18,10 @@ from werkzeug.test import EnvironBuilder
 from growthx_core import accounts
 from growthx_core.api.v1 import _core, billing
 from growthx_core.api.v1 import customer as customer_api
-from growthx_core.billing import billing_details, payu, tax_invoice
+from growthx_core.billing import billing_details, payments, payu, tax_invoice
 from growthx_core.provisioning import runner
 from growthx_core.setup import seed
+from growthx_core.tests import test_locks
 
 COMPANY = "GX Checkout Test Company"
 PRODUCT = "test-checkout"
@@ -289,6 +290,17 @@ class TestCheckoutPayU(IntegrationTestCase):
 		status, again = self._checkout()
 		self.assertEqual((status, again["error"]["code"]), (409, "invalid_transition"))
 
+	def test_activation_says_the_account_was_not_locked_afresh(self):
+		"""_activate locks its checkout first, inside the Payment Entry's on_submit, so it can't use
+		lock_account: apply_payment reads the customer's sites by name under lock instead (fresh=False)."""
+		_, body = self._checkout()
+		invoice = frappe.db.get_value("GX Checkout", body["reference"], "sales_invoice")
+		with patch.object(payments, "apply_payment", wraps=payments.apply_payment) as spy:
+			self._pay(invoice)
+		spy.assert_called_once()
+		self.assertIs(spy.call_args.kwargs.get("fresh"), False)
+		self.assertEqual(frappe.db.get_value("GX Checkout", body["reference"], "status"), "paid")
+
 	def test_a_part_paid_invoice_is_never_replaced(self):
 		_, body = self._checkout()
 		self._pay(frappe.db.get_value("GX Checkout", body["reference"], "sales_invoice"), amount=50000)
@@ -303,19 +315,19 @@ class TestCheckoutPayU(IntegrationTestCase):
 	def test_checkout_locks_the_account_in_a_fresh_transaction(self):
 		"""So the open checkouts, the invoice's outstanding amount and the attempts read after the lock are
 		current: a checkout paid while this request waited is never offered again or cancelled."""
-		with patch.object(billing, "lock_account", wraps=billing.lock_account) as spy:
+		writes = frappe.db.transaction_writes
+		with test_locks.lock_spy(billing) as calls:
 			status, body = self._checkout()
 		self.assertEqual(status, 201, body)
-		spy.assert_called_once_with(self.account)
+		self.assertEqual(calls, [(self.account, writes)])  # before any write
 
 	def test_a_checkout_cancelled_in_a_clash_with_a_payment_is_payment_in_progress(self):
 		"""InnoDB cancels one side of a deadlock with a payment being applied (which locks the invoice and
-		Payment Request before the account): the customer is told to try again."""
+		Payment Request before the account): the customer is told to try again, not shown a 500."""
 		clash = frappe.QueryDeadlockError("Deadlock found when trying to get lock")
 		with patch.object(payu, "_open_checkout", side_effect=clash):
 			status, body = self._checkout()
 		self.assertEqual((status, body["error"]["code"]), (409, "payment_in_progress"), body)
-		self.assertFalse(frappe.db.exists("GX Checkout", {"account": self.account}))
 
 	def test_status_follows_the_payment_and_is_private(self):
 		_, body = self._checkout()

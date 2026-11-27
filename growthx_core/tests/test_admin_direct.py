@@ -13,8 +13,9 @@ from frappe.utils import add_days, nowdate
 
 from growthx_core import accounts, direct
 from growthx_core.api.v1 import _core, admin, admin_direct, auth, billing, customer
-from growthx_core.billing import billing_details, payu
+from growthx_core.billing import billing_details, payments, payu
 from growthx_core.provisioning import press, runner
+from growthx_core.tests import test_locks
 
 PRODUCT = "erpnext-direct-test"
 OTHER_PRODUCT = "test-direct-other"
@@ -294,10 +295,11 @@ class TestAddDirectSite(DirectCase):
 
 	def test_an_existing_customer_is_locked_in_a_fresh_transaction(self):
 		account = self._existing_customer()
-		with patch.object(admin_direct, "lock_account", wraps=admin_direct.lock_account) as spy:
+		writes = frappe.db.transaction_writes
+		with test_locks.lock_spy(admin_direct) as calls:
 			status, body = self._add()
 		self.assertEqual(status, 201, body)
-		spy.assert_called_once_with(account)
+		self.assertEqual(calls, [(account, writes)])  # before any write
 
 	def test_a_suspended_customer_gets_no_new_site(self):
 		"""Checked under the account lock, so a Suspend that this request waited for counts too."""
@@ -312,6 +314,47 @@ class TestAddDirectSite(DirectCase):
 		self.assertFalse(frappe.db.exists("GX Tenant", {"account": account}))
 		self.assertEqual(frappe.db.count("GX Subscription", {"account": account}), subscriptions)
 		self.sendmail.assert_not_called()
+
+	def test_a_site_added_while_this_one_waited_for_the_lock_counts(self):
+		"""Two adds for the same customer and product at once: both pass the early check, and the second
+		finds the first's site when it checks again under the account lock."""
+		self._existing_customer()
+		self.assertEqual(self._add()[0], 201)
+		real = accounts.live_site
+		checks = []
+
+		def first_add_not_committed_yet(account, product):
+			checks.append(account)
+			return None if len(checks) == 1 else real(account, product)
+
+		with patch.object(accounts, "live_site", side_effect=first_add_not_committed_yet):
+			status, body = self._add(site="second.acme.example.com")
+		self.assertEqual((status, body["error"]["code"]), (409, "already_added"), body)
+		self.assertEqual(len(checks), 2)
+		self.assertFalse(frappe.db.exists("GX Tenant", {"site_url": "https://second.acme.example.com"}))
+
+	def test_an_offline_payment_says_whether_the_account_was_locked_afresh(self):
+		"""An existing customer is locked with lock_account (fresh); a customer this request made is locked
+		after its first writes, so its payment reads the sites by name under lock (fresh=False)."""
+		offline = {"reference": "UTR-1", "amount": 118000, "paidOn": nowdate()}
+		with patch.object(payments, "apply_payment", wraps=payments.apply_payment) as spy:
+			status, body = self._add(paidOffline=offline)
+		self.assertEqual(status, 201, body)
+		self.assertIs(spy.call_args.kwargs.get("fresh"), False)
+		accounts.create_customer_account(
+			email="ravi@acme-traders.example.com",
+			full_name="Ravi Nair",
+			company="Acme Traders",
+			password="Long-Enough-Pass-91",
+		)
+		with patch.object(payments, "apply_payment", wraps=payments.apply_payment) as spy:
+			status, body = self._add(
+				email="ravi@acme-traders.example.com",
+				site="ravi.acme.example.com",
+				paidOffline={**offline, "reference": "UTR-2"},
+			)
+		self.assertEqual(status, 201, body)
+		self.assertIs(spy.call_args.kwargs.get("fresh", True), True)
 
 	def test_an_email_of_another_kind_of_user_is_never_attached(self):
 		frappe.get_doc(
