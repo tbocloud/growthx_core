@@ -1493,6 +1493,13 @@ class TestRenewalInfo(RenewalsCase):
 			data = s.subscription(sub)
 		self.assertEqual((data["renewal"]["stage"], data["renewal"]["daysLeft"]), ("due_soon", 3))
 
+	def test_subscription_renewal_is_null_while_renewals_are_off(self):
+		_, sub, _t = self._gx_customer("active", current_period_end=add_days(nowdate(), 3))
+		frappe.db.set_single_value("GX Billing Settings", "enabled", 0)
+		self.assertIsNone(s.subscription(sub)["renewal"])
+		frappe.db.set_single_value("GX Billing Settings", "enabled", 1)
+		self.assertEqual(s.subscription(sub)["renewal"]["stage"], "due_soon")
+
 
 class TestRenewalAdminApi(RenewalsCase):
 	def setUp(self):
