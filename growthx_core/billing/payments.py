@@ -150,6 +150,7 @@ def apply_payment(
 			"GX Subscription",
 			{"account": account.name, "suspended_by": "billing", "name": ("!=", sub.name)},
 			pluck="tenant",
+			for_update=True,  # one the job suspended while this payment waited for the lock counts too
 		)
 		details = set_customer_status(
 			account, "active", "suspended", "ready", "resume_site", keep=set(filter(None, unpaid))
@@ -192,8 +193,13 @@ def set_customer_status(
 		renewals.clear_resume_pending({"account": account.name})
 	client = None
 	failed = []
+	# A locking read: a caller that waited for the account lock while the renewal job moved a site must see
+	# the site's status now, not its transaction's older snapshot.
 	for t in frappe.get_all(
-		"GX Tenant", {"account": account.name, "status": site_from}, ["name", "press_site_id", "origin"]
+		"GX Tenant",
+		{"account": account.name, "status": site_from},
+		["name", "press_site_id", "origin"],
+		for_update=True,
 	):
 		if keep and t.name in keep:
 			continue

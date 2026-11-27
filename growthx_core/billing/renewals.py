@@ -82,11 +82,15 @@ def resume_subscription_site(sub_name: str, why: str = "after payment") -> None:
 	If Press refuses, the error is logged, the tenant stays suspended and the subscription is marked
 	`resume_pending`: the hourly job tries again (Ruling 19). The mark is cleared once the site is back.
 	(Give extra days undoes everything on a refusal, the mark included: the admin tries again.)"""
-	sub = frappe.db.get_value("GX Subscription", sub_name, ["tenant", "resume_pending"], as_dict=True)
+	# Locking reads: a caller that waited for the account lock (while the renewal job suspended this site)
+	# must see the site as it is now, not as its transaction's snapshot had it.
+	sub = frappe.db.get_value(
+		"GX Subscription", sub_name, ["tenant", "resume_pending"], as_dict=True, for_update=True
+	)
 	if not sub or not sub.tenant:
 		return
 	tenant = frappe.db.get_value(
-		"GX Tenant", sub.tenant, ["name", "status", "origin", "press_site_id"], as_dict=True
+		"GX Tenant", sub.tenant, ["name", "status", "origin", "press_site_id"], as_dict=True, for_update=True
 	)
 	if not tenant or tenant.status != "suspended":
 		_mark_resume_pending(sub_name, sub, 0)  # the site isn't off: nothing to retry
@@ -115,6 +119,7 @@ def mark_resume_pending(tenant_name: str):
 		"GX Subscription",
 		{"tenant": tenant_name, "status": ("in", RUNNING), "resume_pending": 0},
 		pluck="name",
+		for_update=True,
 	):
 		frappe.db.set_value("GX Subscription", name, "resume_pending", 1, update_modified=False)
 
@@ -122,7 +127,10 @@ def mark_resume_pending(tenant_name: str):
 def clear_resume_pending(filters: dict):
 	"""Forget a resume Press refused, for the subscriptions matching `filters`: their site is running again,
 	or an admin suspended the customer (whose suspension the job's retry must never undo)."""
-	for name in frappe.get_all("GX Subscription", {**filters, "resume_pending": 1}, pluck="name"):
+	# A locking read: an admin's Suspend that waited for the job must also clear a mark the job just set.
+	for name in frappe.get_all(
+		"GX Subscription", {**filters, "resume_pending": 1}, pluck="name", for_update=True
+	):
 		frappe.db.set_value("GX Subscription", name, "resume_pending", 0, update_modified=False)
 
 
@@ -710,6 +718,7 @@ class _Run:
 			self._would(sub, f"set past_due ({details})")
 			sub.status = "past_due"
 		else:
+			sub.reload()  # the whole row is saved: never write back what an admin changed meanwhile
 			sub.status = "past_due"
 			sub.save(ignore_permissions=True)  # on_update keeps the account's status in step
 			audit("renewal.past_due", "GX Subscription", sub.name, details)
