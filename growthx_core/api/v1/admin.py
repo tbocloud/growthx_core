@@ -240,11 +240,12 @@ def update_customer_status():
 		}
 		raise ApiError(409, "invalid_transition", f"A customer who is {account.status} can't {what[action]}.")
 
-	if action == "reactivate" and frappe.db.get_values(
-		"GX Subscription",
-		{"account": account.name, "status": "suspended", "suspended_by": "billing"},
-		"name",
-		for_update=True,  # a locking read: sees a suspension the renewal job made while this waited
+	# Read under lock: sees a suspension the renewal job made while this request waited for the account.
+	if action == "reactivate" and any(
+		r.status == "suspended" and r.suspended_by == "billing"
+		for r in renewal_jobs.locked_rows(
+			"GX Subscription", {"account": account.name}, ["status", "suspended_by"]
+		)
 	):
 		# Reactivating would be undone by the next hourly run: the admin must say until when.
 		raise ApiError(409, "billing_suspended", "Use Give extra days for a site suspended for non-payment.")
@@ -834,7 +835,7 @@ def extend_grace():
 	sub.save(ignore_permissions=True)  # on_update keeps the account's status in step
 	if restored:
 		renewal_jobs.resume_subscription_site(sub.name)
-		if frappe.db.get_value("GX Tenant", sub.tenant, "status") == "suspended":
+		if frappe.db.get_value("GX Tenant", sub.tenant, "status", for_update=True) == "suspended":
 			# Press refused (logged by the resume): undo the status change rather than leave them out of step
 			raise ApiError(502, "press_unavailable", "Press could not resume the site right now. Try again.")
 	audit(

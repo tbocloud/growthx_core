@@ -146,16 +146,13 @@ def apply_payment(
 		details = "renewal"
 	else:
 		# Another subscription's site that billing suspended stays suspended until that one is paid.
-		# A locking read: one the job suspended while this payment waited for the lock counts too.
+		# Read under lock: one the job suspended while this payment waited for the lock counts too.
 		unpaid = [
 			r.tenant
-			for r in frappe.db.get_values(
-				"GX Subscription",
-				{"account": account.name, "suspended_by": "billing", "name": ("!=", sub.name)},
-				["tenant"],
-				as_dict=True,
-				for_update=True,
+			for r in renewals.locked_rows(
+				"GX Subscription", {"account": account.name}, ["suspended_by", "tenant"]
 			)
+			if r.suspended_by == "billing" and r.name != sub.name
 		]
 		details = set_customer_status(
 			account, "active", "suspended", "ready", "resume_site", keep=set(filter(None, unpaid))
@@ -198,16 +195,12 @@ def set_customer_status(
 		renewals.clear_resume_pending({"account": account.name})
 	client = None
 	failed = []
-	# A locking read: a caller that waited for the account lock while the renewal job moved a site must see
+	# Read under lock: a caller that waited for the account lock while the renewal job moved a site must see
 	# the site's status now, not its transaction's older snapshot.
-	for t in frappe.db.get_values(
-		"GX Tenant",
-		{"account": account.name, "status": site_from},
-		["name", "press_site_id", "origin"],
-		as_dict=True,
-		for_update=True,
+	for t in renewals.locked_rows(
+		"GX Tenant", {"account": account.name}, ["status", "press_site_id", "origin"]
 	):
-		if keep and t.name in keep:
+		if t.status != site_from or (keep and t.name in keep):
 			continue
 		try:
 			# An imported (ERPNext Direct) site is the customer's own: its status moves, Press isn't asked.
