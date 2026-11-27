@@ -22,7 +22,17 @@
   "gateway_section",
   "gateway",
   "gateway_subscription_id",
-  "last_payment_id"
+  "last_payment_id",
+  "renewal_section",
+  "due_date",
+  "grace_until",
+  "final_warning_on",
+  "archive_due_on",
+  "archive_warning_on",
+  "notified_stages",
+  "suspended_at",
+  "suspended_by",
+  "resume_pending"
  ],
  "fields": [
   {
@@ -135,11 +145,68 @@
    "fieldname": "last_payment_id",
    "fieldtype": "Data",
    "label": "Last Payment ID"
+  },
+  {
+   "fieldname": "renewal_section",
+   "fieldtype": "Section Break",
+   "label": "Renewal"
+  },
+  {
+   "fieldname": "due_date",
+   "fieldtype": "Date",
+   "label": "Due Date",
+   "description": "Day 0 while never paid."
+  },
+  {
+   "fieldname": "grace_until",
+   "fieldtype": "Date",
+   "label": "Grace Until"
+  },
+  {
+   "fieldname": "final_warning_on",
+   "fieldtype": "Date",
+   "label": "Final Warning On"
+  },
+  {
+   "fieldname": "archive_due_on",
+   "fieldtype": "Date",
+   "label": "Archive Due On"
+  },
+  {
+   "fieldname": "archive_warning_on",
+   "fieldtype": "Date",
+   "label": "Archive Warning On",
+   "description": "The day the deletion warning was emailed; the site is archived no sooner than the warning period after it."
+  },
+  {
+   "fieldname": "notified_stages",
+   "fieldtype": "Small Text",
+   "label": "Notified Stages",
+   "description": "Comma-separated stage numbers already emailed, e.g. -7,-3."
+  },
+  {
+   "fieldname": "suspended_at",
+   "fieldtype": "Datetime",
+   "label": "Suspended At"
+  },
+  {
+   "fieldname": "suspended_by",
+   "fieldtype": "Select",
+   "label": "Suspended By",
+   "options": "\nbilling\nadmin"
+  },
+  {
+   "default": "0",
+   "fieldname": "resume_pending",
+   "fieldtype": "Check",
+   "label": "Resume Pending",
+   "read_only": 1,
+   "description": "Press refused to switch the site back on after a payment or an admin's Reactivate: the renewal job tries again each hour. Cleared once the site is back, or when an admin suspends the customer."
   }
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-11-03 12:00:00.000000",
+ "modified": "2026-11-27 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Billing",
  "name": "GX Subscription",

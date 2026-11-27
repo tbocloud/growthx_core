@@ -165,6 +165,8 @@ def admin_tenant_detail(tenant_doc) -> dict:
 
 
 def subscription(s, product_name: str | None = None, plan_name: str | None = None) -> dict:
+	from growthx_core.billing import renewals  # (renewals imports the runner, which imports this module)
+
 	return {
 		"id": s.name,
 		"productSlug": s.product or None,
@@ -178,6 +180,7 @@ def subscription(s, product_name: str | None = None, plan_name: str | None = Non
 		"currentPeriodEnd": iso(s.current_period_end),
 		"cancelAtPeriodEnd": bool(cint(s.cancel_at_period_end)),
 		"siteId": s.tenant or None,
+		"renewal": renewals.renewal_info(s),
 	}
 
 

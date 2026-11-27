@@ -8,11 +8,11 @@
  "field_order": [
   "display_name",
   "account",
-   "product",
-   "subscription",
-   "origin",
-   "status",
-   "country",
+  "product",
+  "subscription",
+  "origin",
+  "status",
+  "country",
   "chart_of_accounts",
   "column_break_1",
   "subdomain",
@@ -37,7 +37,12 @@
   "status_section",
   "status_message",
   "last_error",
-  "steps"
+  "steps",
+  "platform_sync_section",
+  "platform_site",
+  "sync_status",
+  "sync_message",
+  "sync_checked_at"
  ],
  "fields": [
   {
@@ -251,11 +256,36 @@
    "fieldtype": "Table",
    "label": "Steps",
    "options": "GX Provisioning Step"
+  },
+  {
+   "fieldname": "platform_sync_section",
+   "fieldtype": "Section Break",
+   "label": "Platform Sync"
+  },
+  {
+   "fieldname": "platform_site",
+   "fieldtype": "Data",
+   "label": "Platform Site"
+  },
+  {
+   "fieldname": "sync_status",
+   "fieldtype": "Data",
+   "label": "Sync Status"
+  },
+  {
+   "fieldname": "sync_message",
+   "fieldtype": "Small Text",
+   "label": "Sync Message"
+  },
+  {
+   "fieldname": "sync_checked_at",
+   "fieldtype": "Datetime",
+   "label": "Sync Checked At"
   }
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-10-30 16:58:58.817484",
+ "modified": "2026-11-26 10:00:00.000000",
  "modified_by": "Administrator",
  "module": "Provisioning",
  "name": "GX Tenant",

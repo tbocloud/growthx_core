@@ -7,3 +7,5 @@
 growthx_core.patches.v1.product_apps_table
 growthx_core.patches.v1.phoebix_site_name
 growthx_core.patches.v1.hide_erpnext_direct
+growthx_core.patches.v1.billing_settings_defaults
+growthx_core.patches.v1.direct_due_dates

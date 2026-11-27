@@ -189,6 +189,39 @@ paths:
         "429": { $ref: "#/components/responses/RateLimited" }
 
   # ---------------------------------------------------------------- catalogue (public)
+  /growthx_core.api.v1.site_payment.go:
+    get:
+      tags: [tenant]
+      summary: Pay now target for Press's suspended-site page
+      description: |
+        The Pay now button on the platform's suspended page links here with the host the visitor used.
+        Public, read-only, rate-limited to 30 per minute per IP address.
+
+        - `302` to `{web}/login?next=/customer/billing` when GrowthX bills a site with this host (a provisioned
+          tenant's address or active custom domain; an imported tenant's address or platform site) and the
+          tenant isn't archived. Matching is exact and case-insensitive; scheme, port and path are ignored.
+        - `200` with a small HTML page ("This site is paused. Please contact the provider who manages it.")
+          for every other host. It carries no customer data and doesn't say whether the site exists.
+      operationId: sitePayment
+      x-phase: 2
+      security: []
+      parameters:
+        - name: site
+          in: query
+          required: true
+          description: The host the visitor used, e.g. `shop.example.com`.
+          schema: { type: string }
+      responses:
+        "302":
+          description: Go to sign-in, then the Billing page
+          headers:
+            Location: { schema: { type: string } }
+        "200":
+          description: Neutral "site is paused" page
+          content:
+            text/html:
+              schema: { type: string }
+        "429": { $ref: "#/components/responses/RateLimited" }
   /growthx_core.api.v1.catalogue.products:
     get:
       tags: [catalogue]
@@ -3134,11 +3167,12 @@ paths:
         - `suspend` (`reason` required): `trial` or `active` → `suspended`. Their ready sites are taken offline (Press
           keeps the data).
         - `reactivate`: `suspended` → `trial` if the trial hasn't ended, otherwise `active`. Their suspended sites come
-          back.
+          back; one Press refuses is retried by the renewal job every hour (Admin → Renewals `resumePending`).
 
-        Subscriptions are not changed (billing will own them). If Press refuses a site, the action still completes,
-        that site keeps its status, and the history entry names it. Every action is in `history` and the audit log.
-        Accepts `Idempotency-Key`: a new key per intended action.
+        Subscriptions are not changed (billing will own them), except for that retry mark: `suspend` clears it, so
+        the renewal job never switches a site back on after an admin's suspension. If Press refuses a site, the
+        action still completes, that site keeps its status, and the history entry names it.
+        Every action is in `history` and the audit log. Accepts `Idempotency-Key`: a new key per intended action.
       operationId: adminUpdateCustomerStatus
       x-phase: 2
       x-roles: [admin]
@@ -3166,7 +3200,7 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
-          description: "`invalid_transition`: the action doesn't apply to the customer's status (or there's no trial to extend)"
+          description: "`invalid_transition`: the action doesn't apply to the customer's status (or there's no trial to extend). `billing_suspended`: a reactivate for a customer whose site the renewal job suspended for non-payment; use `admin.extend_grace` (Give extra days) instead"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -3182,10 +3216,13 @@ paths:
 
         - The customer's subscription for the plan's product moves to `plan` (an active or a retired plan) and becomes
           `active`. The trial end is cleared.
-        - `currentPeriodEnd` moves one billing period on from `paidOn`, or, for a renewal paid before the current
-          period ends, from the current period end. A `one_time` (lifetime) plan sets it to `null`: never expires.
-          Moving from a monthly or yearly plan to lifetime is allowed; a customer already on lifetime gets `409
-          invalid_transition`.
+        - `currentPeriodEnd` moves one billing period on from where the new period starts: for a renewal paid
+          early or in grace (`past_due`), the current period end (no free days, none lost); for one paid after a
+          suspension (also one an admin gave extra days after it), `paidOn`; for a first payment, its due date
+          (an ERPNext Direct site's "due now" day or billing start), else `paidOn`. A period that would already
+          be over on `paidOn` (a payment made very late) starts on `paidOn` instead, and the audit line says so.
+          A `one_time` (lifetime) plan sets it to `null`: never expires. Moving from a monthly or yearly plan to
+          lifetime is allowed; a customer already on lifetime gets `409 invalid_transition`.
         - The customer becomes `active`. A suspended customer's sites come back, as with `reactivate`.
         - The payment (amount, the plan's price, date, reference, new period end) is in `history` and the audit log.
           The customer isn't emailed.
@@ -3724,7 +3761,9 @@ paths:
         already received (same rules as `admin.record_payment`) and makes it `active`. `confirmOnPress`
         (default true) does one exact-name lookup on Press: not found is a 422, Press not answering is allowed
         with the `press_unreachable` warning. Sending the same request again answers `200` with the site
-        already added. A site already added for another customer is `409 site_exists`.
+        already added. A site already added for another customer is `409 site_exists`. Core's own sites
+        (growthx-core.tbogrowthx.com, core-test.tbogrowthx.com, tbocloud.in, this Core's hosts and site_config
+        `growthx_core_sites`) are refused (422 on `site`).
       operationId: adminAddDirectSite
       x-phase: 2
       x-roles: [admin]
@@ -3836,7 +3875,12 @@ paths:
         For good: a site Core built is backed up and then deleted on Press; an imported ERPNext site is
         the customer's own, so it keeps running and only billing stops. The tenant becomes `archived`
         and its subscription `canceled`. A site still being set up can't be terminated, and an archive
-        already done is refused (`already_archived`).
+        already done is refused (`already_archived`). An imported site that is suspended is refused
+        (`site_suspended`): once terminated, nothing would switch it back on, so reactivate it or give extra
+        days first. It is also refused (`site_suspended`) while the Press-side sync job's last report says the
+        site is still switched off there (`syncStatus` `suspended` or `held`, any case), as it is for a few
+        minutes after reactivating or giving extra days: wait until it is running again. An imported site the
+        sync job has never reported on is not held back by this.
       operationId: adminTerminateTenant
       x-phase: 2
       x-roles: [admin]
@@ -3861,7 +3905,92 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
-          description: "`already_archived`, `invalid_transition`: terminated already, or still being set up"
+          description: "`already_archived`, `invalid_transition`, `site_suspended`: terminated already, still being set up, or an imported site that is suspended (in Core, or still on the hosting platform by the sync job's last report)"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /growthx_core.api.v1.admin.renewals:
+    get:
+      tags: [admin]
+      summary: Admin → Renewals
+      description: |
+        Six lists, each oldest deadline first. `expiring`: active subscriptions ending within 7 days (30 for a
+        yearly plan). `pastDue`: the first payment is owed or the plan has expired, with the suspension day.
+        `suspended`: sites switched off (with the deletion day for a never-paid trial; a subscription made before
+        dates were stored has none). `syncProblems`: ERPNext Direct sites the Press-side sync job couldn't find
+        or act on (`syncStatus` `Not found`, `Not on platform`, `held` or `error`), or hasn't matched to a Press
+        site yet. `resumePending`: the subscription is paid (or the customer reactivated) but Press refused to
+        switch its site back on then; the renewal job tries again every hour until it is back. Only such a refused resume is listed or retried:
+        a site an admin suspended never is, even after the customer's status changes, and an admin's Suspend of
+        the customer stops the retry. `unscheduled`: live subscriptions with no period end, due date or trial
+        end, which the renewal job can't follow (set a plan or record a payment). Sites not built yet, failed or
+        archived are left out. Dates are ISO 8601 UTC, calendar days in IST (see decision 14).
+      operationId: adminListRenewals
+      x-phase: 2
+      x-roles: [admin]
+      responses:
+        "200":
+          description: The lists
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [expiring, pastDue, suspended, syncProblems, resumePending, unscheduled]
+                properties:
+                  expiring: { type: array, items: { $ref: "#/components/schemas/RenewalItem" } }
+                  pastDue: { type: array, items: { $ref: "#/components/schemas/RenewalItem" } }
+                  suspended: { type: array, items: { $ref: "#/components/schemas/RenewalItem" } }
+                  syncProblems: { type: array, items: { $ref: "#/components/schemas/RenewalItem" } }
+                  resumePending: { type: array, items: { $ref: "#/components/schemas/RenewalItem" } }
+                  unscheduled: { type: array, items: { $ref: "#/components/schemas/RenewalItem" } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /growthx_core.api.v1.admin.extend_grace:
+    post:
+      tags: [admin]
+      summary: Give extra days
+      description: |
+        Moves a subscription's suspension later: it isn't suspended before `until` (a day after today, at most
+        60 days ahead). If the renewal job suspended it for non-payment, it comes back (a trial is `trialing`
+        again, a paid plan `past_due`) and its site is resumed on Press. Reminders and warnings already sent
+        stay recorded, so the customer is not warned again; the suspension email goes out at the end (for a trial, the trial-ended email is sent again just before the second pause). A
+        paid plan brought back this way keeps its suspension time: paid later, its new period starts on the
+        payment day, as after any suspension. A site an admin suspended stays suspended: use Reactivate. A
+        terminated site is refused (`tenant_archived`). Audit-logged as `renewal.extend_grace`.
+      operationId: adminExtendGrace
+      x-phase: 2
+      x-roles: [admin]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, until]
+              properties:
+                id: { type: string, description: Subscription id }
+                until: { type: string, format: date, example: "2027-01-05" }
+      responses:
+        "200":
+          description: The subscription's row, as listed in Renewals
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RenewalItem" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`invalid_transition`: the subscription is canceled. `tenant_archived`: its site is terminated"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "502":
+          description: "`press_unavailable`: Press could not resume the site; nothing changed"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -5393,6 +5522,56 @@ components:
           description: Null during a trial and for a `one_time` (lifetime) plan, which never expires.
         cancelAtPeriodEnd: { type: boolean, default: false }
         siteId: { type: string, nullable: true }
+        renewal:
+          allOf: [{ $ref: "#/components/schemas/Renewal" }]
+          nullable: true
+          description: Null for a paid lifetime plan and a canceled subscription
+
+    Renewal:
+      type: object
+      description: |
+        Where a subscription is on its renewal timeline, computed by Core (the same rules as the hourly renewal
+        job), so clients show it without date logic of their own. Dates are calendar days in IST. Null for a
+        paid lifetime plan, a canceled subscription, and a live one with no date to renew from. While Core's
+        `suspend_sites` setting is off, no suspension or deletion day is promised: `suspendsAt` and
+        `archivesAt` are null.
+      required: [stage, daysLeft, expiresAt, suspendsAt, archivesAt, canPay, payInAdvance]
+      properties:
+        stage:
+          type: string
+          enum: [paid, due_soon, first_due, expired, suspended, trial, trial_ended]
+          description: |
+            `paid`: paid up, outside the reminder window. `due_soon`: inside it (7 days before the end, for a
+            yearly plan too; its 30-day reminder is an email only). `first_due`: the first payment is owed.
+            `expired`: the end has passed, in grace. `suspended`: the site is off (`expiresAt` is null for a
+            subscription made before dates were stored). `trial`: a GrowthX trial is running. `trial_ended`: the
+            trial is over (about to be paused, or paused and awaiting deletion).
+        daysLeft:
+          type: integer
+          description: Whole days to the next deadline, never negative. The end (`paid`, `due_soon`, `trial`), the suspension day (`first_due`, `expired`, `trial_ended` before the pause), the deletion day (`trial_ended` once paused), else 0.
+        expiresAt: { type: string, format: date-time, nullable: true, description: "The renewal date (day 0), or the last day of a trial. For a subscription that existed before renewals were switched on, its first one is at least 7 days after that day" }
+        suspendsAt: { type: string, format: date-time, nullable: true, description: "When the site will be suspended (in `due_soon`, the day it would be if the plan isn't renewed; for a plan cancelled at period end, its end day); null once suspended, when nothing will suspend it, and while suspension is off in Core" }
+        archivesAt: { type: string, format: date-time, nullable: true, description: "When a paused never-paid trial's site will be deleted; otherwise null (also while suspension is off in Core)" }
+        canPay: { type: boolean, description: "False only in `paid`" }
+        payInAdvance: { type: boolean, description: "True in `paid`; offer a small \"Pay in advance\" link" }
+
+    RenewalItem:
+      type: object
+      description: One row of Admin → Renewals. `subscriptionId`, `planName` and `stage` are null for an ERPNext Direct site with no live subscription.
+      required: [subscriptionId, accountId, accountName, site, origin, planName, stage, expiresAt, suspendsAt, archivesAt, syncStatus, syncMessage]
+      properties:
+        subscriptionId: { type: string, nullable: true }
+        accountId: { type: string }
+        accountName: { type: string, nullable: true }
+        site: { type: string, nullable: true, description: "The Press site name if matched, else the site's host" }
+        origin: { type: string, enum: [provisioned, imported] }
+        planName: { type: string, nullable: true }
+        stage: { type: string, nullable: true, enum: [paid, due_soon, first_due, expired, suspended, trial, trial_ended, null] }
+        expiresAt: { type: string, format: date-time, nullable: true }
+        suspendsAt: { type: string, format: date-time, nullable: true }
+        archivesAt: { type: string, format: date-time, nullable: true }
+        syncStatus: { type: string, nullable: true, description: "The Press-side job's last report for an imported site: `Not found`, `held`, `error`, or its normal states" }
+        syncMessage: { type: string, nullable: true }
 
     InvoiceStatus:
       type: string

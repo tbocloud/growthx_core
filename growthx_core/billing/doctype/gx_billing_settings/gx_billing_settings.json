@@ -1,0 +1,178 @@
+{
+ "actions": [],
+ "creation": "2026-11-26 10:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "enabled",
+  "send_emails",
+  "suspend_sites",
+  "dry_run",
+  "online_payments",
+  "started_on",
+  "column_break_1",
+  "paid_reminder_days",
+  "yearly_extra_reminder_days",
+  "grace_warning_days",
+  "trial_reminder_days",
+  "suspend_after_days",
+  "trial_archive_after_days",
+  "trial_archive_warning_days",
+  "limits_section",
+  "max_suspensions_per_run",
+  "max_archives_per_run",
+  "sync_max_suspensions_per_run",
+  "platform_section",
+  "platform_sites",
+  "platform_sites_at"
+ ],
+ "fields": [
+  {
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "label": "Enabled",
+   "default": "0",
+   "description": "Master switch for renewal reminders, grace and suspension."
+  },
+  {
+   "fieldname": "send_emails",
+   "fieldtype": "Check",
+   "label": "Send Emails",
+   "default": "0"
+  },
+  {
+   "fieldname": "suspend_sites",
+   "fieldtype": "Check",
+   "label": "Suspend Sites",
+   "default": "0"
+  },
+  {
+   "fieldname": "dry_run",
+   "fieldtype": "Check",
+   "label": "Dry Run",
+   "default": "1",
+   "description": "Log what would happen without emailing or suspending."
+  },
+  {
+   "fieldname": "online_payments",
+   "fieldtype": "Check",
+   "label": "Online Payments",
+   "default": "0",
+   "description": "Mirrors the website's ONLINE_PAYMENTS."
+  },
+  {
+   "fieldname": "started_on",
+   "fieldtype": "Date",
+   "label": "Started On",
+   "read_only": 1,
+   "description": "Set by the renewal job on its first live run (enabled, dry run off). Subscriptions made before it get at least 7 days before their first day 0."
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break",
+   "label": "Column Break 1"
+  },
+  {
+   "fieldname": "paid_reminder_days",
+   "fieldtype": "Data",
+   "label": "Paid Reminder Days",
+   "default": "7,3,1"
+  },
+  {
+   "fieldname": "yearly_extra_reminder_days",
+   "fieldtype": "Data",
+   "label": "Yearly Extra Reminder Days",
+   "default": "30"
+  },
+  {
+   "fieldname": "grace_warning_days",
+   "fieldtype": "Data",
+   "label": "Grace Warning Days",
+   "default": "1,3,5"
+  },
+  {
+   "fieldname": "trial_reminder_days",
+   "fieldtype": "Data",
+   "label": "Trial Reminder Days",
+   "default": "3,1"
+  },
+  {
+   "fieldname": "suspend_after_days",
+   "fieldtype": "Int",
+   "label": "Suspend After Days",
+   "default": "7"
+  },
+  {
+   "fieldname": "trial_archive_after_days",
+   "fieldtype": "Int",
+   "label": "Trial Archive After Days",
+   "default": "30"
+  },
+  {
+   "fieldname": "trial_archive_warning_days",
+   "fieldtype": "Int",
+   "label": "Trial Archive Warning Days",
+   "default": "5"
+  },
+  {
+   "fieldname": "limits_section",
+   "fieldtype": "Section Break",
+   "label": "Limits"
+  },
+  {
+   "fieldname": "max_suspensions_per_run",
+   "fieldtype": "Int",
+   "label": "Max Suspensions Per Run",
+   "default": "3"
+  },
+  {
+   "fieldname": "max_archives_per_run",
+   "fieldtype": "Int",
+   "label": "Max Archives Per Run",
+   "default": "2"
+  },
+  {
+   "fieldname": "sync_max_suspensions_per_run",
+   "fieldtype": "Int",
+   "label": "Sync Max Suspensions Per Run",
+   "default": "1"
+  },
+  {
+   "fieldname": "platform_section",
+   "fieldtype": "Section Break",
+   "label": "Platform Sites"
+  },
+  {
+   "fieldname": "platform_sites",
+   "fieldtype": "Long Text",
+   "label": "Platform Sites (JSON)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "platform_sites_at",
+   "fieldtype": "Datetime",
+   "label": "Platform Sites At",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-11-26 18:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Billing",
+ "name": "GX Billing Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "read": 1,
+   "role": "System Manager",
+   "write": 1
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

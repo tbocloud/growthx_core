@@ -261,7 +261,17 @@ fixtures = [
 	{
 		"dt": "Role",
 		"filters": [
-			["name", "in", ["GrowthX Customer", "GrowthX Partner", "GrowthX Admin", "GrowthX Content Editor"]]
+			[
+				"name",
+				"in",
+				[
+					"GrowthX Customer",
+					"GrowthX Partner",
+					"GrowthX Admin",
+					"GrowthX Content Editor",
+					"GrowthX Site Sync",
+				],
+			]
 		],
 	},
 ]
@@ -297,6 +307,8 @@ scheduler_events = {
 		# Custom domains waiting on the customer's DNS record or on Press's HTTPS certificate
 		"*/10 * * * *": ["growthx_core.provisioning.custom_domains.check_pending"],
 	},
+	# Renewals: reminders, grace, suspension and archiving (does nothing until GX Billing Settings is enabled)
+	"hourly": ["growthx_core.billing.renewals.run"],
 	"daily": [
 		"growthx_core.tokens.delete_expired_tokens",
 		"growthx_core.partners.notifications.send_trial_reminders",
