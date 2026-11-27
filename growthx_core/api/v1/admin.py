@@ -700,9 +700,9 @@ TENANT_FIELDS = [
 def renewals():
 	"""Admin → Renewals: `expiring` (active, ending within 7 days; 30 for a yearly plan), `pastDue`,
 	`suspended` (with the day a paused trial is deleted), `syncProblems` (ERPNext Direct sites the
-	Press-side job couldn't find or act on, or hasn't matched to a Press site yet), `resumePending` (paid,
-	but Press refused to switch the site back on: `resume_pending`, which the job retries each hour; a site
-	an admin suspended is never in it) and `unscheduled` (live subscriptions with no date to renew from,
+	Press-side job couldn't find or act on, or hasn't matched to a Press site yet), `resumePending` (paid or
+	reactivated, but Press refused to switch the site back on: `resume_pending`, which the job retries each
+	hour; a site an admin suspended is never in it) and `unscheduled` (live subscriptions with no date to renew from,
 	which the job can't follow). Sites that aren't built or are archived are left out, as the job leaves
 	them alone."""
 	job = renewal_jobs.new_job()

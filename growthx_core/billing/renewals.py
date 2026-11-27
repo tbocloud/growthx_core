@@ -108,6 +108,17 @@ def _mark_resume_pending(sub_name: str, sub, value: int):
 		frappe.db.set_value("GX Subscription", sub_name, "resume_pending", value, update_modified=False)
 
 
+def mark_resume_pending(tenant_name: str):
+	"""Press refused to bring this tenant's site back when the customer's sites were restored (a payment, an
+	admin's Reactivate): its running subscriptions are marked, so the job tries again."""
+	for name in frappe.get_all(
+		"GX Subscription",
+		{"tenant": tenant_name, "status": ("in", RUNNING), "resume_pending": 0},
+		pluck="name",
+	):
+		frappe.db.set_value("GX Subscription", name, "resume_pending", 1, update_modified=False)
+
+
 def clear_resume_pending(filters: dict):
 	"""Forget a resume Press refused, for the subscriptions matching `filters`: their site is running again,
 	or an admin suspended the customer (whose suspension the job's retry must never undo)."""
@@ -116,8 +127,9 @@ def clear_resume_pending(filters: dict):
 
 
 def resume_pending(sub, tenant) -> bool:
-	"""Press refused to bring the site back after a payment (`resume_pending`, set only by
-	resume_subscription_site), and the site is still off while the subscription runs: the job tries again.
+	"""Press refused to bring the site back after a payment or an admin's Reactivate (`resume_pending`, set
+	only where Press refused a resume), and the site is still off while the subscription runs: the job tries
+	again.
 	Never inferred from the account's status, which any subscription save recomputes: a site an admin
 	suspended is never resumed by the job (Ruling 19)."""
 	return (
@@ -640,10 +652,10 @@ class _Run:
 	# ------------------------------------------------------------ actions (dry_run: audit lines only)
 
 	def _resume(self, sub, tenant) -> bool:
-		"""Press refused to bring the site back after a payment (`resume_pending`). Try again (Rulings 13,
-		19); True once it is back."""
+		"""Press refused to bring the site back after a payment or a Reactivate (`resume_pending`). Try again
+		(Rulings 13, 19); True once it is back."""
 		if self.dry:
-			self._would(sub, f"resume {tenant.name} (Press refused it after a payment)")
+			self._would(sub, f"resume {tenant.name} (Press had refused it)")
 			return False
 		resume_subscription_site(sub.name, "by the renewal job (Press had refused it)")
 		if frappe.db.get_value("GX Tenant", tenant.name, "status") == "suspended":

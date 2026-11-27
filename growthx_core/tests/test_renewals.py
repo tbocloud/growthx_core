@@ -1887,6 +1887,49 @@ class TestRenewalAdminApi(RenewalsCase):
 			["ready", "suspended", "ready"],
 		)
 
+	def test_a_resume_refused_while_a_customer_comes_back_is_retried(self):
+		# Press refuses while the customer's sites are restored: by a payment after an admin's suspension (the
+		# paid site and the customer's other one), or by Reactivate. The job tries again (Rulings 13, 19).
+		account, other, other_site = self._gx_customer("active", current_period_end="2027-01-20")
+		_, paid, paid_site = self._customer(
+			"provisioned", "active", current_period_end="2027-01-20", account=account
+		)
+		suspend = {"id": account.name, "action": "suspend", "reason": "Chargeback"}
+		status, body = self._at("2026-12-26 09:00:00", admin.update_customer_status, suspend)
+		self.assertEqual(status, 200, body)
+		self.press.fail_resume = True
+		sub, _details, _end = payments.apply_payment(
+			frappe.get_doc("GX Account", account.name),
+			frappe.get_doc("GX Plan", PLAN),
+			"pay-1",
+			getdate("2026-12-26"),
+			"manual",
+		)
+		self.assertEqual(sub.name, paid.name)  # the newest subscription of the product
+		self.assertEqual(frappe.db.get_value("GX Account", account.name, "status"), "active")
+		self.assertEqual([self._row(s).resume_pending for s in (other, paid)], [1, 1])
+		self.press.fail_resume = False
+		self._at("2026-12-26 10:00:00")
+		self.assertEqual(
+			[frappe.db.get_value("GX Tenant", t.name, "status") for t in (other_site, paid_site)],
+			["ready", "ready"],
+		)
+		self.assertEqual([self._row(s).resume_pending for s in (other, paid)], [0, 0])
+		# Reactivate refused by Press: the customer is active again, the job brings the site back
+		status, body = self._at("2026-12-26 11:00:00", admin.update_customer_status, suspend)
+		self.assertEqual(status, 200, body)
+		self.press.fail_resume = True
+		status, body = self._at(
+			"2026-12-26 11:30:00", admin.update_customer_status, {"id": account.name, "action": "reactivate"}
+		)
+		self.assertEqual(status, 200, body)
+		self.assertEqual(frappe.db.get_value("GX Tenant", other_site.name, "status"), "suspended")
+		self.assertEqual(self._row(other).resume_pending, 1)
+		self.press.fail_resume = False
+		self._at("2026-12-26 12:00:00")
+		self.assertEqual(frappe.db.get_value("GX Tenant", other_site.name, "status"), "ready")
+		self.assertEqual(self._row(other).resume_pending, 0)
+
 	def test_extend_grace_refused_for_an_archived_site(self):
 		_, sub, tenant = self._gx_customer("suspended", trial_ends_at="2026-11-20 12:00:00")
 		self._suspend(sub, tenant, archive_due_on="2026-12-21")
