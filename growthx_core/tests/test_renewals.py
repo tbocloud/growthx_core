@@ -1862,6 +1862,29 @@ class TestRenewalAdminApi(RenewalsCase):
 		self.assertEqual(frappe.db.get_value("GX Tenant", tenant.name, "status"), "ready")
 		self.assertEqual(self.press.calls, [("resume_site", tenant.press_site_id)])
 
+	def test_the_job_takes_the_account_lock_before_its_first_read(self):
+		"""MariaDB fixes a transaction's snapshot (REPEATABLE READ) at its first plain read. The job waits for
+		the account lock while an admin's Suspend holds it: had it read anything first, it would not see that
+		Suspend once it got the lock, and could retry the resume the Suspend had cancelled. So after each
+		commit, the job's first read is the lock itself."""
+		_, sub, site = self._gx_customer("active", current_period_end="2027-01-20")
+		frappe.db.set_value("GX Tenant", site.name, "status", "suspended")
+		frappe.db.set_value("GX Subscription", sub.name, "resume_pending", 1)  # Press refused a resume
+		log = []
+		real_sql = frappe.db.sql
+
+		def logged(query, *args, **kwargs):
+			log.append(str(query).strip().lower())
+			return real_sql(query, *args, **kwargs)
+
+		frappe.db.commit.side_effect = lambda *args, **kwargs: log.append("commit")
+		with patch.object(frappe.db, "sql", side_effect=logged):
+			self._at("2026-12-26 10:00:00")
+		lock = next(i for i, q in enumerate(log) if "for update" in q and "`tabgx account`" in q)
+		begin = max(i for i in range(lock) if log[i] == "commit")
+		self.assertEqual([q for q in log[begin + 1 : lock] if q.startswith("select")], [])
+		self.assertEqual(self.press.calls, [("resume_site", site.press_site_id)])  # the retry still works
+
 	def test_resume_pending_lists_and_retries_only_a_refused_billing_resume(self):
 		_, pending, pending_site = self._gx_customer("active", current_period_end="2027-01-20")
 		frappe.db.set_value("GX Tenant", pending_site.name, "status", "suspended")
