@@ -17,8 +17,10 @@ Switching it on (Ruling 15):
   warning after day 0 and nothing that names a suspension or pause day; no final warning is recorded,
   a plan cancelled at period end is left as it is, and the customer's renewal info has no `suspendsAt`.
   `renewal.would` lines say what would be suspended once it is on.
-- **Step 2:** `suspend_sites` on. The warnings then run from that day, so every final notice is fresh
-  and no site is suspended sooner than two days after it.
+- **Step 2:** `suspend_sites` on. The warnings then run from that day, so every final notice is fresh: a
+  paid plan is suspended no sooner than two days after its final notice (`suspend_after_days` minus the
+  last warning day, with the defaults), a trial no sooner than the day after its last reminder, which is
+  sent again naming that day.
 The first live run (enabled, dry_run off) records `started_on`: a subscription made before it gets its
 first day 0 no sooner than 7 days later, so every existing customer gets the whole timeline.
 """
@@ -75,32 +77,55 @@ def _date(value) -> date | None:
 
 
 def resume_subscription_site(sub_name: str, why: str = "after payment") -> None:
-	"""Bring the subscription's site back after a payment. A GrowthX (provisioned) site is resumed on
-	Press; an ERPNext Direct (imported) site is the customer's own and only changes status here. If
-	Press refuses, the error is logged and the tenant stays suspended (the hourly job tries again:
-	`resume_pending`)."""
-	tenant_name = frappe.db.get_value("GX Subscription", sub_name, "tenant")
-	if not tenant_name:
+	"""Bring the subscription's site back after a payment (or extra days). A GrowthX (provisioned) site is
+	resumed on Press; an ERPNext Direct (imported) site is the customer's own and only changes status here.
+	If Press refuses, the error is logged, the tenant stays suspended and the subscription is marked
+	`resume_pending`: the hourly job tries again (Ruling 19). The mark is cleared once the site is back.
+	(Give extra days undoes everything on a refusal, the mark included: the admin tries again.)"""
+	sub = frappe.db.get_value("GX Subscription", sub_name, ["tenant", "resume_pending"], as_dict=True)
+	if not sub or not sub.tenant:
 		return
 	tenant = frappe.db.get_value(
-		"GX Tenant", tenant_name, ["name", "status", "origin", "press_site_id"], as_dict=True
+		"GX Tenant", sub.tenant, ["name", "status", "origin", "press_site_id"], as_dict=True
 	)
 	if not tenant or tenant.status != "suspended":
+		_mark_resume_pending(sub_name, sub, 0)  # the site isn't off: nothing to retry
 		return
 	if tenant.origin != "imported" and tenant.press_site_id:
 		try:
 			runner.get_client().resume_site(tenant.press_site_id)
 		except Exception:
 			frappe.log_error(title=f"GrowthX: resume_site failed for {tenant.name}")
+			_mark_resume_pending(sub_name, sub, 1)
 			return
 	frappe.db.set_value("GX Tenant", tenant.name, "status", "ready")
+	_mark_resume_pending(sub_name, sub, 0)
 	audit("renewal.resume", "GX Subscription", sub_name, f"site {tenant.name} resumed {why}")
 
 
-def resume_pending(sub, tenant, account_suspended: bool) -> bool:
-	"""The site is off although the subscription is live and not suspended (paid, or given extra days)
-	and no admin suspended the whole account: Press refused to resume it."""
-	return bool(tenant) and tenant.status == "suspended" and sub.status in RUNNING and not account_suspended
+def _mark_resume_pending(sub_name: str, sub, value: int):
+	if cint(sub.resume_pending) != value:
+		frappe.db.set_value("GX Subscription", sub_name, "resume_pending", value, update_modified=False)
+
+
+def clear_resume_pending(filters: dict):
+	"""Forget a resume Press refused, for the subscriptions matching `filters`: their site is running again,
+	or an admin suspended the customer (whose suspension the job's retry must never undo)."""
+	for name in frappe.get_all("GX Subscription", {**filters, "resume_pending": 1}, pluck="name"):
+		frappe.db.set_value("GX Subscription", name, "resume_pending", 0, update_modified=False)
+
+
+def resume_pending(sub, tenant) -> bool:
+	"""Press refused to bring the site back after a payment (`resume_pending`, set only by
+	resume_subscription_site), and the site is still off while the subscription runs: the job tries again.
+	Never inferred from the account's status, which any subscription save recomputes: a site an admin
+	suspended is never resumed by the job (Ruling 19)."""
+	return (
+		bool(tenant)
+		and bool(cint(sub.get("resume_pending")))
+		and tenant.status == "suspended"
+		and sub.status in RUNNING
+	)
 
 
 def never_paid(account: str) -> bool:
@@ -133,7 +158,8 @@ def suspend_subscription(sub_name: str, by: str = "billing") -> bool:
 			frappe.log_error(title=f"GrowthX: suspend_site failed for {tenant.name}")
 			return False
 	try:
-		values = {"status": "suspended", "suspended_at": _now(), "suspended_by": by}
+		# (a new suspension replaces any resume still pending)
+		values = {"status": "suspended", "suspended_at": _now(), "suspended_by": by, "resume_pending": 0}
 		if not imported and sub.status == "trialing" and never_paid(sub.account):
 			values["archive_due_on"] = add_days(_today(), int_setting("trial_archive_after_days"))
 		frappe.db.set_value("GX Tenant", tenant.name, "status", "suspended")
@@ -345,7 +371,7 @@ class _Run:
 			return
 		if tenant.status in SITES_NOT_LIVE:
 			return
-		if resume_pending(sub, tenant, account.status == "suspended") and not self._resume(sub, tenant):
+		if resume_pending(sub, tenant) and not self._resume(sub, tenant):
 			return
 		if tenant.status == "suspended" and sub.suspended_by != "billing":
 			return  # an admin's suspension (customer_action suspend, account-wide): the admin lifts it
@@ -614,15 +640,16 @@ class _Run:
 	# ------------------------------------------------------------ actions (dry_run: audit lines only)
 
 	def _resume(self, sub, tenant) -> bool:
-		"""The site is still off although the subscription is paid (`resume_pending`): Press refused the
-		resume during the payment. Try again (Ruling 13); True once it is back."""
+		"""Press refused to bring the site back after a payment (`resume_pending`). Try again (Rulings 13,
+		19); True once it is back."""
 		if self.dry:
-			self._would(sub, f"resume {tenant.name} (live subscription, site still suspended)")
+			self._would(sub, f"resume {tenant.name} (Press refused it after a payment)")
 			return False
 		resume_subscription_site(sub.name, "by the renewal job (Press had refused it)")
 		if frappe.db.get_value("GX Tenant", tenant.name, "status") == "suspended":
-			return False  # refused again (logged): tried again next run
+			return False  # refused again (logged, still pending): tried again next run
 		tenant.status = "ready"
+		sub.resume_pending = 0  # as stored: a later save of `sub` must not mark it pending again
 		self.checkpoint(sub)
 		return True
 

@@ -31,7 +31,8 @@
   "archive_warning_on",
   "notified_stages",
   "suspended_at",
-  "suspended_by"
+  "suspended_by",
+  "resume_pending"
  ],
  "fields": [
   {
@@ -193,11 +194,19 @@
    "fieldtype": "Select",
    "label": "Suspended By",
    "options": "\nbilling\nadmin"
+  },
+  {
+   "default": "0",
+   "fieldname": "resume_pending",
+   "fieldtype": "Check",
+   "label": "Resume Pending",
+   "read_only": 1,
+   "description": "Press refused to switch the site back on after a payment: the renewal job tries again each hour. Cleared once the site is back, or when an admin suspends the customer."
   }
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-11-26 18:00:00.000000",
+ "modified": "2026-11-27 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Billing",
  "name": "GX Subscription",

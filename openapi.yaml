@@ -3169,9 +3169,10 @@ paths:
         - `reactivate`: `suspended` → `trial` if the trial hasn't ended, otherwise `active`. Their suspended sites come
           back.
 
-        Subscriptions are not changed (billing will own them). If Press refuses a site, the action still completes,
-        that site keeps its status, and the history entry names it. Every action is in `history` and the audit log.
-        Accepts `Idempotency-Key`: a new key per intended action.
+        Subscriptions are not changed (billing will own them), except that `suspend` stops the renewal job retrying
+        a resume Press refused after a payment (Admin → Renewals `resumePending`): the suspension stands. If Press
+        refuses a site, the action still completes, that site keeps its status, and the history entry names it.
+        Every action is in `history` and the audit log. Accepts `Idempotency-Key`: a new key per intended action.
       operationId: adminUpdateCustomerStatus
       x-phase: 2
       x-roles: [admin]
@@ -3916,9 +3917,10 @@ paths:
         `suspended`: sites switched off (with the deletion day for a never-paid trial; a subscription made before
         dates were stored has none). `syncProblems`: ERPNext Direct sites the Press-side sync job couldn't find
         or act on (`syncStatus` `Not found`, `Not on platform`, `held` or `error`), or hasn't matched to a Press
-        site yet. `resumePending`: the subscription is paid (or given extra days) but its site is still off,
-        because Press refused to resume it; the renewal job tries again every hour (not listed when an admin
-        suspended the whole customer). `unscheduled`: live subscriptions with no period end, due date or trial
+        site yet. `resumePending`: the subscription is paid but Press refused to switch its site back on then;
+        the renewal job tries again every hour until it is back. Only such a refused resume is listed or retried:
+        a site an admin suspended never is, even after the customer's status changes, and an admin's Suspend of
+        the customer stops the retry. `unscheduled`: live subscriptions with no period end, due date or trial
         end, which the renewal job can't follow (set a plan or record a payment). Sites not built yet, failed or
         archived are left out. Dates are ISO 8601 UTC, calendar days in IST (see decision 14).
       operationId: adminListRenewals

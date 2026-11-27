@@ -182,10 +182,14 @@ def set_customer_status(
 	account, new_status: str, site_from: str, site_to: str, press_action: str, keep: set | None = None
 ) -> str:
 	"""Change the account's status and move its sites from `site_from` to `site_to` on Press, except the
-	tenants in `keep`. A site Press refuses keeps its status and is named in the audit details."""
+	tenants in `keep`. A site Press refuses keeps its status and is named in the audit details. Suspending
+	the account also stops the renewal job retrying any resume Press refused (`resume_pending`): the
+	admin's suspension stands. A site moved back to `ready` has nothing left to retry."""
 	previous = account.status
 	account.status = new_status
 	account.save(ignore_permissions=True)
+	if new_status == "suspended":
+		renewals.clear_resume_pending({"account": account.name})
 	client = None
 	failed = []
 	for t in frappe.get_all(
@@ -203,6 +207,8 @@ def set_customer_status(
 			failed.append(t.name)
 			continue
 		frappe.db.set_value("GX Tenant", t.name, "status", site_to)
+		if site_to == "ready":
+			renewals.clear_resume_pending({"tenant": t.name})
 	details = f"{previous} → {new_status}"
 	if failed:
 		details += f" (sites not changed, Press error: {', '.join(failed)})"

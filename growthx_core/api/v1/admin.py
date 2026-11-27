@@ -689,10 +689,11 @@ TENANT_FIELDS = [
 def renewals():
 	"""Admin → Renewals: `expiring` (active, ending within 7 days; 30 for a yearly plan), `pastDue`,
 	`suspended` (with the day a paused trial is deleted), `syncProblems` (ERPNext Direct sites the
-	Press-side job couldn't find or act on, or hasn't matched to a Press site yet), `resumePending` (paid
-	or given extra days, but the site is still off: Press refused the resume, and the job tries again each
-	hour) and `unscheduled` (live subscriptions with no date to renew from, which the job can't follow).
-	Sites that aren't built or are archived are left out, as the job leaves them alone."""
+	Press-side job couldn't find or act on, or hasn't matched to a Press site yet), `resumePending` (paid,
+	but Press refused to switch the site back on: `resume_pending`, which the job retries each hour; a site
+	an admin suspended is never in it) and `unscheduled` (live subscriptions with no date to renew from,
+	which the job can't follow). Sites that aren't built or are archived are left out, as the job leaves
+	them alone."""
 	job = renewal_jobs.new_job()
 	subs = frappe.get_all(
 		"GX Subscription", {"status": ("in", renewal_jobs.LIVE)}, ["*"], order_by="creation asc"
@@ -711,7 +712,6 @@ def renewals():
 		TENANT_FIELDS,
 	)
 	accounts_by_id = dict(frappe.get_all("GX Account", fields=["name", "account_name"], as_list=True))
-	suspended_accounts = set(frappe.get_all("GX Account", {"status": "suspended"}, pluck="name"))
 	plan_names = dict(frappe.get_all("GX Plan", fields=["name", "plan_name"], as_list=True))
 	lists = {
 		"expiring": [],
@@ -726,7 +726,7 @@ def renewals():
 		tenant = tenants.get(sub.tenant)
 		if not tenant or tenant.status in ("archived", *renewal_jobs.SITES_NOT_LIVE):
 			continue
-		if renewal_jobs.resume_pending(sub, tenant, sub.account in suspended_accounts):
+		if renewal_jobs.resume_pending(sub, tenant):
 			lists["resumePending"].append(_renewal_item(sub, tenant, accounts_by_id, plan_names, job))
 			continue
 		info = renewal_jobs.renewal_info(sub, tenant, _job=job)
