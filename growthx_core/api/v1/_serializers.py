@@ -180,7 +180,10 @@ def subscription(s, product_name: str | None = None, plan_name: str | None = Non
 		"currentPeriodEnd": iso(s.current_period_end),
 		"cancelAtPeriodEnd": bool(cint(s.cancel_at_period_end)),
 		"siteId": s.tenant or None,
-		"renewal": renewals.renewal_info(s),
+		# no countdown while renewals are switched off: nothing is enforced, so nothing is promised
+		"renewal": renewals.renewal_info(s)
+		if cint(frappe.db.get_single_value("GX Billing Settings", "enabled"))
+		else None,
 	}
 
 

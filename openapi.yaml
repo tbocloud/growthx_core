@@ -5525,7 +5525,7 @@ components:
         renewal:
           allOf: [{ $ref: "#/components/schemas/Renewal" }]
           nullable: true
-          description: Null for a paid lifetime plan and a canceled subscription
+          description: Null for a paid lifetime plan and a canceled subscription, and for every subscription while renewals are switched off in Core (GX Billing Settings `enabled`)
 
     Renewal:
       type: object
@@ -5534,7 +5534,7 @@ components:
         job), so clients show it without date logic of their own. Dates are calendar days in IST. Null for a
         paid lifetime plan, a canceled subscription, and a live one with no date to renew from. While Core's
         `suspend_sites` setting is off, no suspension or deletion day is promised: `suspendsAt` and
-        `archivesAt` are null.
+        `archivesAt` are null. Null while renewals are switched off in Core (GX Billing Settings `enabled`).
       required: [stage, daysLeft, expiresAt, suspendsAt, archivesAt, canPay, payInAdvance]
       properties:
         stage:
