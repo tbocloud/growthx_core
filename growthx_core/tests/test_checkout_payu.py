@@ -300,6 +300,23 @@ class TestCheckoutPayU(IntegrationTestCase):
 		status, again = self._checkout()
 		self.assertEqual((status, again["error"]["code"]), (409, "payment_in_progress"))
 
+	def test_checkout_locks_the_account_in_a_fresh_transaction(self):
+		"""So the open checkouts, the invoice's outstanding amount and the attempts read after the lock are
+		current: a checkout paid while this request waited is never offered again or cancelled."""
+		with patch.object(billing, "lock_account", wraps=billing.lock_account) as spy:
+			status, body = self._checkout()
+		self.assertEqual(status, 201, body)
+		spy.assert_called_once_with(self.account)
+
+	def test_a_checkout_cancelled_in_a_clash_with_a_payment_is_payment_in_progress(self):
+		"""InnoDB cancels one side of a deadlock with a payment being applied (which locks the invoice and
+		Payment Request before the account): the customer is told to try again."""
+		clash = frappe.QueryDeadlockError("Deadlock found when trying to get lock")
+		with patch.object(payu, "_open_checkout", side_effect=clash):
+			status, body = self._checkout()
+		self.assertEqual((status, body["error"]["code"]), (409, "payment_in_progress"), body)
+		self.assertFalse(frappe.db.exists("GX Checkout", {"account": self.account}))
+
 	def test_status_follows_the_payment_and_is_private(self):
 		_, body = self._checkout()
 		status, result = self._status(reference=body["reference"])

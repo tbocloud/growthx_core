@@ -12,7 +12,7 @@ from frappe.tests import IntegrationTestCase
 from frappe.utils import add_days, nowdate
 
 from growthx_core import accounts, direct
-from growthx_core.api.v1 import _core, admin, auth, billing, customer
+from growthx_core.api.v1 import _core, admin, admin_direct, auth, billing, customer
 from growthx_core.billing import billing_details, payu
 from growthx_core.provisioning import press, runner
 
@@ -282,6 +282,36 @@ class TestAddDirectSite(DirectCase):
 		# one direct site per account and product
 		status, body = self._add(site="second.acme.example.com")
 		self.assertEqual((status, body["error"]["code"]), (409, "already_added"))
+
+	def _existing_customer(self) -> str:
+		user, _ = accounts.create_customer_account(
+			email="asha@acme-traders.example.com",
+			full_name="Asha Nair",
+			company="Acme Traders",
+			password="Long-Enough-Pass-91",
+		)
+		return frappe.db.get_value("GX Account", {"user": user})
+
+	def test_an_existing_customer_is_locked_in_a_fresh_transaction(self):
+		account = self._existing_customer()
+		with patch.object(admin_direct, "lock_account", wraps=admin_direct.lock_account) as spy:
+			status, body = self._add()
+		self.assertEqual(status, 201, body)
+		spy.assert_called_once_with(account)
+
+	def test_a_suspended_customer_gets_no_new_site(self):
+		"""Checked under the account lock, so a Suspend that this request waited for counts too."""
+		account = self._existing_customer()
+		frappe.db.set_value("GX Account", account, "status", "suspended")
+		subscriptions = frappe.db.count("GX Subscription", {"account": account})
+		status, body = self._add()
+		self.assertEqual(
+			(status, body["error"]["code"], body["error"]["message"]),
+			(409, "customer_suspended", "This customer is suspended. Reactivate them first."),
+		)
+		self.assertFalse(frappe.db.exists("GX Tenant", {"account": account}))
+		self.assertEqual(frappe.db.count("GX Subscription", {"account": account}), subscriptions)
+		self.sendmail.assert_not_called()
 
 	def test_an_email_of_another_kind_of_user_is_never_attached(self):
 		frappe.get_doc(

@@ -241,6 +241,14 @@ class TestAdminTenantControl(IntegrationTestCase):
 			frappe.db.exists("GX Audit Log", {"action": "tenant.assign_plan", "reference_name": sub.name})
 		)
 
+	def test_assign_plan_locks_the_account_in_a_fresh_transaction(self):
+		tenant_id = self._tenant()
+		sub = frappe.db.get_value("GX Tenant", tenant_id, "subscription")
+		with patch.object(admin, "lock_account", wraps=admin.lock_account) as spy:
+			status, body = _call(admin.assign_plan, {"id": tenant_id, "plan": YEARLY})
+		self.assertEqual(status, 200, body)
+		spy.assert_called_once_with(frappe.db.get_value("GX Subscription", sub, "account"))
+
 	def test_a_lifetime_plan_has_no_period_end(self):
 		tenant_id = self._tenant()
 		status, _body = _call(admin.assign_plan, {"id": tenant_id, "plan": LIFETIME})
