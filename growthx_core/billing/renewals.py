@@ -82,11 +82,15 @@ def resume_subscription_site(sub_name: str, why: str = "after payment") -> None:
 	If Press refuses, the error is logged, the tenant stays suspended and the subscription is marked
 	`resume_pending`: the hourly job tries again (Ruling 19). The mark is cleared once the site is back.
 	(Give extra days undoes everything on a refusal, the mark included: the admin tries again.)"""
-	sub = frappe.db.get_value("GX Subscription", sub_name, ["tenant", "resume_pending"], as_dict=True)
+	# Locking reads: a caller that waited for the account lock (while the renewal job suspended this site)
+	# must see the site as it is now, not as its transaction's snapshot had it.
+	sub = frappe.db.get_value(
+		"GX Subscription", sub_name, ["tenant", "resume_pending"], as_dict=True, for_update=True
+	)
 	if not sub or not sub.tenant:
 		return
 	tenant = frappe.db.get_value(
-		"GX Tenant", sub.tenant, ["name", "status", "origin", "press_site_id"], as_dict=True
+		"GX Tenant", sub.tenant, ["name", "status", "origin", "press_site_id"], as_dict=True, for_update=True
 	)
 	if not tenant or tenant.status != "suspended":
 		_mark_resume_pending(sub_name, sub, 0)  # the site isn't off: nothing to retry
@@ -111,19 +115,35 @@ def _mark_resume_pending(sub_name: str, sub, value: int):
 def mark_resume_pending(tenant_name: str):
 	"""Press refused to bring this tenant's site back when the customer's sites were restored (a payment, an
 	admin's Reactivate): its running subscriptions are marked, so the job tries again."""
-	for name in frappe.get_all(
-		"GX Subscription",
-		{"tenant": tenant_name, "status": ("in", RUNNING), "resume_pending": 0},
-		pluck="name",
-	):
-		frappe.db.set_value("GX Subscription", name, "resume_pending", 1, update_modified=False)
+	for row in locked_rows("GX Subscription", {"tenant": tenant_name}, ["status", "resume_pending"]):
+		if row.status in RUNNING and not cint(row.resume_pending):
+			frappe.db.set_value("GX Subscription", row.name, "resume_pending", 1, update_modified=False)
 
 
 def clear_resume_pending(filters: dict):
 	"""Forget a resume Press refused, for the subscriptions matching `filters`: their site is running again,
 	or an admin suspended the customer (whose suspension the job's retry must never undo)."""
-	for name in frappe.get_all("GX Subscription", {**filters, "resume_pending": 1}, pluck="name"):
-		frappe.db.set_value("GX Subscription", name, "resume_pending", 0, update_modified=False)
+	# Read under lock: an admin's Suspend that waited for the job must also clear a mark the job just set.
+	for row in locked_rows("GX Subscription", filters, ["resume_pending"]):
+		if cint(row.resume_pending):
+			frappe.db.set_value("GX Subscription", row.name, "resume_pending", 0, update_modified=False)
+
+
+def locked_rows(doctype: str, scope: dict, fields: list[str]) -> list:
+	"""The rows of `doctype` in `scope` (one account's or one tenant's), each read again with a lock, by name.
+	Callers hold the account lock. A locking read returns the latest committed row, not the transaction's
+	snapshot (MariaDB, REPEATABLE READ), so a caller that waited for the lock while the renewal job held it
+	sees what the job committed. By name (the primary key), it locks only those rows: `account` and `tenant`
+	have no index, and a locking read filtered on them would lock the whole table. The scope's members come
+	from a plain read, so a row added while the caller waited is missed: nothing moves rows between accounts,
+	and a new trial's site is never in a state the callers act on. The one gap: an ERPNext Direct site added
+	to the account (as `ready`) in the seconds an admin's Suspend waits for the lock stays running."""
+	rows = []
+	for name in frappe.get_all(doctype, scope, pluck="name", order_by="creation asc"):
+		row = frappe.db.get_value(doctype, name, ["name", *fields], as_dict=True, for_update=True)
+		if row:
+			rows.append(row)
+	return rows
 
 
 def resume_pending(sub, tenant) -> bool:
@@ -248,6 +268,10 @@ def run() -> dict:
 			frappe.db.set_single_value("GX Billing Settings", "started_on", job.today, update_modified=False)
 			audit("renewal.started", details=f"renewals live from {job.today}")
 			frappe.db.commit()
+	# Loaded now: a meta lookup that reached the database inside a subscription's transaction would fix its
+	# snapshot before the account lock (see _Run.process).
+	for doctype in ("GX Account", "GX Subscription", "GX Tenant"):
+		frappe.get_meta(doctype)
 	for name in frappe.get_all(
 		"GX Subscription", filters={"status": ("in", LIVE)}, order_by="creation asc", pluck="name"
 	):
@@ -300,10 +324,14 @@ class _Run:
 
 	def process(self, name: str):
 		"""One subscription. Its work is committed step by step; if anything fails, what isn't committed yet
-		is undone, the error is logged and the run goes on with the next subscription."""
-		self.checkpoint()
+		is undone, the error is logged and the run goes on with the next subscription.
+		The account is read before the checkpoint, so the next transaction's first read is the lock: MariaDB
+		fixes a snapshot at a transaction's first plain read, and the job must see what an admin committed
+		while it waited for the lock (a Suspend that cancelled a pending resume)."""
 		try:
-			self._process(name)
+			account = frappe.db.get_value("GX Subscription", name, "account")
+			self.checkpoint()
+			self._process(name, account)
 		except _Changed:
 			self._undo()
 		except Exception:
@@ -352,12 +380,11 @@ class _Run:
 			return max(start, first + timedelta(days=FIRST_NOTICE_DAYS))
 		return start
 
-	def _process(self, name: str):
-		self.account_name = frappe.db.get_value("GX Subscription", name, "account")
-		if not self.account_name:
+	def _process(self, name: str, account: str | None):
+		if not account:
 			return
-		self.sub_name = name
-		row = self._lock()
+		self.account_name, self.sub_name = account, name
+		row = self._lock()  # the transaction's first read (see process)
 		if not row:
 			return
 		self.seen = {field: row[field] for field in WATCHED}
@@ -707,6 +734,7 @@ class _Run:
 			self._would(sub, f"set past_due ({details})")
 			sub.status = "past_due"
 		else:
+			sub.reload()  # the whole row is saved: never write back what an admin changed meanwhile
 			sub.status = "past_due"
 			sub.save(ignore_permissions=True)  # on_update keeps the account's status in step
 			audit("renewal.past_due", "GX Subscription", sub.name, details)

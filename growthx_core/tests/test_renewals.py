@@ -1862,6 +1862,130 @@ class TestRenewalAdminApi(RenewalsCase):
 		self.assertEqual(frappe.db.get_value("GX Tenant", tenant.name, "status"), "ready")
 		self.assertEqual(self.press.calls, [("resume_site", tenant.press_site_id)])
 
+	def test_the_job_takes_the_account_lock_before_its_first_read(self):
+		"""MariaDB fixes a transaction's snapshot (REPEATABLE READ) at its first plain read. The job waits for
+		the account lock while an admin's Suspend holds it: had it read anything first, it would not see that
+		Suspend once it got the lock, and could retry the resume the Suspend had cancelled. So after each
+		commit, the job's first read is the lock itself."""
+		_, sub, site = self._gx_customer("active", current_period_end="2027-01-20")
+		frappe.db.set_value("GX Tenant", site.name, "status", "suspended")
+		frappe.db.set_value("GX Subscription", sub.name, "resume_pending", 1)  # Press refused a resume
+		log = []
+		real_sql = frappe.db.sql
+
+		def logged(query, *args, **kwargs):
+			log.append(str(query).strip().lower())
+			return real_sql(query, *args, **kwargs)
+
+		frappe.db.commit.side_effect = lambda *args, **kwargs: log.append("commit")
+		with patch.object(frappe.db, "sql", side_effect=logged):
+			self._at("2026-12-26 10:00:00")
+		locks = [i for i, q in enumerate(log) if "for update" in q and "`tabgx account`" in q]
+		self.assertGreater(len(locks), 1)  # the first lock, and the one again after the resume's commit
+		for lock in locks:
+			begin = max(i for i in range(lock) if log[i] == "commit")
+			self.assertEqual([q for q in log[begin + 1 : lock] if q.startswith("select")], [])
+		self.assertEqual(self.press.calls, [("resume_site", site.press_site_id)])  # the retry still works
+
+	def _locking_reads(self, fn):
+		"""(doctype, the row's name or the filter fields, for_update) of each GX Tenant / GX Subscription read
+		`fn` makes."""
+		calls = []
+		real = {
+			"get_all": frappe.get_all,
+			"get_value": frappe.db.get_value,
+			"get_values": frappe.db.get_values,
+		}
+
+		def spy(name):
+			def read(doctype, filters=None, *args, **kwargs):
+				if doctype in ("GX Tenant", "GX Subscription"):
+					key = filters if isinstance(filters, str) else tuple(sorted(filters or {}))
+					calls.append((doctype, key, bool(kwargs.get("for_update"))))
+				return real[name](doctype, filters, *args, **kwargs)
+
+			return read
+
+		with patch.object(frappe, "get_all", side_effect=spy("get_all")):
+			with patch.object(frappe.db, "get_value", side_effect=spy("get_value")):
+				with patch.object(frappe.db, "get_values", side_effect=spy("get_values")):
+					fn()
+		# `account` and `tenant` have no index: a locking read filtered on them would lock the whole table.
+		self.assertEqual([c for c in calls if c[2] and not isinstance(c[1], str)], [])
+		return calls
+
+	def test_admin_actions_and_payments_read_sites_and_marks_under_lock(self):
+		"""A Suspend or a payment that waited for the account lock while the renewal job held it (through a
+		Press call) must see what the job committed: after the lock, they read the account's sites and
+		subscriptions again with a lock, row by row (the latest rows, not the request's snapshot)."""
+		account, unpaid, unpaid_site = self._gx_customer("suspended", current_period_end="2026-12-01")
+		frappe.db.set_value("GX Subscription", unpaid.name, "suspended_by", "billing")
+		frappe.db.set_value("GX Tenant", unpaid_site.name, "status", "suspended")
+		# the same customer's other subscription, made later (so a payment for the plan applies to it)
+		_, sub, site = self._customer(
+			"provisioned", "active", current_period_end="2027-01-20", account=account
+		)
+		doc = frappe.get_doc("GX Account", account.name)
+		suspend = self._locking_reads(
+			lambda: payments.set_customer_status(doc, "suspended", "ready", "suspended", "suspend_site")
+		)
+		self.assertIn(("GX Tenant", site.name, True), suspend)
+		self.assertIn(("GX Subscription", sub.name, True), suspend)  # its resume mark
+		self.assertEqual(frappe.db.get_value("GX Tenant", site.name, "status"), "suspended")
+		# a resume after payment reads the subscription and its site under lock
+		resume = self._locking_reads(lambda: renewals.resume_subscription_site(sub.name))
+		self.assertIn(("GX Subscription", sub.name, True), resume)
+		self.assertIn(("GX Tenant", site.name, True), resume)
+		self.assertEqual(frappe.db.get_value("GX Tenant", site.name, "status"), "ready")
+		# a payment by a suspended customer reads the other billing-suspended subscription under lock
+		frappe.db.set_value("GX Tenant", site.name, "status", "suspended")
+		frappe.db.set_value("GX Account", account.name, "status", "suspended")
+		pay = self._locking_reads(
+			lambda: payments.apply_payment(
+				frappe.get_doc("GX Account", account.name),
+				frappe.get_doc("GX Plan", PLAN),
+				"pay-lock",
+				getdate("2026-12-26"),
+				"manual",
+			)
+		)
+		self.assertIn(("GX Subscription", unpaid.name, True), pay)
+		self.assertEqual(
+			[frappe.db.get_value("GX Tenant", t.name, "status") for t in (site, unpaid_site)],
+			["ready", "suspended"],  # the paid one is back; the unpaid one stays off
+		)
+		# the reactivate guard reads the billing suspension under lock too
+		frappe.db.set_value("GX Account", account.name, "status", "suspended")
+		answer = []
+		guard = self._locking_reads(
+			lambda: answer.append(
+				self._at(
+					"2026-12-26 10:00:00",
+					admin.update_customer_status,
+					{"id": account.name, "action": "reactivate"},
+				)
+			)
+		)
+		self.assertIn(("GX Subscription", unpaid.name, True), guard)
+		self.assertEqual(answer[0][0], 409, answer[0][1])
+
+	def test_day_zero_keeps_a_resume_mark_an_admin_cleared_meanwhile(self):
+		"""The job saves the whole subscription on day 0 (past_due). An admin's Suspend that committed between
+		its steps cleared `resume_pending`: the save must not write the old mark back (the next run would
+		then resume the site the admin suspended)."""
+		_, sub, _site = self._gx_customer("active", current_period_end="2026-12-26")
+		frappe.db.set_value("GX Subscription", sub.name, "resume_pending", 1)  # marked; the site runs
+		real_past_due = renewals._Run._past_due
+
+		def admin_suspend_then_past_due(job, s, details):
+			frappe.db.set_value("GX Subscription", s.name, "resume_pending", 0, update_modified=False)
+			return real_past_due(job, s, details)
+
+		with patch.object(renewals._Run, "_past_due", admin_suspend_then_past_due):
+			self._at("2026-12-26 10:00:00")
+		row = self._row(sub)
+		self.assertEqual((row.status, row.resume_pending), ("past_due", 0))
+
 	def test_resume_pending_lists_and_retries_only_a_refused_billing_resume(self):
 		_, pending, pending_site = self._gx_customer("active", current_period_end="2027-01-20")
 		frappe.db.set_value("GX Tenant", pending_site.name, "status", "suspended")
