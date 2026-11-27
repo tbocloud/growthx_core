@@ -26,6 +26,7 @@ from growthx_core.api.v1._core import (
 )
 from growthx_core.billing import billing_details, payments, site_sync
 from growthx_core.billing import payu as payu_billing
+from growthx_core.billing.locks import lock_account
 
 MAX_START_DAYS = 366
 
@@ -166,7 +167,15 @@ def add_direct_site():
 		user, account_name = direct.new_customer(
 			email=email, contact_name=contact, company=company, phone=phone
 		)
-	account = frappe.get_doc("GX Account", account_name, for_update=True)
+		# Made (or a closed account revived) by this request, after its first writes: locked in this
+		# transaction, since lock_account must come before any write. Nobody else is using it.
+		account = frappe.get_doc("GX Account", account_name, for_update=True)
+	else:
+		account = lock_account(account_name)
+		if account.status == "suspended":
+			# Its sites are off: a new one must not start running (checked under the lock, so a Suspend this
+			# request waited for counts too).
+			raise ApiError(409, "customer_suspended", "This customer is suspended. Reactivate them first.")
 	user = account.user
 
 	if billing:

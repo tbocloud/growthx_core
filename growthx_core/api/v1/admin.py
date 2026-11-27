@@ -40,6 +40,7 @@ from growthx_core.api.v1._core import (
 )
 from growthx_core.billing import manual_invoice, payments, payu
 from growthx_core.billing import renewals as renewal_jobs
+from growthx_core.billing.locks import lock_account
 from growthx_core.billing.payments import set_customer_status as _set_customer_status
 from growthx_core.billing.renewal_schedule import format_sent, parse_sent
 from growthx_core.partners import commissions as commission_ops
@@ -230,7 +231,7 @@ def update_customer_status():
 	if not frappe.db.exists("GX Account", account_id):
 		raise not_found()
 
-	account = frappe.get_doc("GX Account", account_id, for_update=True)
+	account = lock_account(account_id)
 	allowed = {"extend_trial": ("trial",), "suspend": ("trial", "active"), "reactivate": ("suspended",)}
 	if account.status not in allowed[action]:
 		what = {
@@ -240,12 +241,8 @@ def update_customer_status():
 		}
 		raise ApiError(409, "invalid_transition", f"A customer who is {account.status} can't {what[action]}.")
 
-	# Read under lock: sees a suspension the renewal job made while this request waited for the account.
-	if action == "reactivate" and any(
-		r.status == "suspended" and r.suspended_by == "billing"
-		for r in renewal_jobs.locked_rows(
-			"GX Subscription", {"account": account.name}, ["status", "suspended_by"]
-		)
+	if action == "reactivate" and frappe.db.exists(
+		"GX Subscription", {"account": account.name, "status": "suspended", "suspended_by": "billing"}
 	):
 		# Reactivating would be undone by the next hourly run: the admin must say until when.
 		raise ApiError(409, "billing_suspended", "Use Give extra days for a site suspended for non-payment.")
@@ -322,8 +319,14 @@ def record_payment():
 		raise validation_error({"plan": "Unknown plan."})
 	plan = frappe.get_doc("GX Plan", plan_id)
 
-	account = frappe.get_doc("GX Account", account_id, for_update=True)
-	_record_manual_payment(account, plan, reference, amount, paid_on)
+	try:
+		account = lock_account(account_id)
+		_record_manual_payment(account, plan, reference, amount, paid_on)
+	except frappe.QueryDeadlockError:
+		# The database cancelled this request in a clash with an online payment being applied (it locks the
+		# invoice and Payment Request before the account): that payment goes on; the admin tries again.
+		frappe.db.rollback()
+		raise payu._payment_in_progress()
 	return _customer_detail(account.name)
 
 
@@ -580,7 +583,7 @@ def assign_plan():
 	# Account first, then the subscription: the order the renewal job and payments lock in.
 	account_name = frappe.db.get_value("GX Subscription", tenant.subscription, "account")
 	if account_name:
-		frappe.db.get_value("GX Account", account_name, "name", for_update=True)
+		lock_account(account_name)
 	sub = frappe.get_doc("GX Subscription", tenant.subscription, for_update=True)
 	if sub.status == "canceled":
 		raise ApiError(409, "no_subscription", "This site's subscription is canceled.")
@@ -804,7 +807,7 @@ def extend_grace():
 	if not account_name:
 		raise not_found()
 	# Account first, then the subscription: the order the renewal job and payments lock in.
-	frappe.db.get_value("GX Account", account_name, "name", for_update=True)
+	lock_account(account_name)
 	sub = frappe.get_doc("GX Subscription", sub_id, for_update=True)
 	if sub.status not in renewal_jobs.LIVE:
 		raise ApiError(409, "invalid_transition", "A canceled subscription has no suspension to delay.")
