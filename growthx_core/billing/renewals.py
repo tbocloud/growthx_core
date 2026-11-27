@@ -31,7 +31,7 @@ import frappe
 from frappe.utils import add_days, cint, getdate, now_datetime
 
 from growthx_core.api.v1._core import audit, iso
-from growthx_core.billing import renewal_emails
+from growthx_core.billing import locks, renewal_emails
 from growthx_core.billing.doctype.gx_billing_settings.gx_billing_settings import get_int, int_setting
 from growthx_core.billing.doctype.gx_subscription.gx_subscription import sync_account_status
 from growthx_core.billing.renewal_schedule import (
@@ -113,22 +113,24 @@ def _mark_resume_pending(sub_name: str, sub, value: int):
 		frappe.db.set_value("GX Subscription", sub_name, "resume_pending", value, update_modified=False)
 
 
-def mark_resume_pending(tenant_name: str):
+def mark_resume_pending(tenant_name: str, *, fresh: bool = True):
 	"""Press refused to bring this tenant's site back when the customer's sites were restored (a payment, an
-	admin's Reactivate): its running subscriptions are marked, so the job tries again."""
-	for name in frappe.get_all(
-		"GX Subscription",
-		{"tenant": tenant_name, "status": ("in", RUNNING), "resume_pending": 0},
-		pluck="name",
+	admin's Reactivate): its running subscriptions are marked, so the job tries again. `fresh` as for
+	payments.apply_payment (locks.account_rows)."""
+	for row in locks.account_rows(
+		"GX Subscription", {"tenant": tenant_name}, ["status", "resume_pending"], fresh=fresh
 	):
-		frappe.db.set_value("GX Subscription", name, "resume_pending", 1, update_modified=False)
+		if row.status in RUNNING and not cint(row.resume_pending):
+			frappe.db.set_value("GX Subscription", row.name, "resume_pending", 1, update_modified=False)
 
 
-def clear_resume_pending(filters: dict):
-	"""Forget a resume Press refused, for the subscriptions matching `filters`: their site is running again,
-	or an admin suspended the customer (whose suspension the job's retry must never undo)."""
-	for name in frappe.get_all("GX Subscription", {**filters, "resume_pending": 1}, pluck="name"):
-		frappe.db.set_value("GX Subscription", name, "resume_pending", 0, update_modified=False)
+def clear_resume_pending(scope: dict, *, fresh: bool = True):
+	"""Forget a resume Press refused, for the subscriptions in `scope` (an account's or a tenant's): their
+	site is running again, or an admin suspended the customer (whose suspension the job's retry must never
+	undo). `fresh` as for payments.apply_payment (locks.account_rows)."""
+	for row in locks.account_rows("GX Subscription", scope, ["resume_pending"], fresh=fresh):
+		if cint(row.resume_pending):
+			frappe.db.set_value("GX Subscription", row.name, "resume_pending", 0, update_modified=False)
 
 
 def resume_pending(sub, tenant) -> bool:

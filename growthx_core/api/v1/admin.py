@@ -330,14 +330,22 @@ def record_payment():
 	return _customer_detail(account.name)
 
 
-def _record_manual_payment(account, plan, reference: str, amount: int, paid_on: date):
+def _record_manual_payment(account, plan, reference: str, amount: int, paid_on: date, *, fresh: bool = True):
 	"""Apply a payment made to us directly and audit it (record_payment, and add_direct_site's
-	"already paid offline"). `account` is the locked GX Account document."""
+	"already paid offline"). `account` is the locked GX Account document; `fresh` as for
+	payments.apply_payment (False when it wasn't locked with lock_account)."""
 	# The customer mustn't also pay online for what's recorded here (409 if a payment is under way).
 	payu.cancel_open_checkouts(account.name, plan.product)
 	invoice, no_invoice = manual_invoice.make(account, plan, reference, amount / 100, paid_on)
 	_sub, details, period_end = payments.apply_payment(
-		account, plan, reference, paid_on, "manual", amount=amount / 100, sales_invoice=invoice
+		account,
+		plan,
+		reference,
+		paid_on,
+		"manual",
+		amount=amount / 100,
+		sales_invoice=invoice,
+		fresh=fresh,
 	)
 	audit(
 		"customer.record_payment",
