@@ -614,6 +614,15 @@ def terminate_tenant():
 			"site_suspended",
 			"Reactivate or give extra days first, so the site is running again before billing ends.",
 		)
+	if tenant.origin == "imported" and (tenant.sync_status or "").strip().lower() in SYNC_STILL_OFF:
+		# Running again in Core (reactivated, extra days), but the Press-side job hasn't switched it back on
+		# yet (Ruling 20): archived now, it would leave the job's list and stay off. No report yet: not blocked.
+		raise ApiError(
+			409,
+			"site_suspended",
+			"This site is still switched off on the hosting platform. Wait until it is running again"
+			" (a few minutes after reactivating), then terminate.",
+		)
 
 	details = f"{tenant.status} → archived, site {tenant.site_url or '-'}"
 	if tenant.origin == "imported":
@@ -649,6 +658,8 @@ def terminate_tenant():
 MAX_GRACE_DAYS = 60
 # Sync states (Press-side job's report) that need an admin: the site wasn't found, was held back, or failed.
 SYNC_PROBLEMS = ("Not found", "Not on platform", "held", "error")
+# Sync states (lower-cased) meaning the site may still be switched off on Press: terminate waits (Ruling 20).
+SYNC_STILL_OFF = ("suspended", "held")
 
 
 def _renewal_item(sub, tenant, accounts_by_id: dict, plan_names: dict, job) -> dict:

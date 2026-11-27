@@ -3877,7 +3877,10 @@ paths:
         and its subscription `canceled`. A site still being set up can't be terminated, and an archive
         already done is refused (`already_archived`). An imported site that is suspended is refused
         (`site_suspended`): once terminated, nothing would switch it back on, so reactivate it or give extra
-        days first.
+        days first. It is also refused (`site_suspended`) while the Press-side sync job's last report says the
+        site is still switched off there (`syncStatus` `suspended` or `held`, any case), as it is for a few
+        minutes after reactivating or giving extra days: wait until it is running again. An imported site the
+        sync job has never reported on is not held back by this.
       operationId: adminTerminateTenant
       x-phase: 2
       x-roles: [admin]
@@ -3902,7 +3905,7 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
-          description: "`already_archived`, `invalid_transition`, `site_suspended`: terminated already, still being set up, or an imported site that is suspended"
+          description: "`already_archived`, `invalid_transition`, `site_suspended`: terminated already, still being set up, or an imported site that is suspended (in Core, or still on the hosting platform by the sync job's last report)"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }

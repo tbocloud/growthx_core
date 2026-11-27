@@ -1772,6 +1772,36 @@ class TestRenewalAdminApi(RenewalsCase):
 		self.assertEqual((status, body["status"]), (200, "archived"), body)
 		self.assertEqual(self.press.calls, [])
 
+	def test_terminate_waits_until_the_platform_has_the_site_running_again(self):
+		# Ruling 20: running again in Core, but still off on Press until the sync job's next run
+		_, sub, tenant = self._suspended_past_due(direct=True)
+		host = site_sync.host_of(tenant.site_url)
+		frappe.db.set_value("GX Tenant", tenant.name, "platform_site", host)
+
+		def report(action, platform_status):
+			site_sync.report_site_states(
+				json.dumps([{"site": host, "platform_status": platform_status, "action": action}])
+			)
+
+		report("suspended", "Suspended")  # the sync job switched it off on Press
+		status, body = self._at(
+			"2026-12-26 10:00:00", admin.extend_grace, {"id": sub.name, "until": "2027-01-05"}
+		)
+		self.assertEqual(status, 200, body)
+		self.assertEqual(frappe.db.get_value("GX Tenant", tenant.name, "status"), "ready")
+		for action, platform_status in (("suspended", "Suspended"), ("", "SUSPENDED"), ("held", "Suspended")):
+			report(action, platform_status)
+			status, body = self._at("2026-12-26 10:01:00", admin.terminate_tenant, {"id": tenant.name})
+			self.assertEqual((status, body["error"]["code"]), (409, "site_suspended"), (action, body))
+			self.assertIn("still switched off on the hosting platform", body["error"]["message"])
+		self.assertEqual(frappe.db.get_value("GX Tenant", tenant.name, "status"), "ready")
+		self.assertEqual(self._row(sub).status, "past_due")
+		# the sync job has switched it back on: it can be terminated
+		report("reactivated", "Active")
+		status, body = self._at("2026-12-26 10:05:00", admin.terminate_tenant, {"id": tenant.name})
+		self.assertEqual((status, body["status"]), (200, "archived"), body)
+		self.assertEqual(self.press.calls, [])
+
 	def test_an_admin_suspension_survives_subscription_saves_and_the_job(self):
 		# N1 / Ruling 19: a subscription save recomputes the account's status (the account turns active
 		# again), but the job only retries a resume Press refused after a payment: the admin's suspension stands
