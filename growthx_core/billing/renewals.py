@@ -135,7 +135,9 @@ def locked_rows(doctype: str, scope: dict, fields: list[str]) -> list:
 	snapshot (MariaDB, REPEATABLE READ), so a caller that waited for the lock while the renewal job held it
 	sees what the job committed. By name (the primary key), it locks only those rows: `account` and `tenant`
 	have no index, and a locking read filtered on them would lock the whole table. The scope's members come
-	from a plain read: the job never adds subscriptions or sites, or moves them to another account."""
+	from a plain read, so a row added while the caller waited is missed: nothing moves rows between accounts,
+	and a new trial's site is never in a state the callers act on. The one gap: an ERPNext Direct site added
+	to the account (as `ready`) in the seconds an admin's Suspend waits for the lock stays running."""
 	rows = []
 	for name in frappe.get_all(doctype, scope, pluck="name", order_by="creation asc"):
 		row = frappe.db.get_value(doctype, name, ["name", *fields], as_dict=True, for_update=True)
