@@ -5,6 +5,7 @@ from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 import frappe
+import requests
 from frappe.tests import IntegrationTestCase
 from frappe.utils import now_datetime
 from frappe.utils.password import get_decrypted_password
@@ -185,6 +186,47 @@ class TestRealPress(IntegrationTestCase):
 			self.client.resume_site(site)
 		with self.assertRaises(PressError):
 			self.client.suspend_site(site)
+
+	def _press_site(self, status):
+		site = "test-acme-solar.tbogrowthx.com"
+		self._tenant(press_site_id=site)
+		self.press.taken.add("test-acme-solar")
+		self.press.status = status
+		return site
+
+	def test_a_site_press_suspended_itself_is_not_already_suspended(self):
+		"""Press's own "Suspended" (disk limits, an auto-archive candidate) isn't a suspension of ours: Press
+		refuses to deactivate it, and only "Inactive" counts as already done."""
+		site = self._press_site("Suspended")
+		with self.assertRaises(PressError):
+			self.client.suspend_site(site)
+		self.assertEqual(self.press.status, "Suspended")
+
+	def test_press_unreachable_or_failing_is_raised_without_asking_again(self):
+		"""Only Press's refusal (HTTP 417) is checked against the site's status. A timeout, an unreachable
+		Press or a server error is raised at once: asking again would hold the account lock through another
+		timeout, and the job's hourly resume_pending retry repairs a resume that didn't happen."""
+		site = self._press_site("Active")
+		failures = {
+			"timeout": requests.Timeout("read timed out"),
+			"unreachable": requests.ConnectionError("connection refused"),
+			"server error": _response(502, body={"exc_type": None}),
+		}
+		for label, failure in failures.items():
+
+			def press(url, failure=failure, **kwargs):
+				if url.endswith((".activate", ".deactivate")):
+					self.press.calls.append((url.rsplit("/", 1)[-1], {}))
+					if isinstance(failure, Exception):
+						raise failure
+					return failure
+				return self.press(url, **kwargs)
+
+			self.client.session = MagicMock(get=press, post=press, headers={})
+			for action in (self.client.suspend_site, self.client.resume_site):
+				with self.subTest(label, action=action.__name__), self.assertRaises(PressError):
+					action(site)
+		self.assertNotIn("press.api.site.get", self.press.methods())
 
 	def test_a_name_taken_by_someone_else_is_an_error(self):
 		# Press says the name is taken (another team's site, or a blocked name) but won't show it to us

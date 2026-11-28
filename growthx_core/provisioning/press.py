@@ -25,6 +25,13 @@ class PressError(Exception):
 	"""Press refused or failed. The message is admin-only detail."""
 
 	exc_type: str | None = None  # Press's exception class, e.g. "DNSValidationError"
+	http_status: int | None = None  # Press's answer; None if it never answered (timeout, unreachable)
+
+	@property
+	def refused(self) -> bool:
+		"""Press answered and refused the action (HTTP 417: a frappe.throw, such as a site action's
+		guard), rather than failing or not answering at all."""
+		return self.http_status == 417
 
 
 class PressNotFound(PressError):
@@ -271,9 +278,11 @@ class RealPressClient(PressClient):
 			return r.json().get("message")
 		detail = _error_text(r)
 		if r.status_code == 403 or "DoesNotExistError" in detail:
-			raise PressNotFound(f"{method}: {detail}")
-		error = PressError(f"{method}: HTTP {r.status_code} {detail}")
-		error.exc_type = _exc_type(r)
+			error = PressNotFound(f"{method}: {detail}")
+		else:
+			error = PressError(f"{method}: HTTP {r.status_code} {detail}")
+			error.exc_type = _exc_type(r)
+		error.http_status = r.status_code
 		raise error
 
 	def site_name(self, subdomain: str) -> str:
@@ -364,22 +373,31 @@ class RealPressClient(PressClient):
 		self._own(site_id)
 		try:
 			self._call("press.api.site.deactivate", name=site_id)
-		except PressError:
-			# Press only deactivates an Active or Broken site. One already off counts as done: a call made
-			# again after the database undid the first one's records (a deadlock retry, a job's undo).
-			if self._press_status(site_id) not in ("Inactive", "Suspended"):
+		except PressError as e:
+			# Press only deactivates an Active or Broken site and refuses any other. One already Inactive
+			# counts as done: a call made again after the database undid the first one's records (a
+			# deadlock retry, a job's undo). Press's own "Suspended" (disk limits, an auto-archive
+			# candidate) isn't a suspension of ours: still an error.
+			if not self._done_after_refusal(e, site_id, "Inactive"):
 				raise
 
 	def resume_site(self, site_id):
 		self._own(site_id)
 		try:
 			self._call("press.api.site.activate", name=site_id)
-		except PressError:
-			# Press only activates an Inactive or Broken site. One already Active counts as done, e.g. a
-			# payment completed again after a deadlock (frappe_payu retries it): the first try resumed the
-			# site on Press, and only its records in Core were undone.
-			if self._press_status(site_id) != "Active":
+		except PressError as e:
+			# Press only activates an Inactive or Broken site and refuses any other. One already Active
+			# counts as done, e.g. a payment completed again after a deadlock (frappe_payu retries it): the
+			# first try resumed the site on Press, and only its records in Core were undone.
+			if not self._done_after_refusal(e, site_id, "Active"):
 				raise
+
+	def _done_after_refusal(self, error: PressError, site_id, done: str) -> bool:
+		"""True if Press refused the action because the site is already `done`. Press is asked only after
+		a refusal: a timeout, an unreachable Press or a server error is raised at once, since asking again
+		would hold the account lock through another timeout (the job's hourly resume_pending retry repairs
+		a resume that didn't happen)."""
+		return error.refused and self._press_status(site_id) == done
 
 	def _press_status(self, site_id) -> str | None:
 		"""Press's own status word for the site, or None if Press can't say."""
