@@ -1488,16 +1488,21 @@ paths:
         Cancels the account's open checkouts (their unpaid invoices too) and subscriptions, archives its sites
         (Press backs each one up before deleting it) and blocks signing in; every session is revoked. Paid tax
         invoices are kept — GST keeps them, and they carry the customer's name. `422 validation_failed` with
-        `fields.confirm` when the typed confirmation isn't the account's email address. Nothing changes on a
-        409:
+        `fields.confirm` when the typed confirmation isn't the account's email address. On a 409 the account
+        isn't closed: none of the deletion is kept (its checkouts, subscriptions, sites and sign-in are as
+        they were).
         - `payment_in_progress`: an online payment may still go through in minutes (a PayU attempt Queued
-          under 30 minutes old), or the request clashed with a payment being applied. Try again in a few
-          minutes.
+          under 30 minutes old), or the request clashed with a payment being applied (a deadlock, or an
+          invoice or Payment Request the payment changed or locked meanwhile). Nothing is recorded. Try again
+          in a few minutes.
         - `needs_support`: someone at GrowthX must look first: an open invoice is part-paid, PayU has
           authorized a payment that isn't applied yet, or ERPNext refused to cancel an open invoice (a
-          closed accounting period, frozen accounts). The account's history in Admin shows it
-          (`delete_needs_support`), with an Error Log. Tell the customer the team will contact them.
-        - `idempotency_conflict`: the Idempotency-Key was used with a different body.
+          closed accounting period, frozen accounts). Core records it: a high-priority `billing` support
+          ticket "Close my account" on the account (support@ is emailed; while one is open, trying again
+          opens no other), a line in the account's history in Admin (`delete_needs_support`, naming the
+          ticket) and an Error Log. The ticket shows in the customer's own tickets. Tell the customer the
+          team will contact them.
+        - `idempotency_conflict`: the Idempotency-Key was used with a different body. Nothing is recorded.
       operationId: deleteCustomerAccount
       x-phase: 2
       x-roles: [customer]
@@ -1517,7 +1522,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409":
-          description: "`payment_in_progress` (try again in a few minutes), `needs_support` (the team must look first; see above) or `idempotency_conflict`; nothing changed"
+          description: "`payment_in_progress` (try again in a few minutes), `needs_support` (the team must look first: a support ticket, an audit line and an Error Log are recorded; see above) or `idempotency_conflict`; the account isn't closed"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -6237,7 +6242,7 @@ components:
                 properties:
                   at: { type: string, format: date-time }
                   actor: { type: string }
-                  action: { type: string, enum: [extend_trial, suspend, reactivate, record_payment, online_payment, online_payment_cancelled, billing_details_updated, delete_needs_support] }
+                  action: { type: string, enum: [extend_trial, suspend, reactivate, record_payment, online_payment, online_payment_cancelled, billing_details_updated, delete_needs_support, delete_account] }
                   details: { type: string, example: "trial → suspended: Chargeback" }
 
     AuditLogEntry:

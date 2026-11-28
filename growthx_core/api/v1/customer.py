@@ -3,7 +3,7 @@ from datetime import timedelta
 import frappe
 from frappe.utils import now_datetime
 
-from growthx_core import accounts, tokens
+from growthx_core import accounts, support, tokens
 from growthx_core.api.v1 import _serializers as s
 from growthx_core.api.v1 import auth
 from growthx_core.api.v1._core import (
@@ -40,6 +40,12 @@ SITE_FIELDS = [
 	"creation",
 	"ready_at",
 ]
+# A clash with a payment being applied, which clears in minutes: a deadlock, or a document the payment
+# saved (TimestampMismatchError) or locked (DocumentLockedError) meanwhile. Those two are ValidationErrors,
+# which otherwise mean ERPNext refused to cancel (needs_support).
+CLASHES = (frappe.QueryDeadlockError, frappe.TimestampMismatchError, frappe.DocumentLockedError)
+# The subject of the support ticket a refused deletion opens (one open per account).
+DELETION_TICKET_SUBJECT = "Close my account"
 
 
 def current_account(fields="name"):
@@ -132,10 +138,11 @@ def delete_account():
 	carry the name. An open checkout's unpaid invoice is cancelled with it, so no payment can land on a
 	closed account.
 	- A PayU attempt that may still go through in minutes (Queued), or a clash with a payment being
-	  applied: 409 payment_in_progress, try again.
+	  applied (a deadlock, a document it changed or locked meanwhile): 409 payment_in_progress, try again.
 	- A checkout someone must look at (part-paid invoice, a payment PayU authorized) or one ERPNext refuses
-	  to cancel (closed period, frozen accounts): 409 needs_support, an Error Log and an audit line on the
-	  account, so an admin sees it; nothing else changes."""
+	  to cancel (closed period, frozen accounts): 409 needs_support. The team gets a support ticket (one
+	  open per account; support@ is emailed), with an Error Log and an audit line on the account; nothing
+	  of the deletion is kept."""
 	account = current_account(["name", "contact_email", "user"])
 	confirm = get_str(body(), "confirm", required=True, max_length=140)
 	if confirm.strip().lower() != (account.contact_email or "").lower():
@@ -157,14 +164,16 @@ def delete_account():
 		for product in sorted({row.product for row in open_checkouts}):
 			try:
 				payu.cancel_open_checkouts(account.name, product)
+			except CLASHES:
+				raise
 			except frappe.ValidationError as e:
 				raise _deletion_needs_support(
 					account,
 					f"ERPNext refused to cancel the open checkout for {product}: {e}\n\n{frappe.get_traceback()}",
 				) from e
-	except frappe.QueryDeadlockError:
+	except CLASHES:
 		# Cancelled in a clash with a payment being applied (it locks the invoice and Payment Request before
-		# the account): that payment goes on; the customer tries again.
+		# the account, and saves them): that payment goes on; the customer tries again.
 		frappe.db.rollback()
 		raise payu._payment_in_progress()
 
@@ -187,18 +196,54 @@ def delete_account():
 
 
 def _deletion_needs_support(account, why: str) -> ApiError:
-	"""The account can't be closed without someone: nothing of the deletion is kept, and the reason goes to
-	the Error Log and the account's audit history (committed, so the error response's rollback keeps it)."""
+	"""The account can't be closed without someone: nothing of the deletion is kept. The team gets a support
+	ticket (_deletion_ticket), and the reason goes to the Error Log and the account's audit history. All are
+	committed, so the error response's rollback keeps them (tests patch frappe.db.commit)."""
 	frappe.db.rollback()
-	frappe.log_error(title=f"GrowthX: account {account.name} can't be closed without support", message=why)
-	audit("customer.delete_needs_support", "GX Account", account.name, why.split("\n", 1)[0][:500])
-	if not frappe.flags.in_test:  # a commit would keep the test's records
-		frappe.db.commit()
+	lock_account(account.name)  # again (the rollback released it): two attempts at once open one ticket
+	reason = why.split("\n", 1)[0][:500]
+	frappe.log_error(
+		title=f"GrowthX: account {account.name} can't be closed without support",
+		message=why,
+		reference_doctype="GX Account",
+		reference_name=account.name,
+	)
+	ticket = _deletion_ticket(account, reason)
+	audit("customer.delete_needs_support", "GX Account", account.name, f"{reason} (ticket {ticket})")
+	frappe.db.commit()
 	return ApiError(
 		409,
 		"needs_support",
 		"Your account can't be closed automatically right now. Our team has been told and will contact you.",
 	)
+
+
+def _deletion_ticket(account, reason: str) -> str:
+	"""The account's open support ticket for closing it: a high-priority billing ticket, opened (support@ is
+	emailed) unless one is still open, however often the customer tries. The customer sees it in their
+	tickets, so it carries the reason's first line, never a traceback (the Error Log has that)."""
+	open_ticket = frappe.db.get_value(
+		"GX Support Ticket",
+		{
+			"account": account.name,
+			"category": "billing",
+			"subject": DELETION_TICKET_SUBJECT,
+			"status": ("in", ("open", "pending_customer")),
+		},
+	)
+	if open_ticket:
+		return open_ticket
+	return support.create_ticket(
+		account=account.name,
+		user=account.user,
+		subject=DELETION_TICKET_SUBJECT,
+		body=(
+			"Close my account: asked for on the website, but it couldn't be done automatically, so nothing"
+			f" was changed.\n\nReason: {reason}"
+		),
+		category="billing",
+		priority="high",
+	).name
 
 
 @endpoint(methods=("GET",), roles=("customer",))
