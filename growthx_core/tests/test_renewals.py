@@ -527,6 +527,21 @@ class TestSuspendAndArchive(RenewalsCase):
 		self.assertTrue(renewals.archive_trial(sub.name))
 		self.assertEqual(frappe.db.get_value("GX Account", account.name, "status"), "churned")
 
+	def test_archiving_a_trial_keeps_an_admin_suspension(self):
+		"""An admin suspended the customer (account and sites suspended, the other subscription left trialing):
+		archiving the paused trial must not turn the account back to trial, or Reactivate (only from
+		suspended) could no longer bring the other site back."""
+		account, sub, tenant = self._gx_customer("suspended")
+		frappe.db.set_value("GX Tenant", tenant.name, "status", "suspended")
+		_, _other, other_site = self._customer(
+			"provisioned", "trialing", trial_ends_at=add_days(now_datetime(), 5), account=account
+		)
+		frappe.db.set_value("GX Tenant", other_site.name, "status", "suspended")
+		frappe.db.set_value("GX Account", account.name, "status", "suspended")  # the admin's Suspend
+		self.assertTrue(renewals.archive_trial(sub.name))
+		self.assertEqual(frappe.db.get_value("GX Subscription", sub.name, "status"), "canceled")
+		self.assertEqual(frappe.db.get_value("GX Account", account.name, "status"), "suspended")
+
 	def test_archiving_locks_the_account_again_before_cancelling(self):
 		"""runner.archive commits, which releases the job's locks: the account is locked again before the
 		subscription and the account are written, in the payments' order (account first), so a payment

@@ -40,7 +40,7 @@ from growthx_core.api.v1._core import (
 )
 from growthx_core.billing import manual_invoice, payments, payu
 from growthx_core.billing import renewals as renewal_jobs
-from growthx_core.billing.doctype.gx_subscription.gx_subscription import sync_account_status
+from growthx_core.billing.doctype.gx_subscription.gx_subscription import sync_account_status_after_cancel
 from growthx_core.billing.locks import lock_account
 from growthx_core.billing.payments import set_customer_status as _set_customer_status
 from growthx_core.billing.renewal_schedule import format_sent, parse_sent
@@ -622,7 +622,9 @@ def _check_plan_change(tenant):
 def terminate_tenant():
 	"""End a site and its billing for good. A site Core built is backed up and deleted on Press; an
 	imported ERPNext site is the customer's own, so it is left running and only billing stops. The
-	account's status follows its subscriptions (churned once nothing else is live)."""
+	account's status follows its subscriptions (churned once nothing else is live; an account an admin
+	suspended stays suspended while another one is). An archived site whose billing still runs (a terminate
+	that stopped after the archive) only has its billing stopped."""
 	tenant_id = get_str(body(), "id", required=True)
 	account = frappe.db.get_value("GX Tenant", tenant_id, "account")
 	if not account:
@@ -632,7 +634,13 @@ def terminate_tenant():
 	lock_account(account)
 	tenant = frappe.get_doc("GX Tenant", tenant_id)
 	if tenant.status == "archived":
-		raise ApiError(409, "already_archived", "This site is already terminated.")
+		if not _live_subscriptions(tenant):
+			raise ApiError(409, "already_archived", "This site is already terminated.")
+		# A terminate that stopped after runner.archive's commit (e.g. a lock wait timeout on the account
+		# again) left the billing running: stop it now, without asking Press again.
+		details = _stop_billing(tenant, account, "already archived; billing stopped")
+		audit("tenant.terminate", "GX Tenant", tenant.name, details)
+		return s.admin_tenant_detail(frappe.get_doc("GX Tenant", tenant.name))
 	if tenant.status in ("requested", "provisioning"):
 		raise ApiError(409, "invalid_transition", "This site is still being set up. Wait for it to finish.")
 	if tenant.origin == "imported" and tenant.status == "suspended":
@@ -663,25 +671,37 @@ def terminate_tenant():
 			raise ApiError(502, "press_unavailable", "Press could not be reached right now.") from None
 		# runner.archive committed, which released the lock: the account again, before its subscriptions.
 		frappe.db.get_value("GX Account", account, "name", for_update=True)
-	subscriptions = set(
-		frappe.get_all(
-			"GX Subscription",
-			{"tenant": tenant.name, "status": ("!=", "canceled")},
-			pluck="name",
-		)
+	details = _stop_billing(tenant, account, details)
+	audit("tenant.terminate", "GX Tenant", tenant.name, details)
+	return s.admin_tenant_detail(frappe.get_doc("GX Tenant", tenant.name))
+
+
+def _live_subscriptions(tenant) -> list[str]:
+	"""The tenant's subscriptions that aren't canceled: its own, and any other that names it."""
+	names = set(
+		frappe.get_all("GX Subscription", {"tenant": tenant.name, "status": ("!=", "canceled")}, pluck="name")
 	)
-	if tenant.subscription:
-		subscriptions.add(tenant.subscription)
-	for name in subscriptions:
+	if tenant.subscription and frappe.db.get_value("GX Subscription", tenant.subscription, "status") not in (
+		None,
+		"canceled",
+	):
+		names.add(tenant.subscription)
+	return sorted(names)
+
+
+def _stop_billing(tenant, account: str, details: str) -> str:
+	"""Cancel the tenant's live subscriptions (the caller holds the account lock) and bring the account's status
+	in step. Returns `details` with what was canceled, for the audit line."""
+	for name in _live_subscriptions(tenant):
 		frappe.db.set_value(
 			"GX Subscription",
 			name,
 			{"status": "canceled", "cancel_at_period_end": 0, "current_period_end": nowdate()},
 		)
 		details += f", subscription {name} canceled"
-	sync_account_status(account)  # set_value skips the subscriptions' on_update
-	audit("tenant.terminate", "GX Tenant", tenant.name, details)
-	return s.admin_tenant_detail(frappe.get_doc("GX Tenant", tenant.name))
+	# set_value skips the subscriptions' on_update; an admin's suspension of the account stands
+	sync_account_status_after_cancel(account)
+	return details
 
 
 # ---------------------------------------------------------------- renewals

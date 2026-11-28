@@ -302,7 +302,10 @@ class TestAdminTenantControl(IntegrationTestCase):
 	def test_terminating_a_provisioned_site_archives_it_on_press_and_cancels_billing(self):
 		tenant_id = self._tenant()
 		client = self._archiving_client()
-		with patch.object(runner, "get_client", return_value=client):
+		with (
+			patch.object(runner, "get_client", return_value=client),
+			patch.object(frappe.db, "commit"),  # runner.archive commits: it would keep this test's records
+		):
 			status, body = _call(admin.terminate_tenant, {"id": tenant_id})
 		self.assertEqual(status, 200)
 		self.assertEqual(body["status"], "archived")
@@ -324,9 +327,30 @@ class TestAdminTenantControl(IntegrationTestCase):
 
 	def test_a_terminated_site_is_refused_again(self):
 		tenant_id = self._tenant(status="archived")
+		frappe.db.set_value("GX Subscription", self._subscription(tenant_id), "status", "canceled")
 		status, body = _call(admin.terminate_tenant, {"id": tenant_id})
 		self.assertEqual(status, 409)
 		self.assertEqual(body["error"]["code"], "already_archived")
+
+	def test_terminating_an_archived_site_whose_billing_still_runs_stops_it(self):
+		"""A terminate that stopped after runner.archive's commit (e.g. a lock wait timeout on the account
+		again) left the site archived and its subscription live: the retry stops the billing, without asking
+		Press again, instead of refusing it as already archived."""
+		tenant_id = self._tenant(status="archived")
+		client = self._archiving_client()
+		with patch.object(runner, "get_client", return_value=client), patch.object(frappe.db, "commit"):
+			status, body = _call(admin.terminate_tenant, {"id": tenant_id})
+		self.assertEqual(status, 200, body)
+		self.assertEqual(body["status"], "archived")
+		self.assertEqual(client.archived, [])
+		self.assertEqual(
+			frappe.db.get_value("GX Subscription", self._subscription(tenant_id), "status"), "canceled"
+		)
+		self.assertEqual(self._account_status(tenant_id), "churned")
+		details = frappe.db.get_value(
+			"GX Audit Log", {"action": "tenant.terminate", "reference_name": tenant_id}, "details"
+		)
+		self.assertIn("billing stopped", details)
 
 	def test_a_site_still_being_set_up_cannot_be_terminated(self):
 		tenant_id = self._tenant(status="provisioning")
@@ -341,6 +365,42 @@ class TestAdminTenantControl(IntegrationTestCase):
 			patch.object(frappe.db, "commit"),
 		):
 			return _call(admin.terminate_tenant, {"id": tenant_id})
+
+	def _subscription(self, tenant_id):
+		return frappe.db.get_value("GX Tenant", tenant_id, "subscription")
+
+	def _second_site(self, tenant_id, press_site_id="tenant-control-2.tbogrowthx.com"):
+		"""Another live site, on another plan, for the same customer."""
+		account = frappe.db.get_value("GX Tenant", tenant_id, "account")
+		plan = frappe.get_doc("GX Plan", OTHER_PLAN)
+		sub = frappe.get_doc(
+			{
+				"doctype": "GX Subscription",
+				"account": account,
+				"plan": plan.name,
+				"product": plan.product,
+				"status": "active",
+				"billing_interval": plan.billing_interval,
+				"price": plan.price,
+				"current_period_end": add_months(nowdate(), 1),
+			}
+		).insert()
+		tenant = frappe.get_doc(
+			{
+				"doctype": "GX Tenant",
+				"account": account,
+				"product": plan.product,
+				"origin": "provisioned",
+				"status": "ready",
+				"display_name": "Control Co",
+				"subdomain": f"control-{frappe.generate_hash(length=6)}",
+				"site_url": f"https://{press_site_id}",
+				"press_site_id": press_site_id,
+				"subscription": sub.name,
+			}
+		).insert()
+		frappe.db.set_value("GX Subscription", sub.name, "tenant", tenant.name)
+		return tenant.name
 
 	def _account_status(self, tenant_id):
 		return frappe.db.get_value(
@@ -384,6 +444,40 @@ class TestAdminTenantControl(IntegrationTestCase):
 		)
 		self.assertEqual(self._account_status(tenant_id), "active")
 
+	def test_terminating_a_site_of_a_suspended_customer_keeps_the_suspension(self):
+		"""An admin's Suspend moves the account and its sites but leaves the subscriptions active. Terminating
+		one site must not turn the account active from the other one's subscription: that site stays
+		suspended, and Reactivate (only from suspended) must still bring it back."""
+		first = self._tenant()
+		second = self._second_site(first)
+		account = frappe.db.get_value("GX Tenant", first, "account")
+		with patch.object(runner, "get_client", return_value=self._archiving_client()):
+			status, body = _call(
+				admin.update_customer_status, {"id": account, "action": "suspend", "reason": "Chargeback"}
+			)
+		self.assertEqual(status, 200, body)
+		self.assertEqual(frappe.db.get_value("GX Tenant", second, "status"), "suspended")
+		status, body = self._terminate(first)
+		self.assertEqual(status, 200, body)
+		self.assertEqual(self._account_status(first), "suspended")
+		with patch.object(runner, "get_client", return_value=self._archiving_client()):
+			status, body = _call(admin.update_customer_status, {"id": account, "action": "reactivate"})
+		self.assertEqual(status, 200, body)
+		self.assertEqual(self._account_status(first), "active")
+		self.assertEqual(frappe.db.get_value("GX Tenant", second, "status"), "ready")
+
+	def test_terminating_the_last_site_of_a_suspended_customer_churns_it(self):
+		tenant_id = self._tenant()
+		account = frappe.db.get_value("GX Tenant", tenant_id, "account")
+		with patch.object(runner, "get_client", return_value=self._archiving_client()):
+			status, body = _call(
+				admin.update_customer_status, {"id": account, "action": "suspend", "reason": "Chargeback"}
+			)
+		self.assertEqual(status, 200, body)
+		status, body = self._terminate(tenant_id)
+		self.assertEqual(status, 200, body)
+		self.assertEqual(self._account_status(tenant_id), "churned")
+
 	def test_terminate_locks_the_account_first_and_again_after_the_archive(self):
 		"""Account first, the order payments and the renewal job lock in: before any write, in a fresh
 		transaction, and again after runner.archive's commit (which releases it) before the subscription and
@@ -422,12 +516,19 @@ class TestAdminTenantControl(IntegrationTestCase):
 		real = admin.lock_account
 
 		def archived_meanwhile(name):
+			# the job's archive_trial: the site archived and its subscription canceled
 			frappe.db.set_value("GX Tenant", tenant_id, "status", "archived")
+			frappe.db.set_value("GX Subscription", self._subscription(tenant_id), "status", "canceled")
 			return real(name)
 
-		with patch.object(admin, "lock_account", side_effect=archived_meanwhile):
-			status, body = self._terminate(tenant_id)
+		client = self._archiving_client()
+		with (
+			patch.object(admin, "lock_account", side_effect=archived_meanwhile),
+			patch.object(runner, "get_client", return_value=client),
+		):
+			status, body = _call(admin.terminate_tenant, {"id": tenant_id})
 		self.assertEqual((status, body["error"]["code"]), (409, "already_archived"), body)
+		self.assertEqual(client.archived, [])
 
 	# ------------------------------------------------------------ the list
 

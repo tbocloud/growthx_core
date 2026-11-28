@@ -50,8 +50,12 @@ CLASHES = (
 	frappe.TimestampMismatchError,
 	frappe.DocumentLockedError,
 )
-# The subject of the support ticket a refused deletion opens (one open per account).
+# The support ticket a refused deletion opens (one open per account). The customer sees its message.
 DELETION_TICKET_SUBJECT = "Close my account"
+DELETION_TICKET_MESSAGE = (
+	"We couldn't close your account automatically because a payment or invoice needs our attention."
+	" Our team will contact you."
+)
 
 
 def current_account(fields="name"):
@@ -148,8 +152,10 @@ def delete_account():
 	  409 payment_in_progress, try again.
 	- A checkout someone must look at (part-paid invoice, a payment PayU authorized) or one ERPNext refuses
 	  to cancel (closed period, frozen accounts): 409 needs_support. The team gets a support ticket (one
-	  open per account; support@ is emailed), with an Error Log and an audit line on the account; nothing
-	  of the deletion is kept."""
+	  open per account; support@ is emailed; the reason in an internal note), with an Error Log and an audit
+	  line on the account; nothing of the deletion is kept.
+	- Each clash (payment_in_progress) is logged too (a deferred Error Log), so one that keeps coming back
+	  shows."""
 	account = current_account(["name", "contact_email", "user"])
 	confirm = get_str(body(), "confirm", required=True, max_length=140)
 	if confirm.strip().lower() != (account.contact_email or "").lower():
@@ -178,11 +184,19 @@ def delete_account():
 					account,
 					f"ERPNext refused to cancel the open checkout for {product}: {e}\n\n{frappe.get_traceback()}",
 				) from e
-	except CLASHES:
+	except CLASHES as e:
 		# Cancelled in a clash with a payment being applied (it locks the invoice and Payment Request before
 		# the account, and saves them), or the lock waited too long (the renewal job holds it through its Press
-		# calls): that work goes on; the customer tries again.
+		# calls): that work goes on; the customer tries again. Logged, deferred so it survives the rollback: a
+		# clash that keeps coming back ("try again" for ever) shows in the Error Log.
 		frappe.db.rollback()
+		frappe.log_error(
+			title=f"GrowthX: account {account.name} not closed: {type(e).__name__}",
+			message=frappe.get_traceback(),
+			reference_doctype="GX Account",
+			reference_name=account.name,
+			defer_insert=True,
+		)
 		raise payu._payment_in_progress()
 
 	for name in frappe.get_all(
@@ -210,13 +224,9 @@ def _deletion_needs_support(account, why: str) -> ApiError:
 	frappe.db.rollback()
 	lock_account(account.name)  # again (the rollback released it): two attempts at once open one ticket
 	reason = why.split("\n", 1)[0][:500]
-	frappe.log_error(
-		title=f"GrowthX: account {account.name} can't be closed without support",
-		message=why,
-		reference_doctype="GX Account",
-		reference_name=account.name,
-	)
-	ticket = _deletion_ticket(account, reason)
+	title = f"GrowthX: account {account.name} can't be closed without support"
+	frappe.log_error(title=title, message=why, reference_doctype="GX Account", reference_name=account.name)
+	ticket = _deletion_ticket(account, reason, title)
 	audit("customer.delete_needs_support", "GX Account", account.name, f"{reason} (ticket {ticket})")
 	frappe.db.commit()
 	return ApiError(
@@ -226,10 +236,11 @@ def _deletion_needs_support(account, why: str) -> ApiError:
 	)
 
 
-def _deletion_ticket(account, reason: str) -> str:
+def _deletion_ticket(account, reason: str, error_title: str) -> str:
 	"""The account's open support ticket for closing it: a high-priority billing ticket, opened (support@ is
-	emailed) unless one is still open, however often the customer tries. The customer sees it in their
-	tickets, so it carries the reason's first line, never a traceback (the Error Log has that)."""
+	emailed) unless one is still open, however often the customer tries. The customer sees the ticket, so its
+	message is generic; the reason goes in an internal note only the team sees (the Error Log has the
+	traceback, the audit line the reason). Each later attempt adds a note to the same ticket."""
 	open_ticket = frappe.db.get_value(
 		"GX Support Ticket",
 		{
@@ -240,18 +251,20 @@ def _deletion_ticket(account, reason: str) -> str:
 		},
 	)
 	if open_ticket:
-		return open_ticket
-	return support.create_ticket(
-		account=account.name,
-		user=account.user,
-		subject=DELETION_TICKET_SUBJECT,
-		body=(
-			"Close my account: asked for on the website, but it couldn't be done automatically, so nothing"
-			f" was changed.\n\nReason: {reason}"
-		),
-		category="billing",
-		priority="high",
-	).name
+		ticket = support.locked(open_ticket)
+		note = f"The customer tried again to close the account. Refused: {reason}"
+	else:
+		ticket = support.create_ticket(
+			account=account.name,
+			user=account.user,
+			subject=DELETION_TICKET_SUBJECT,
+			body=DELETION_TICKET_MESSAGE,
+			category="billing",
+			priority="high",
+		)
+		note = f"The customer asked to close the account. Refused: {reason}"
+	support.internal_note(ticket, f"{note}\n\nError Log: {error_title}", "Administrator")
+	return ticket.name
 
 
 @endpoint(methods=("GET",), roles=("customer",))

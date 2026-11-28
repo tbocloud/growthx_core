@@ -1494,14 +1494,16 @@ paths:
         - `payment_in_progress`: an online payment may still go through in minutes (a PayU attempt Queued
           under 30 minutes old), or the request clashed with a payment being applied or the renewal job (a
           deadlock, a lock wait that timed out, or an invoice or Payment Request the payment changed or locked
-          meanwhile). Nothing is recorded. Try again in a few minutes.
+          meanwhile). Only an Error Log is written (so a clash that keeps coming back shows). Try again in a
+          few minutes.
         - `needs_support`: someone at GrowthX must look first: an open invoice is part-paid, PayU has
           authorized a payment that isn't applied yet, or ERPNext refused to cancel an open invoice (a
           closed accounting period, frozen accounts). Core records it: a high-priority `billing` support
           ticket "Close my account" on the account (support@ is emailed; while one is open, trying again
-          opens no other), a line in the account's history in Admin (`delete_needs_support`, naming the
-          ticket) and an Error Log. The ticket shows in the customer's own tickets. Tell the customer the
-          team will contact them.
+          opens no other and adds a note to it), a line in the account's history in Admin
+          (`delete_needs_support`, naming the ticket) and an Error Log. The ticket shows in the customer's own
+          tickets with a generic message ("a payment or invoice needs our attention"); the reason is in an
+          internal note only the team sees. Tell the customer the team will contact them.
         - `idempotency_conflict`: the Idempotency-Key was used with a different body. Nothing is recorded.
       operationId: deleteCustomerAccount
       x-phase: 2
@@ -3894,8 +3896,10 @@ paths:
         For good: a site Core built is backed up and then deleted on Press; an imported ERPNext site is
         the customer's own, so it keeps running and only billing stops. The tenant becomes `archived`
         and its subscription `canceled`; the customer's status follows their subscriptions (`churned` when
-        this was their last live one). A site still being set up can't be terminated, and an archive
-        already done is refused (`already_archived`). An imported site that is suspended is refused
+        this was their last live one; a customer an admin suspended stays `suspended` while another is live).
+        A site still being set up can't be terminated. An archived site is refused (`already_archived`),
+        unless its billing still runs (a terminate that stopped after the archive): then only its
+        subscriptions are canceled (200). An imported site that is suspended is refused
         (`site_suspended`): once terminated, nothing would switch it back on, so reactivate it or give extra
         days first. It is also refused (`site_suspended`) while the Press-side sync job's last report says the
         site is still switched off there (`syncStatus` `suspended` or `held`, any case), as it is for a few
