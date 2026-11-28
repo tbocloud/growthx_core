@@ -3815,7 +3815,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409":
-          description: "`site_exists`: the domain is already a site; `already_added`: the customer already has a site on that product; `email_in_use`: the email belongs to another kind of user or a closed account; `customer_suspended`: the email is an existing customer who is suspended (reactivate them first)"
+          description: "`site_exists`: the domain is already a site; `already_added`: the customer already has a site on that product; `email_in_use`: the email belongs to another kind of user or a closed account; `customer_suspended`: the email is an existing customer who is suspended (reactivate them first). With `paidOffline`, as `admin.record_payment`: `payment_in_progress` (an online payment for this product is under way, or the database cancelled this request in a clash with a payment being applied: try again), and nothing is created"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }

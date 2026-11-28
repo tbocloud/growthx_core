@@ -100,13 +100,16 @@ def record_for_payment(
 ) -> str | None:
 	"""A customer paid: create the commission of the partner who referred them, once. Returns the
 	GX Commission name (the existing one when called again for the same payment), or None when there
-	is nothing to pay. Never raises, so a problem here can't stop the customer's plan from activating
+	is nothing to pay. Raises only a deadlock (the database has undone the whole payment), so a problem
+	here can't stop the customer's plan from activating
 	(it goes to the Error Log and an admin can see the missing row)."""
 	if not account.referred_by:
 		return None
 	try:
 		frappe.db.savepoint("gx_commission")
 		return _record(account, plan, reference, paid_on, gross_amount, gateway, sales_invoice, subscription)
+	except frappe.QueryDeadlockError:
+		raise  # the whole transaction is undone, savepoint included: the payment's caller retries it
 	except Exception:
 		frappe.db.rollback(save_point="gx_commission")
 		frappe.log_error(title=f"GrowthX: commission for {account.name} / {reference} not recorded")

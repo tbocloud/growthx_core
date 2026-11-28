@@ -221,14 +221,20 @@ def add_direct_site():
 		warnings.append("not_on_platform_list")
 
 	if offline:
-		admin._record_manual_payment(
-			account,
-			plan,
-			offline["reference"],
-			offline["amount"],
-			offline["paid_on"],
-			fresh=not created_account,  # a new customer's account wasn't locked with lock_account
-		)
+		try:
+			admin._record_manual_payment(
+				account,
+				plan,
+				offline["reference"],
+				offline["amount"],
+				offline["paid_on"],
+				fresh=not created_account,  # a new customer's account wasn't locked with lock_account
+			)
+		except frappe.QueryDeadlockError:
+			# As in record_payment: cancelled in a clash with an online payment being applied; nothing of
+			# this request is kept, and the admin tries again.
+			frappe.db.rollback()
+			raise payu_billing._payment_in_progress()
 
 	billing_note = (
 		f"already paid offline ({fmt_money(offline['amount'] / 100, currency='INR')},"

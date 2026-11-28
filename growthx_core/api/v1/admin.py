@@ -577,12 +577,7 @@ def assign_plan():
 	if not frappe.db.exists("GX Tenant", tenant_id):
 		raise not_found()
 	tenant = frappe.get_doc("GX Tenant", tenant_id)
-	if tenant.status == "archived":
-		raise ApiError(409, "tenant_archived", "A terminated site can't change plan.")
-	if tenant.status in ("requested", "provisioning", "failed"):
-		raise ApiError(409, "invalid_transition", "A site that isn't live yet can't change plan.")
-	if not tenant.subscription:
-		raise ApiError(409, "no_subscription", "This site has no subscription to change.")
+	_check_plan_change(tenant)
 	if not frappe.db.exists("GX Plan", plan_id):
 		raise validation_error({"plan": "Unknown plan."})
 	plan = frappe.get_doc("GX Plan", plan_id)
@@ -592,6 +587,9 @@ def assign_plan():
 	account_name = frappe.db.get_value("GX Subscription", tenant.subscription, "account")
 	if account_name:
 		lock_account(account_name)
+		# Checked again after the lock: the renewal job may have archived the site while this request waited.
+		tenant = frappe.get_doc("GX Tenant", tenant_id)
+		_check_plan_change(tenant)
 	sub = frappe.get_doc("GX Subscription", tenant.subscription, for_update=True)
 	if sub.status == "canceled":
 		raise ApiError(409, "no_subscription", "This site's subscription is canceled.")
@@ -608,6 +606,15 @@ def assign_plan():
 			f" per {plan.billing_interval}",
 		)
 	return s.admin_tenant_detail(frappe.get_doc("GX Tenant", tenant_id))
+
+
+def _check_plan_change(tenant):
+	if tenant.status == "archived":
+		raise ApiError(409, "tenant_archived", "A terminated site can't change plan.")
+	if tenant.status in ("requested", "provisioning", "failed"):
+		raise ApiError(409, "invalid_transition", "A site that isn't live yet can't change plan.")
+	if not tenant.subscription:
+		raise ApiError(409, "no_subscription", "This site has no subscription to change.")
 
 
 @endpoint(methods=("POST",), roles=("admin",), idempotent=True)

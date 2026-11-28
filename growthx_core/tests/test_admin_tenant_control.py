@@ -252,6 +252,19 @@ class TestAdminTenantControl(IntegrationTestCase):
 		# before any write
 		self.assertEqual(calls, [(frappe.db.get_value("GX Subscription", sub, "account"), writes)])
 
+	def test_assign_plan_checks_the_site_again_after_the_lock(self):
+		"""The renewal job may archive the site while this request waits for the account lock."""
+		tenant_id = self._tenant()
+		real = admin.lock_account
+
+		def archived_meanwhile(name):
+			frappe.db.set_value("GX Tenant", tenant_id, "status", "archived")
+			return real(name)
+
+		with patch.object(admin, "lock_account", side_effect=archived_meanwhile):
+			status, body = _call(admin.assign_plan, {"id": tenant_id, "plan": YEARLY})
+		self.assertEqual((status, body["error"]["code"]), (409, "tenant_archived"), body)
+
 	def test_a_lifetime_plan_has_no_period_end(self):
 		tenant_id = self._tenant()
 		status, _body = _call(admin.assign_plan, {"id": tenant_id, "plan": LIFETIME})

@@ -86,7 +86,9 @@ def create_checkout(account, plan):
 			invoice = _make_invoice(account, plan, buyer)
 			checkout.db_set({"sales_invoice": invoice.name, "amount": invoice.grand_total})
 		if not checkout.payment_request:
-			checkout.db_set("payment_request", _payment_request(checkout.sales_invoice, account, gateway))
+			payment_request = _payment_request(checkout.sales_invoice, account, gateway)
+			_lock_again(account_name, checkout.name)
+			checkout.db_set("payment_request", payment_request)
 		elif authorized_attempt(checkout.payment_request):
 			# PayU already has the money for this checkout; a new attempt would let them pay twice.
 			# (A recent Queued attempt is fine: that's the customer retrying on PayU's page.)
@@ -153,19 +155,38 @@ def _still_payable(row, plan, buyer: tuple) -> bool:
 	return True
 
 
+def _lock_again(account_name: str, checkout_name: str):
+	"""frappe_payu commits when the Payment Request gets its PayU link (frappe's create_request_log), which
+	also ends this request's account lock. Lock again before going on, and stop if another checkout
+	request replaced this checkout in between: its Payment Request is cancelled, so no attempt may start."""
+	frappe.db.get_value("GX Account", account_name, "name", for_update=True)
+	if frappe.db.get_value("GX Checkout", checkout_name, "status", for_update=True) != "pending":
+		raise _payment_in_progress()
+
+
 def _cancel(row):
-	"""Cancel an unpaid checkout's Payment Request and invoice. A checkout whose invoice already has a
-	payment against it is never replaced (that could charge the customer twice): 409 instead."""
+	"""Cancel an unpaid checkout's Payment Requests and invoice. A checkout whose invoice already has a
+	payment against it is never replaced (that could charge the customer twice): 409 instead.
+	The Payment Requests are found by the invoice too: a request that made one (and committed it, see
+	_lock_again) may not have recorded it on the checkout yet."""
 	si = None
+	requests = {row.payment_request} if row.payment_request else set()
 	if row.sales_invoice:
 		si = frappe.get_doc("Sales Invoice", row.sales_invoice)
 		if si.docstatus == 1 and flt(si.outstanding_amount) != flt(si.grand_total):
 			raise _payment_in_progress()
-	if row.payment_request and attempt_in_flight(row.payment_request):
+		requests.update(
+			frappe.get_all(
+				"Payment Request",
+				{"reference_doctype": "Sales Invoice", "reference_name": si.name, "docstatus": 1},
+				pluck="name",
+			)
+		)
+	if any(attempt_in_flight(name) for name in requests):
 		raise _payment_in_progress()
 	with _as_administrator():
-		if row.payment_request:
-			pr = frappe.get_doc("Payment Request", row.payment_request)
+		for name in sorted(requests):
+			pr = frappe.get_doc("Payment Request", name)
 			if pr.docstatus == 1 and pr.status in PAYABLE_PR_STATUSES:
 				pr.cancel()
 		if si and si.docstatus == 1:
@@ -384,9 +405,10 @@ def _last_attempt(payment_request: str):
 
 def on_payment_entry_submit(doc, method=None):
 	"""doc_events: a payment settled the invoice of a pending checkout, so its plan becomes active.
-	Runs for PayU payments and for a Payment Entry an accountant makes by hand. Never raises: the
-	money is received either way; if the subscription can't be activated the checkout says why
-	(needs_attention) and an admin uses Record payment."""
+	Runs for PayU payments and for a Payment Entry an accountant makes by hand. Raises only a deadlock
+	(the database has already undone the whole transaction, Payment Entry included, so the payment is
+	retried); otherwise the money is received either way, and if the subscription can't be activated the
+	checkout says why (needs_attention) and an admin uses Record payment."""
 	invoices = {r.reference_name for r in doc.references if r.reference_doctype == "Sales Invoice"}
 	for invoice in invoices:
 		name = frappe.db.get_value(
@@ -480,6 +502,10 @@ def _activate(checkout_name: str, payment_entry: str, paid_on):
 		checkout.db_set(
 			{"status": "paid", "paid_at": now_datetime(), "payment_entry": payment_entry, "error": None}
 		)
+	except frappe.QueryDeadlockError:
+		# The database rolled back the whole transaction (the Payment Entry too), savepoint included: there is
+		# nothing to mark. Raised, so the payment's caller fails and is retried (frappe_payu's reconcile).
+		raise
 	except Exception as e:
 		frappe.db.rollback(save_point="gx_checkout_activate")
 		message = e.message if isinstance(e, ApiError) else str(e) or type(e).__name__

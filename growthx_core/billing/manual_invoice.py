@@ -59,6 +59,8 @@ def make(account, plan, reference: str, amount: float, paid_on: date) -> tuple[s
 			remarks=f"GrowthX {product} {plan.plan_name}, paid by bank transfer, reference {reference}",
 		)
 		_pay(invoice.name, bank, reference, amount, paid_on)
+	except frappe.QueryDeadlockError:
+		raise  # the whole transaction is undone, savepoint included: the caller answers 409 (retry)
 	except Exception:
 		frappe.db.rollback(save_point=SAVEPOINT)
 		frappe.log_error(title=f"GrowthX: invoice for a recorded payment failed ({account.name})")
