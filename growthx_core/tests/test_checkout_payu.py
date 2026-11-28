@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import frappe
 from frappe.tests import IntegrationTestCase
-from frappe.utils import fmt_money, getdate, now_datetime, nowdate
+from frappe.utils import flt, fmt_money, getdate, now_datetime, nowdate
 from werkzeug.test import EnvironBuilder
 
 from growthx_core import accounts, support
@@ -712,6 +712,66 @@ class TestCheckoutPayU(IntegrationTestCase):
 		status, body = self._checkout()
 		self.assertEqual((status, body["error"]["code"]), (503, "payment_unavailable"))
 		self.assertFalse(frappe.db.exists("Sales Invoice", {"customer": self._erp_customer()}))
+
+	def test_a_plan_inserted_without_gst_is_stored_with_it(self):
+		plan = frappe.get_doc(
+			{
+				"doctype": "GX Plan",
+				"plan_id": PLAN + "-b",
+				"product": PRODUCT,
+				"plan_name": "Other",
+				"billing_interval": "month",
+				"price": 10,
+				"gst_included": 0,
+				"gst_rate": 18,
+			}
+		).insert()
+		self.assertEqual((plan.gst_included, plan.price), (1, 10))
+		plan.gst_included = 0
+		plan.save()
+		self.assertEqual(frappe.db.get_value("GX Plan", plan.name, "gst_included"), 1)
+		sub = frappe.get_doc(
+			{
+				"doctype": "GX Subscription",
+				"account": self.account,
+				"plan": PLAN + "-b",
+				"status": "trialing",
+				"price": 10,
+				"gst_included": 0,
+			}
+		).insert(ignore_permissions=True)
+		self.assertEqual((sub.gst_included, sub.price), (1, 10))
+
+	def test_the_patch_makes_old_prices_gst_inclusive_and_is_idempotent(self):
+		from growthx_core.patches.v1 import gst_inclusive_prices
+
+		sub = frappe.db.get_value("GX Subscription", {"account": self.account}, "name")
+		frappe.db.set_value("GX Plan", PLAN, {"gst_included": 0, "price": 1999})
+		frappe.db.set_value("GX Subscription", sub, {"gst_included": 0, "price": 1999})
+		before = frappe.db.get_value("GX Plan", PLAN, "modified")
+		gst_inclusive_prices.execute()
+		self.assertEqual(frappe.db.get_value("GX Plan", PLAN, ["gst_included", "price"]), (1, 1999))
+		self.assertEqual(frappe.db.get_value("GX Subscription", sub, ["gst_included", "price"]), (1, 1999))
+		self.assertEqual(frappe.db.get_value("GX Plan", PLAN, "modified"), before)
+		gst_inclusive_prices.execute()
+		self.assertEqual(frappe.db.get_value("GX Plan", PLAN, ["gst_included", "price"]), (1, 1999))
+		self.assertEqual(frappe.db.get_value("GX Subscription", sub, ["gst_included", "price"]), (1, 1999))
+
+	def test_a_plan_that_was_priced_without_gst_can_be_checked_out_after_the_patch(self):
+		from growthx_core.patches.v1 import gst_inclusive_prices
+
+		frappe.db.set_value("GX Plan", PLAN, {"gst_included": 0, "price": 10})
+		status, body = self._checkout()
+		self.assertEqual((status, body["error"]["code"]), (503, "payment_unavailable"))
+		gst_inclusive_prices.execute()
+		status, body = self._checkout()
+		self.assertEqual(status, 201, body)
+		self.assertEqual(body["invoice"]["total"]["amount"], 1000)  # paise: ₹10
+		si = frappe.get_doc(
+			"Sales Invoice", frappe.db.get_value("GX Checkout", body["reference"], "sales_invoice")
+		)
+		self.assertEqual(si.grand_total, 10)
+		self.assertEqual(flt(si.total_taxes_and_charges, 2), 1.53)  # 18% inside ₹10
 
 	def test_unknown_or_mismatched_plan(self):
 		status, body = self._checkout(planId="nope")

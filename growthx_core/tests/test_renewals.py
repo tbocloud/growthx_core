@@ -1101,7 +1101,9 @@ class TestRenewalJob(RenewalsCase):
 		):
 			self.assertIn(text, offline["message"])
 		self.assertNotIn("Pay now", offline["message"])
-		# online payment on, but the plan is "+ GST": PayU can't take it, so still a bank transfer
+		# online payment on, but an old row is still "+ GST" (no save can make one now): PayU can't take
+		# it, so still a bank transfer
+		frappe.db.set_value("GX Plan", PLAN, "gst_included", 0)
 		self._settings(online_payments=1)
 		self._run("2026-12-23 10:00:00")
 		plus_gst = self.sendmail.call_args.kwargs["message"]

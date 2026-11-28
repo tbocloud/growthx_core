@@ -90,7 +90,8 @@
    "reqd": 1
   },
   {
-   "description": "Whether the price already includes GST",
+   "default": "1",
+   "description": "Always on: every plan price includes GST",
    "fieldname": "gst_included",
    "fieldtype": "Check",
    "label": "GST Included"

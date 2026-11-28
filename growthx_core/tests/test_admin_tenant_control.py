@@ -185,6 +185,22 @@ class TestAdminTenantControl(IntegrationTestCase):
 			frappe.db.exists("GX Audit Log", {"action": "plan.create", "reference_name": plan.name})
 		)
 
+	def test_every_plan_price_includes_gst_whatever_gstIncluded_says(self):
+		for flag in (False, None, True):
+			data = {
+				"id": f"test-control-gst-{flag}",
+				"product": PRODUCT,
+				"planName": "Gst",
+				"interval": "month",
+				"price": 1000,
+			}
+			if flag is not None:
+				data["gstIncluded"] = flag
+			status, body = _call(admin.create_plan, data)
+			self.assertEqual(status, 201, body)
+			self.assertEqual(frappe.db.get_value("GX Plan", body["id"], ["gst_included", "price"]), (1, 10))
+			self.assertTrue(body["price"]["gstIncluded"])
+
 	def test_the_plan_id_can_be_chosen_and_a_used_one_is_refused(self):
 		status, body = _call(
 			admin.create_plan,

@@ -523,7 +523,7 @@ def create_plan():
 			"plan_name": plan_name,
 			"billing_interval": interval,
 			"price": plan_price,
-			"gst_included": 1 if data.get("gstIncluded") else 0,
+			"gst_included": 1,  # every price includes GST; `gstIncluded` is ignored
 			"gst_rate": gst_rate,
 			"trial_days": trial_days,
 			"description": get_str(data, "description", max_length=2000),
