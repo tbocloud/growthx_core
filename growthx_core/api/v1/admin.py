@@ -6,6 +6,7 @@ from frappe.query_builder.functions import Count
 from frappe.utils import (
 	add_months,
 	add_years,
+	cint,
 	fmt_money,
 	get_datetime,
 	getdate,
@@ -754,7 +755,8 @@ def renewals():
 	Press-side job couldn't find or act on, or hasn't matched to a Press site yet), `resumePending` (paid or
 	reactivated, but Press refused to switch the site back on: `resume_pending`, which the job retries each
 	hour; a site an admin suspended is never in it) and `unscheduled` (live subscriptions with no date to renew from,
-	which the job can't follow). Sites that aren't built or are archived are left out, as the job leaves
+	which the job can't follow). Subscriptions marked not billed are in none of the lists except `syncProblems`
+	and, while Press refuses to bring their site back, `resumePending`. Sites that aren't built or are archived are left out, as the job leaves
 	them alone."""
 	job = renewal_jobs.new_job()
 	subs = frappe.get_all(
@@ -787,6 +789,11 @@ def renewals():
 	for sub in subs:
 		tenant = tenants.get(sub.tenant)
 		if not tenant or tenant.status in ("archived", *renewal_jobs.SITES_NOT_LIVE):
+			continue
+		if cint(sub.not_billed):
+			# A test or internal subscription: the job leaves it alone, except to retry a refused resume.
+			if renewal_jobs.resume_pending(sub, tenant):
+				lists["resumePending"].append(_renewal_item(sub, tenant, accounts_by_id, plan_names, job))
 			continue
 		if renewal_jobs.resume_pending(sub, tenant):
 			lists["resumePending"].append(_renewal_item(sub, tenant, accounts_by_id, plan_names, job))

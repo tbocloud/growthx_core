@@ -5549,7 +5549,7 @@ components:
         renewal:
           allOf: [{ $ref: "#/components/schemas/Renewal" }]
           nullable: true
-          description: Null for a paid lifetime plan and a canceled subscription, and for every subscription while renewals are switched off in Core (GX Billing Settings `enabled`)
+          description: Null for a paid lifetime plan, a canceled subscription and a subscription that is not billed (test or internal), and for every subscription while renewals are switched off in Core (GX Billing Settings `enabled`)
 
     Renewal:
       type: object

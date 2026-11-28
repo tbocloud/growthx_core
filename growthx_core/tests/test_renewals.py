@@ -663,6 +663,74 @@ class TestRenewalJob(RenewalsCase):
 			order_by="creation asc",
 		)
 
+	def _long_ended_trial(self, not_billed):
+		"""A never-paid GrowthX trial that ended 20 days before 2026-12-26, with a ready tenant."""
+		_, sub, tenant = self._gx_customer("trialing", trial_ends_at="2026-12-06 12:00:00")
+		frappe.db.set_value(
+			"GX Subscription",
+			sub.name,
+			{"not_billed": not_billed, "notified_stages": "-3,-1", "final_warning_on": "2026-12-05"},
+		)
+		return sub, tenant
+
+	def test_a_not_billed_subscription_is_left_alone_and_a_billed_one_is_not(self):
+		skipped, skipped_site = self._long_ended_trial(1)
+		acted, acted_site = self._long_ended_trial(0)
+		self._run("2026-12-26 10:00:00")
+		self.assertEqual(self._emails(skipped), [])
+		self.assertEqual((self._status(skipped), self._status(skipped_site)), ("trialing", "ready"))
+		self.assertEqual(self._renewal_audits(skipped), [])
+		self.assertNotIn(skipped_site.press_site_id, [site for _call, site in self.press.calls])
+		# the control: the same subscription without the flag is acted on in the same run
+		self.assertEqual(self._status(acted), "suspended")
+		self.assertTrue(self._emails(acted))
+		self.assertTrue(self._renewal_audits(acted))
+		self.assertIn(("suspend_site", acted_site.press_site_id), self.press.calls)
+
+	def test_a_subscription_ticked_after_the_query_is_skipped(self):
+		sub, tenant = self._long_ended_trial(0)
+		frappe.db.set_value("GX Subscription", sub.name, "not_billed", 1)
+		with patch.object(renewals, "_now", return_value=get_datetime("2026-12-26 10:00:00")):
+			job = renewals.new_job()
+			job.process(sub.name)
+		self.assertEqual(self._emails(sub), [])
+		self.assertEqual((self._status(sub), self._status(tenant)), ("trialing", "ready"))
+		self.assertEqual(self._renewal_audits(sub), [])
+		self.assertEqual(self.press.calls, [])
+
+	def test_a_not_billed_paused_trial_is_not_archived(self):
+		_, sub, tenant = self._paused_trial(archive_due_on="2026-12-20")
+		frappe.db.set_value("GX Subscription", sub.name, "not_billed", 1)
+		self._run("2026-12-26 10:00:00")
+		self.assertEqual((self._status(sub), self._status(tenant)), ("suspended", "suspended"))
+		self.assertEqual(self._renewal_audits(sub), [])
+		self.assertEqual(self.press.calls, [])
+
+	def _ticked_pending_resume(self):
+		_, sub, tenant = self._gx_customer("trialing", trial_ends_at="2026-12-06 12:00:00")
+		frappe.db.set_value("GX Tenant", tenant.name, "status", "suspended")
+		frappe.db.set_value("GX Subscription", sub.name, {"not_billed": 1, "resume_pending": 1})
+		return sub, tenant
+
+	def test_a_not_billed_subscription_still_gets_its_refused_resume_retried(self):
+		sub, tenant = self._ticked_pending_resume()
+		self.press.fail_resume = True
+		self._run("2026-12-26 10:00:00")
+		self.assertEqual(self._row_pending(sub), 1)
+		self.assertEqual((self._status(sub), self._status(tenant)), ("trialing", "suspended"))
+		self.assertEqual(self._emails(sub), [])
+		self.assertEqual(self.press.calls, [])
+		self.press.fail_resume = False
+		self._run("2026-12-26 11:00:00")
+		self.assertEqual(self._row_pending(sub), 0)
+		self.assertEqual((self._status(sub), self._status(tenant)), ("trialing", "ready"))
+		self.assertEqual(self.press.calls, [("resume_site", tenant.press_site_id)])
+		self.assertEqual(self._emails(sub), [])
+		self.assertEqual(self._renewal_audits(sub), ["renewal.resume"])
+
+	def _row_pending(self, sub):
+		return frappe.db.get_value("GX Subscription", sub.name, "resume_pending")
+
 	def test_disabled_does_nothing(self):
 		_, sub, tenant = self._gx_customer("past_due", current_period_end="2026-12-10")
 		self._settings(enabled=0)
@@ -1471,6 +1539,12 @@ class TestRenewalInfo(RenewalsCase):
 			},
 		)
 
+	def test_a_not_billed_subscription_has_no_renewal_info(self):
+		_, sub, _t = self._gx_customer("active", current_period_end="2026-12-30")
+		self.assertIsInstance(self._info(sub), dict)
+		frappe.db.set_value("GX Subscription", sub.name, "not_billed", 1)
+		self.assertIsNone(self._info(frappe.get_doc("GX Subscription", sub.name)))
+
 	def test_renewal_info_stages(self):
 		# paid, outside the reminder window: nothing to pay yet
 		_, sub, _t = self._gx_customer("active", current_period_end="2027-01-20")
@@ -2188,6 +2262,30 @@ class TestRenewalAdminApi(RenewalsCase):
 		)
 		self.assertEqual(end, getdate("2027-01-30"))  # not 17 Jan: the site was off from 24 Dec
 		self.assertFalse(self._row(sub).suspended_at)  # the payment clears it
+
+	def test_admin_renewals_leaves_out_not_billed_subscriptions(self):
+		_, late, _t = self._gx_customer("past_due", current_period_end="2026-12-20")
+		_, dateless, _t2 = self._gx_customer("active")
+		_, late_billed, _t3 = self._gx_customer("past_due", current_period_end="2026-12-20")
+		_, dateless_billed, _t4 = self._gx_customer("active")
+		for sub in (late, dateless):
+			frappe.db.set_value("GX Subscription", sub.name, "not_billed", 1)
+		status, body = self._at("2026-12-26 10:00:00", admin.renewals)
+		self.assertEqual(status, 200, body)
+		self.assertEqual([i["subscriptionId"] for i in body["pastDue"]], [late_billed.name])
+		self.assertEqual([i["subscriptionId"] for i in body["unscheduled"]], [dateless_billed.name])
+		listed = {i["subscriptionId"] for rows in body.values() for i in rows}
+		self.assertFalse(listed & {late.name, dateless.name})
+
+	def test_admin_renewals_lists_a_not_billed_refused_resume(self):
+		_, sub, tenant = self._gx_customer("trialing", trial_ends_at="2026-12-06 12:00:00")
+		frappe.db.set_value("GX Tenant", tenant.name, "status", "suspended")
+		frappe.db.set_value("GX Subscription", sub.name, {"not_billed": 1, "resume_pending": 1})
+		status, body = self._at("2026-12-26 10:00:00", admin.renewals)
+		self.assertEqual(status, 200, body)
+		self.assertEqual([i["subscriptionId"] for i in body["resumePending"]], [sub.name])
+		others = {k: v for k, v in body.items() if k != "resumePending"}
+		self.assertFalse([i for rows in others.values() for i in rows if i["subscriptionId"] == sub.name])
 
 	def test_admin_renewals_lists_unscheduled_and_dateless_suspended(self):
 		_, dateless, _t = self._gx_customer("active")  # no end, due date or trial end (like GXS-00005)
