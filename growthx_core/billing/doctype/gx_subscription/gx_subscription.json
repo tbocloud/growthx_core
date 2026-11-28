@@ -19,6 +19,7 @@
   "trial_ends_at",
   "current_period_end",
   "cancel_at_period_end",
+  "not_billed",
   "gateway_section",
   "gateway",
   "gateway_subscription_id",
@@ -124,6 +125,13 @@
    "fieldname": "cancel_at_period_end",
    "fieldtype": "Check",
    "label": "Cancel At Period End"
+  },
+  {
+   "default": "0",
+   "description": "The renewal job leaves this subscription alone: no reminders, no suspension, no deletion. For test and internal subscriptions. Ticking it doesn't bring back a site the job already paused: use Reactivate.",
+   "fieldname": "not_billed",
+   "fieldtype": "Check",
+   "label": "Not billed (test or internal)"
   },
   {
    "fieldname": "gateway_section",

@@ -269,7 +269,10 @@ def run() -> dict:
 	for doctype in ("GX Account", "GX Subscription", "GX Tenant"):
 		frappe.get_meta(doctype)
 	for name in frappe.get_all(
-		"GX Subscription", filters={"status": ("in", LIVE)}, order_by="creation asc", pluck="name"
+		"GX Subscription",
+		filters={"status": ("in", LIVE), "not_billed": 0},
+		order_by="creation asc",
+		pluck="name",
 	):
 		job.process(name)
 	return job.counts
@@ -387,6 +390,8 @@ class _Run:
 			return
 		self.seen = {field: row[field] for field in WATCHED}
 		sub = frappe.get_doc("GX Subscription", name)
+		if cint(sub.not_billed):
+			return  # a test or internal subscription: no reminder, suspension or archive (ticked since the query)
 		if sub.status not in LIVE or (sub.billing_interval == "one_time" and sub.status == "active"):
 			return  # a paid lifetime plan has nothing to renew
 		tenant = sub.tenant and frappe.db.get_value(
@@ -787,7 +792,7 @@ def was_trial(sub) -> bool:
 def renewal_info(sub, tenant=None, today: date | None = None, _job: _Run | None = None) -> dict | None:
 	"""Where the subscription is on its renewal timeline, computed with the job's own rules (the same day 0,
 	reminder window, suspension day and archive day), so the website renders it without date logic of its own.
-	None for a lifetime plan that is paid, and for a canceled subscription.
+	None for a lifetime plan that is paid, for a canceled subscription and for one marked not billed.
 
 	`stage`: paid, due_soon, first_due, expired, suspended, trial, trial_ended. `daysLeft`: whole days to the
 	next deadline (the end for paid and trial, the suspension day once expired, the deletion day for a paused
@@ -795,6 +800,8 @@ def renewal_info(sub, tenant=None, today: date | None = None, _job: _Run | None 
 	None; `suspendsAt` and `archivesAt` are None while suspend_sites is off. `canPay` is False only in `paid`
 	(outside the reminder window); `payInAdvance` is True there. A suspended subscription with no dates at
 	all is still `suspended` (with no dates)."""
+	if cint(sub.get("not_billed")):
+		return None
 	if sub.status not in LIVE or (sub.billing_interval == "one_time" and sub.status == "active"):
 		return None
 	job = _job or new_job()
