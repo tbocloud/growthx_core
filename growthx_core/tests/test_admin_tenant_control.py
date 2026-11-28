@@ -10,6 +10,7 @@ from frappe.utils import add_months, add_years, getdate, nowdate
 
 from growthx_core.api.v1 import _core, admin
 from growthx_core.provisioning import press, runner
+from growthx_core.tests import test_locks
 
 PRODUCT = "test-control"
 OTHER_PRODUCT = "test-control-other"
@@ -240,6 +241,16 @@ class TestAdminTenantControl(IntegrationTestCase):
 		self.assertTrue(
 			frappe.db.exists("GX Audit Log", {"action": "tenant.assign_plan", "reference_name": sub.name})
 		)
+
+	def test_assign_plan_locks_the_account_in_a_fresh_transaction(self):
+		tenant_id = self._tenant()
+		sub = frappe.db.get_value("GX Tenant", tenant_id, "subscription")
+		writes = frappe.db.transaction_writes
+		with test_locks.lock_spy(admin) as calls:
+			status, body = _call(admin.assign_plan, {"id": tenant_id, "plan": YEARLY})
+		self.assertEqual(status, 200, body)
+		# before any write
+		self.assertEqual(calls, [(frappe.db.get_value("GX Subscription", sub, "account"), writes)])
 
 	def test_a_lifetime_plan_has_no_period_end(self):
 		tenant_id = self._tenant()

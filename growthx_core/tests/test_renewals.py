@@ -20,6 +20,7 @@ from growthx_core.patches.v1 import billing_settings_defaults, direct_due_dates
 from growthx_core.provisioning import press, runner
 from growthx_core.support import support_inbox
 from growthx_core.tests import test_admin_direct as direct_tests
+from growthx_core.tests import test_locks
 
 PRODUCT = "test-renewals"
 PLAN = "test-renewals-month"
@@ -1921,10 +1922,22 @@ class TestRenewalAdminApi(RenewalsCase):
 		self.assertEqual([c for c in calls if c[2] and not isinstance(c[1], str)], [])
 		return calls
 
-	def test_admin_actions_and_payments_read_sites_and_marks_under_lock(self):
-		"""A Suspend or a payment that waited for the account lock while the renewal job held it (through a
-		Press call) must see what the job committed: after the lock, they read the account's sites and
-		subscriptions again with a lock, row by row (the latest rows, not the request's snapshot)."""
+	def test_a_resume_after_payment_reads_the_subscription_and_its_site_under_lock(self):
+		"""PayU's _activate locks its checkout before the account, so it can't start a fresh transaction
+		(lock_account): a payment that waited while the job suspended the site must still see the site as it is
+		now. The resume reads the subscription and its site again with a lock, by name."""
+		_, sub, site = self._gx_customer("active", current_period_end="2027-01-20")
+		frappe.db.set_value("GX Tenant", site.name, "status", "suspended")
+		resume = self._locking_reads(lambda: renewals.resume_subscription_site(sub.name))
+		self.assertIn(("GX Subscription", sub.name, True), resume)
+		self.assertIn(("GX Tenant", site.name, True), resume)
+		self.assertEqual(frappe.db.get_value("GX Tenant", site.name, "status"), "ready")
+
+	def test_suspend_payment_and_reactivate_move_only_the_right_sites(self):
+		"""Admin actions and payments read the account's sites and subscriptions after the account lock, in a
+		fresh transaction (lock_account), so plain reads are current. A Suspend moves the running site and locks
+		no site it leaves alone (Press calls are slow); a payment restores the paid site and keeps the other
+		billing-suspended one off; Reactivate is refused while billing has a site suspended."""
 		account, unpaid, unpaid_site = self._gx_customer("suspended", current_period_end="2026-12-01")
 		frappe.db.set_value("GX Subscription", unpaid.name, "suspended_by", "billing")
 		frappe.db.set_value("GX Tenant", unpaid_site.name, "status", "suspended")
@@ -1936,45 +1949,73 @@ class TestRenewalAdminApi(RenewalsCase):
 		suspend = self._locking_reads(
 			lambda: payments.set_customer_status(doc, "suspended", "ready", "suspended", "suspend_site")
 		)
-		self.assertIn(("GX Tenant", site.name, True), suspend)
-		self.assertIn(("GX Subscription", sub.name, True), suspend)  # its resume mark
 		self.assertEqual(frappe.db.get_value("GX Tenant", site.name, "status"), "suspended")
-		# a resume after payment reads the subscription and its site under lock
-		resume = self._locking_reads(lambda: renewals.resume_subscription_site(sub.name))
-		self.assertIn(("GX Subscription", sub.name, True), resume)
-		self.assertIn(("GX Tenant", site.name, True), resume)
-		self.assertEqual(frappe.db.get_value("GX Tenant", site.name, "status"), "ready")
-		# a payment by a suspended customer reads the other billing-suspended subscription under lock
-		frappe.db.set_value("GX Tenant", site.name, "status", "suspended")
+		self.assertNotIn(("GX Tenant", unpaid_site.name, True), suspend)  # not moved: not locked
+		# a payment by a suspended customer brings back only the paid site
 		frappe.db.set_value("GX Account", account.name, "status", "suspended")
-		pay = self._locking_reads(
-			lambda: payments.apply_payment(
-				frappe.get_doc("GX Account", account.name),
-				frappe.get_doc("GX Plan", PLAN),
-				"pay-lock",
-				getdate("2026-12-26"),
-				"manual",
-			)
+		payments.apply_payment(
+			frappe.get_doc("GX Account", account.name),
+			frappe.get_doc("GX Plan", PLAN),
+			"pay-lock",
+			getdate("2026-12-26"),
+			"manual",
 		)
-		self.assertIn(("GX Subscription", unpaid.name, True), pay)
 		self.assertEqual(
 			[frappe.db.get_value("GX Tenant", t.name, "status") for t in (site, unpaid_site)],
 			["ready", "suspended"],  # the paid one is back; the unpaid one stays off
 		)
-		# the reactivate guard reads the billing suspension under lock too
+		# Reactivate would be undone by the next run: Give extra days instead
 		frappe.db.set_value("GX Account", account.name, "status", "suspended")
-		answer = []
-		guard = self._locking_reads(
-			lambda: answer.append(
-				self._at(
-					"2026-12-26 10:00:00",
-					admin.update_customer_status,
-					{"id": account.name, "action": "reactivate"},
-				)
+		status, body = self._at(
+			"2026-12-26 10:00:00", admin.update_customer_status, {"id": account.name, "action": "reactivate"}
+		)
+		self.assertEqual((status, body["error"]["code"]), (409, "billing_suspended"), body)
+
+	def test_a_payment_that_could_not_start_afresh_reads_the_sites_under_lock(self):
+		"""PayU's _activate locks its checkout before the account, so its snapshot can predate an admin's
+		Suspend that committed while it waited: in that snapshot the customer's other site is still `ready`.
+		On that path (fresh=False) the account's sites, its billing suspensions and the resume marks are read
+		again with a lock, by name (the latest rows): a payment by a customer whose two sites the admin
+		suspended brings both back, as the account becomes active again."""
+		account, sub, site = self._gx_customer("active", current_period_end="2027-01-20")
+		# the same customer's other site, made later (so the payment for the plan applies to it)
+		_, paid, paid_site = self._customer(
+			"provisioned", "active", current_period_end="2027-01-20", account=account
+		)
+		doc = frappe.get_doc("GX Account", account.name)
+		payments.set_customer_status(doc, "suspended", "ready", "suspended", "suspend_site")
+		self.assertEqual(
+			[frappe.db.get_value("GX Tenant", t.name, "status") for t in (site, paid_site)],
+			["suspended", "suspended"],
+		)
+		pay = self._locking_reads(
+			lambda: payments.apply_payment(
+				frappe.get_doc("GX Account", account.name),
+				frappe.get_doc("GX Plan", PLAN),
+				"pay-stale",
+				getdate("2026-12-26"),
+				"manual",
+				fresh=False,
 			)
 		)
-		self.assertIn(("GX Subscription", unpaid.name, True), guard)
-		self.assertEqual(answer[0][0], 409, answer[0][1])
+		self.assertIn(("GX Tenant", site.name, True), pay)  # the other site: its status as it is now
+		self.assertIn(("GX Subscription", sub.name, True), pay)  # its billing suspension and resume mark
+		self.assertEqual(
+			[frappe.db.get_value("GX Tenant", t.name, "status") for t in (site, paid_site)],
+			["ready", "ready"],
+		)
+		self.assertEqual(frappe.db.get_value("GX Account", account.name, "status"), "active")
+		self.assertEqual(self._row(paid).status, "active")
+
+	def test_extend_grace_locks_the_account_in_a_fresh_transaction(self):
+		account, sub, _tenant = self._suspended_past_due()
+		writes = frappe.db.transaction_writes
+		with test_locks.lock_spy(admin) as calls:
+			status, body = self._at(
+				"2026-12-26 10:00:00", admin.extend_grace, {"id": sub.name, "until": "2027-01-05"}
+			)
+		self.assertEqual(status, 200, body)
+		self.assertEqual(calls, [(account.name, writes)])  # before any write
 
 	def test_day_zero_keeps_a_resume_mark_an_admin_cleared_meanwhile(self):
 		"""The job saves the whole subscription on day 0 (past_due). An admin's Suspend that committed between

@@ -23,6 +23,7 @@ from growthx_core.api.v1._core import (
 )
 from growthx_core.api.v1.customer import current_account
 from growthx_core.billing import billing_details, payu
+from growthx_core.billing.locks import lock_account
 
 ACCOUNT_FIELDS = ["name", "account_name", "status", "user", "contact_email", "phone", "customer"]
 INVOICE_FIELDS = [
@@ -75,9 +76,17 @@ def create_checkout():
 		)
 
 	try:
+		# Before the first write (ensure_customer can make the ERPNext Customer): the open checkouts, invoices
+		# and PayU attempts read after the lock are then current, not as they were before this request waited.
+		account = lock_account(account.name)
 		checkout, form = payu.create_checkout(account, plan)
 	except payu.Unavailable as e:
 		raise _unavailable(e)
+	except frappe.QueryDeadlockError:
+		# The database cancelled this request in a clash with a payment being applied (it locks the invoice
+		# and Payment Request before the account): that payment goes on; the customer tries again.
+		frappe.db.rollback()
+		raise payu._payment_in_progress()
 
 	product_name = frappe.db.get_value("GX Product", plan.product, "product_name")
 	invoice = frappe.db.get_value("Sales Invoice", checkout.sales_invoice, INVOICE_FIELDS, as_dict=True)

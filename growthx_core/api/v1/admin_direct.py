@@ -26,6 +26,7 @@ from growthx_core.api.v1._core import (
 )
 from growthx_core.billing import billing_details, payments, site_sync
 from growthx_core.billing import payu as payu_billing
+from growthx_core.billing.locks import lock_account
 
 MAX_START_DAYS = 366
 
@@ -138,12 +139,7 @@ def add_direct_site():
 
 	account_name = direct.existing_customer(email)
 	if account_name and accounts.live_site(account_name, plan.product):
-		raise ApiError(
-			409,
-			"already_added",
-			"This customer already has a site on that product. Use another ERPNext Direct product for a second site.",
-			fields={"plan": "Already has a site on this product."},
-		)
+		raise _already_added()
 
 	warnings = []
 	if plan.gst_rate and not plan.gst_included:
@@ -166,7 +162,18 @@ def add_direct_site():
 		user, account_name = direct.new_customer(
 			email=email, contact_name=contact, company=company, phone=phone
 		)
-	account = frappe.get_doc("GX Account", account_name, for_update=True)
+		# Made (or a closed account revived) by this request, after its first writes: locked in this
+		# transaction, since lock_account must come before any write. Nobody else is using it.
+		account = frappe.get_doc("GX Account", account_name, for_update=True)
+	else:
+		account = lock_account(account_name)
+		# Checked again under the lock: a Suspend, or another add of this product, that this request waited
+		# for counts too.
+		if account.status == "suspended":
+			# Its sites are off: a new one must not start running.
+			raise ApiError(409, "customer_suspended", "This customer is suspended. Reactivate them first.")
+		if accounts.live_site(account_name, plan.product):
+			raise _already_added()
 	user = account.user
 
 	if billing:
@@ -215,7 +222,12 @@ def add_direct_site():
 
 	if offline:
 		admin._record_manual_payment(
-			account, plan, offline["reference"], offline["amount"], offline["paid_on"]
+			account,
+			plan,
+			offline["reference"],
+			offline["amount"],
+			offline["paid_on"],
+			fresh=not created_account,  # a new customer's account wasn't locked with lock_account
 		)
 
 	billing_note = (
@@ -246,6 +258,15 @@ def add_direct_site():
 		invite_sent=email_sent,
 		press_check=press_check,
 		warnings=warnings,
+	)
+
+
+def _already_added():
+	return ApiError(
+		409,
+		"already_added",
+		"This customer already has a site on that product. Use another ERPNext Direct product for a second site.",
+		fields={"plan": "Already has a site on this product."},
 	)
 
 

@@ -464,6 +464,9 @@ def _activate(checkout_name: str, payment_entry: str, paid_on):
 			GATEWAY,
 			amount=checkout.amount,
 			sales_invoice=checkout.sales_invoice,
+			# The checkout is locked first, so the account lock can't start a fresh transaction (lock_account):
+			# the customer's sites and subscriptions are read by name under lock instead.
+			fresh=False,
 		)
 		audit(
 			"customer.online_payment",

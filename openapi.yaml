@@ -1925,7 +1925,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409":
-          description: "`invalid_transition` (already paid for lifetime access, or the account can't take a payment), `payment_in_progress` (PayU has already authorized a payment for this checkout, so a new attempt would charge the customer twice; or an earlier checkout for this product is part-paid, or has a PayU attempt that may still succeed: any attempt Authorized, or the newest Queued and under 30 minutes old; try again later), or `idempotency_conflict`"
+          description: "`invalid_transition` (already paid for lifetime access, or the account can't take a payment), `payment_in_progress` (PayU has already authorized a payment for this checkout, so a new attempt would charge the customer twice; or an earlier checkout for this product is part-paid, or has a PayU attempt that may still succeed: any attempt Authorized, or the newest Queued and under 30 minutes old; try again later; also when the database cancels this request in a clash with a payment being applied: try again), or `idempotency_conflict`"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -3267,7 +3267,7 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
-          description: "`invalid_transition`: the customer is churned. `duplicate_payment`: this reference is already recorded on the subscription. `payment_in_progress`: an online payment for this product is under way (see above)."
+          description: "`invalid_transition`: the customer is churned. `duplicate_payment`: this reference is already recorded on the subscription. `payment_in_progress`: an online payment for this product is under way (see above), or the database cancelled this request in a clash with a payment being applied: try again."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -3815,7 +3815,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409":
-          description: "`site_exists`: the domain is already a site; `already_added`: the customer already has a site on that product; `email_in_use`: the email belongs to another kind of user or a closed account"
+          description: "`site_exists`: the domain is already a site; `already_added`: the customer already has a site on that product; `email_in_use`: the email belongs to another kind of user or a closed account; `customer_suspended`: the email is an existing customer who is suspended (reactivate them first)"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }

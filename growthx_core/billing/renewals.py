@@ -31,7 +31,7 @@ import frappe
 from frappe.utils import add_days, cint, getdate, now_datetime
 
 from growthx_core.api.v1._core import audit, iso
-from growthx_core.billing import renewal_emails
+from growthx_core.billing import locks, renewal_emails
 from growthx_core.billing.doctype.gx_billing_settings.gx_billing_settings import get_int, int_setting
 from growthx_core.billing.doctype.gx_subscription.gx_subscription import sync_account_status
 from growthx_core.billing.renewal_schedule import (
@@ -82,8 +82,9 @@ def resume_subscription_site(sub_name: str, why: str = "after payment") -> None:
 	If Press refuses, the error is logged, the tenant stays suspended and the subscription is marked
 	`resume_pending`: the hourly job tries again (Ruling 19). The mark is cleared once the site is back.
 	(Give extra days undoes everything on a refusal, the mark included: the admin tries again.)"""
-	# Locking reads: a caller that waited for the account lock (while the renewal job suspended this site)
-	# must see the site as it is now, not as its transaction's snapshot had it.
+	# Locking reads, by name: a payment that waited for the account lock while the job suspended this site
+	# must see the site as it is now. Callers that use lock_account read current rows anyway, but PayU's
+	# _activate locks its checkout first, so it can't start the fresh transaction lock_account needs.
 	sub = frappe.db.get_value(
 		"GX Subscription", sub_name, ["tenant", "resume_pending"], as_dict=True, for_update=True
 	)
@@ -112,38 +113,24 @@ def _mark_resume_pending(sub_name: str, sub, value: int):
 		frappe.db.set_value("GX Subscription", sub_name, "resume_pending", value, update_modified=False)
 
 
-def mark_resume_pending(tenant_name: str):
+def mark_resume_pending(tenant_name: str, *, fresh: bool = True):
 	"""Press refused to bring this tenant's site back when the customer's sites were restored (a payment, an
-	admin's Reactivate): its running subscriptions are marked, so the job tries again."""
-	for row in locked_rows("GX Subscription", {"tenant": tenant_name}, ["status", "resume_pending"]):
+	admin's Reactivate): its running subscriptions are marked, so the job tries again. `fresh` as for
+	payments.apply_payment (locks.account_rows)."""
+	for row in locks.account_rows(
+		"GX Subscription", {"tenant": tenant_name}, ["status", "resume_pending"], fresh=fresh
+	):
 		if row.status in RUNNING and not cint(row.resume_pending):
 			frappe.db.set_value("GX Subscription", row.name, "resume_pending", 1, update_modified=False)
 
 
-def clear_resume_pending(filters: dict):
-	"""Forget a resume Press refused, for the subscriptions matching `filters`: their site is running again,
-	or an admin suspended the customer (whose suspension the job's retry must never undo)."""
-	# Read under lock: an admin's Suspend that waited for the job must also clear a mark the job just set.
-	for row in locked_rows("GX Subscription", filters, ["resume_pending"]):
+def clear_resume_pending(scope: dict, *, fresh: bool = True):
+	"""Forget a resume Press refused, for the subscriptions in `scope` (an account's or a tenant's): their
+	site is running again, or an admin suspended the customer (whose suspension the job's retry must never
+	undo). `fresh` as for payments.apply_payment (locks.account_rows)."""
+	for row in locks.account_rows("GX Subscription", scope, ["resume_pending"], fresh=fresh):
 		if cint(row.resume_pending):
 			frappe.db.set_value("GX Subscription", row.name, "resume_pending", 0, update_modified=False)
-
-
-def locked_rows(doctype: str, scope: dict, fields: list[str]) -> list:
-	"""The rows of `doctype` in `scope` (one account's or one tenant's), each read again with a lock, by name.
-	Callers hold the account lock. A locking read returns the latest committed row, not the transaction's
-	snapshot (MariaDB, REPEATABLE READ), so a caller that waited for the lock while the renewal job held it
-	sees what the job committed. By name (the primary key), it locks only those rows: `account` and `tenant`
-	have no index, and a locking read filtered on them would lock the whole table. The scope's members come
-	from a plain read, so a row added while the caller waited is missed: nothing moves rows between accounts,
-	and a new trial's site is never in a state the callers act on. The one gap: an ERPNext Direct site added
-	to the account (as `ready`) in the seconds an admin's Suspend waits for the lock stays running."""
-	rows = []
-	for name in frappe.get_all(doctype, scope, pluck="name", order_by="creation asc"):
-		row = frappe.db.get_value(doctype, name, ["name", *fields], as_dict=True, for_update=True)
-		if row:
-			rows.append(row)
-	return rows
 
 
 def resume_pending(sub, tenant) -> bool:
@@ -349,6 +336,8 @@ class _Run:
 	def checkpoint(self, sub=None):
 		"""Keep what is done so far (an email queued must stay recorded) and start a new savepoint. With
 		`sub`, lock it again (account first) and stop if it changed meanwhile."""
+		# "The first statement after a commit is the lock" (see process) also relies on after_commit
+		# callbacks not reading the database: today they only enqueue to Redis (emails, realtime).
 		frappe.db.commit()
 		frappe.db.savepoint(SAVEPOINT)
 		if sub is not None and not self._unchanged(sub):

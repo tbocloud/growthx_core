@@ -20,7 +20,7 @@ import frappe
 from frappe.utils import add_months, add_years, cint, flt, fmt_money, getdate
 
 from growthx_core.api.v1._core import ApiError, validation_error
-from growthx_core.billing import renewals
+from growthx_core.billing import locks, renewals
 from growthx_core.partners import commissions
 from growthx_core.provisioning import runner
 
@@ -92,10 +92,15 @@ def apply_payment(
 	gateway: str,
 	amount=None,
 	sales_invoice: str | None = None,
+	*,
+	fresh: bool = True,
 ):
 	"""`account` is the GX Account document (locked by the caller), `plan` the GX Plan document,
 	`amount` what the customer paid in rupees, GST included (the plan's price when not given).
 	Returns (subscription, details for the audit line, period end or None for lifetime).
+	`fresh`: the caller locked the account with locks.lock_account (a fresh transaction), so plain reads
+	are current. False for one that couldn't (PayU's `_activate`): the account's sites and subscriptions
+	are then read by name under lock (locks.account_rows).
 
 	If a partner referred the customer, the payment also earns that partner a commission (one per
 	payment, see growthx_core.partners.commissions); a problem there never stops the activation."""
@@ -146,16 +151,21 @@ def apply_payment(
 		details = "renewal"
 	else:
 		# Another subscription's site that billing suspended stays suspended until that one is paid.
-		# Read under lock: one the job suspended while this payment waited for the lock counts too.
 		unpaid = [
 			r.tenant
-			for r in renewals.locked_rows(
-				"GX Subscription", {"account": account.name}, ["suspended_by", "tenant"]
+			for r in locks.account_rows(
+				"GX Subscription", {"account": account.name}, ["suspended_by", "tenant"], fresh=fresh
 			)
 			if r.suspended_by == "billing" and r.name != sub.name
 		]
 		details = set_customer_status(
-			account, "active", "suspended", "ready", "resume_site", keep=set(filter(None, unpaid))
+			account,
+			"active",
+			"suspended",
+			"ready",
+			"resume_site",
+			keep=set(filter(None, unpaid)),
+			fresh=fresh,
 		)
 	# After the status change: the customer now counts as an active client for the partner's tier.
 	commissions.record_for_payment(
@@ -182,23 +192,29 @@ def plan_price(plan) -> str:
 
 
 def set_customer_status(
-	account, new_status: str, site_from: str, site_to: str, press_action: str, keep: set | None = None
+	account,
+	new_status: str,
+	site_from: str,
+	site_to: str,
+	press_action: str,
+	keep: set | None = None,
+	*,
+	fresh: bool = True,
 ) -> str:
 	"""Change the account's status and move its sites from `site_from` to `site_to` on Press, except the
 	tenants in `keep`. A site Press refuses keeps its status and is named in the audit details; a resume
 	it refuses is marked `resume_pending`, which the renewal job retries. Suspending the account clears
-	every such mark (the admin's suspension stands), and a site moved back to `ready` has nothing to retry."""
+	every such mark (the admin's suspension stands), and a site moved back to `ready` has nothing to retry.
+	`fresh` as for apply_payment: False reads the sites and marks by name under lock."""
 	previous = account.status
 	account.status = new_status
 	account.save(ignore_permissions=True)
 	if new_status == "suspended":
-		renewals.clear_resume_pending({"account": account.name})
+		renewals.clear_resume_pending({"account": account.name}, fresh=fresh)
 	client = None
 	failed = []
-	# Read under lock: a caller that waited for the account lock while the renewal job moved a site must see
-	# the site's status now, not its transaction's older snapshot.
-	for t in renewals.locked_rows(
-		"GX Tenant", {"account": account.name}, ["status", "press_site_id", "origin"]
+	for t in locks.account_rows(
+		"GX Tenant", {"account": account.name}, ["status", "press_site_id", "origin"], fresh=fresh
 	):
 		if t.status != site_from or (keep and t.name in keep):
 			continue
@@ -211,11 +227,11 @@ def set_customer_status(
 			frappe.log_error(title=f"GrowthX: {press_action} failed for {t.name}")
 			failed.append(t.name)
 			if site_to == "ready":
-				renewals.mark_resume_pending(t.name)  # a refused resume: the renewal job tries again
+				renewals.mark_resume_pending(t.name, fresh=fresh)  # a refused resume: the job tries again
 			continue
 		frappe.db.set_value("GX Tenant", t.name, "status", site_to)
 		if site_to == "ready":
-			renewals.clear_resume_pending({"tenant": t.name})
+			renewals.clear_resume_pending({"tenant": t.name}, fresh=fresh)
 	details = f"{previous} → {new_status}"
 	if failed:
 		details += f" (sites not changed, Press error: {', '.join(failed)})"
