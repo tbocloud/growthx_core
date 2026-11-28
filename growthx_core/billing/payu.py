@@ -175,18 +175,11 @@ def _cancel(row):
 	The Payment Requests are found by the invoice too, so one made for the invoice in the desk is
 	cancelled with it (ERPNext won't cancel an invoice that a submitted Payment Request points to)."""
 	si = None
-	requests = {row.payment_request} if row.payment_request else set()
+	requests = _payment_requests(row)
 	if row.sales_invoice:
 		si = frappe.get_doc("Sales Invoice", row.sales_invoice)
 		if si.docstatus == 1 and flt(si.outstanding_amount) != flt(si.grand_total):
 			raise _payment_in_progress()
-		requests.update(
-			frappe.get_all(
-				"Payment Request",
-				{"reference_doctype": "Sales Invoice", "reference_name": si.name, "docstatus": 1},
-				pluck="name",
-			)
-		)
 	if any(attempt_in_flight(name) for name in requests):
 		raise _payment_in_progress()
 	with _as_administrator():
@@ -197,6 +190,43 @@ def _cancel(row):
 		if si and si.docstatus == 1:
 			si.cancel()
 	frappe.db.set_value("GX Checkout", row.name, "status", "cancelled")
+
+
+def _payment_requests(row) -> set[str]:
+	"""The checkout's submitted Payment Requests: the one it recorded, and any made for its invoice."""
+	requests = {row.payment_request} if row.payment_request else set()
+	if row.sales_invoice:
+		requests.update(
+			frappe.get_all(
+				"Payment Request",
+				{"reference_doctype": "Sales Invoice", "reference_name": row.sales_invoice, "docstatus": 1},
+				pluck="name",
+			)
+		)
+	return requests
+
+
+def needs_support(row) -> str | None:
+	"""Why an open checkout can't be cancelled and won't be soon by itself, so someone must look at it: its
+	invoice is part-paid (money to apply or refund), or PayU has authorized a payment on it (frappe_payu
+	keeps trying to apply it). None otherwise: a Queued attempt still in flight is a matter of minutes
+	(409 payment_in_progress from _cancel)."""
+	if row.sales_invoice:
+		si = frappe.db.get_value(
+			"Sales Invoice",
+			row.sales_invoice,
+			["docstatus", "outstanding_amount", "grand_total"],
+			as_dict=True,
+		)
+		if si and si.docstatus == 1 and flt(si.outstanding_amount) != flt(si.grand_total):
+			return (
+				f"checkout {row.name}: invoice {row.sales_invoice} is part-paid"
+				f" ({flt(si.outstanding_amount):g} of {flt(si.grand_total):g} still due)"
+			)
+	for name in sorted(_payment_requests(row)):
+		if authorized_attempt(name):
+			return f"checkout {row.name}: PayU has authorized a payment on Payment Request {name}"
+	return None
 
 
 def _payment_in_progress():
@@ -426,7 +456,8 @@ def on_payment_entry_submit(doc, method=None):
 def on_payment_entry_cancel(doc, method=None):
 	"""doc_events: a Payment Entry that activated (or tried to activate) a checkout was cancelled, e.g.
 	a reversal or refund. The plan stays as it is (no automatic suspension); the checkout becomes
-	needs_attention and the audit log says so, for an admin to decide. Never raises."""
+	needs_attention and the audit log says so, for an admin to decide. Raises only a deadlock (the database
+	has undone the whole cancellation, so it is tried again)."""
 	for name in frappe.get_all(
 		"GX Checkout",
 		{"payment_entry": doc.name, "status": ("in", ("paid", "needs_attention"))},

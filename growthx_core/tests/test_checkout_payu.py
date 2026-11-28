@@ -425,13 +425,71 @@ class TestCheckoutPayU(IntegrationTestCase):
 		self.assertEqual(frappe.db.get_value("Sales Invoice", row.sales_invoice, "docstatus"), 2)
 		self.assertEqual(frappe.db.get_value("GX Account", self.account, "status"), "churned")
 
-	def test_an_account_is_not_deleted_while_a_payment_may_go_through(self):
-		_, body = self._checkout()
-		self._payu_records(self._with_payment_request(body), "PAYUdelete1", "Authorized")
-		status, res = self._delete_account()
-		self.assertEqual((status, res["error"]["code"]), (409, "payment_in_progress"), res)
+	def _not_deleted(self, body, res, code):
+		self.assertEqual(res["error"]["code"], code, res)
 		self.assertEqual(frappe.db.get_value("GX Checkout", body["reference"], "status"), "pending")
 		self.assertTrue(frappe.db.get_value("User", self.user, "enabled"))
+		self.assertNotEqual(frappe.db.get_value("GX Account", self.account, "status"), "churned")
+
+	def _support_line(self):
+		return frappe.db.get_value(
+			"GX Audit Log",
+			{"reference_name": self.account, "action": "customer.delete_needs_support"},
+			"details",
+		)
+
+	def test_an_account_waits_for_a_payment_still_on_payus_page(self):
+		"""A Queued attempt under 30 minutes old is a matter of minutes: try again (no support line)."""
+		_, body = self._checkout()
+		self._payu_records(self._with_payment_request(body), "PAYUdelete0", "Queued")
+		status, res = self._delete_account()
+		self.assertEqual(status, 409)
+		self._not_deleted(body, res, "payment_in_progress")
+		self.assertIsNone(self._support_line())
+
+	def test_an_authorized_payment_needs_support_before_deleting(self):
+		"""PayU has the money and frappe_payu keeps trying to apply it: "try again" could go on for ever."""
+		_, body = self._checkout()
+		pr = self._with_payment_request(body)
+		self._payu_records(pr, "PAYUdelete1", "Authorized")
+		status, res = self._delete_account()
+		self.assertEqual(status, 409)
+		self._not_deleted(body, res, "needs_support")
+		self.assertIn(f"PayU has authorized a payment on Payment Request {pr}", self._support_line())
+		self.assertTrue(
+			frappe.db.exists(
+				"Error Log", {"method": f"GrowthX: account {self.account} can't be closed without support"}
+			)
+		)
+
+	def test_a_part_paid_invoice_needs_support_before_deleting(self):
+		_, body = self._checkout()
+		invoice = self._checkout_docs(body["reference"]).sales_invoice
+		self._pay(invoice, amount=50000)
+		status, res = self._delete_account()
+		self.assertEqual(status, 409)
+		self._not_deleted(body, res, "needs_support")
+		self.assertIn(f"invoice {invoice} is part-paid", self._support_line())
+
+	def test_an_invoice_erpnext_wont_cancel_needs_support(self):
+		"""e.g. a closed accounting period or frozen accounts: not ERPNext's raw 422 to the customer."""
+		_, body = self._checkout()
+		refused = frappe.ValidationError("Cannot cancel: the accounting period is closed")
+		with patch.object(payu, "cancel_open_checkouts", side_effect=refused):
+			status, res = self._delete_account()
+		self.assertEqual(status, 409)
+		self._not_deleted(body, res, "needs_support")
+		self.assertIn("ERPNext refused to cancel the open checkout", self._support_line())
+		self.assertIn("accounting period is closed", self._support_line())
+
+	def test_deleting_the_account_in_a_clash_with_a_payment_is_payment_in_progress(self):
+		_, body = self._checkout()
+		clash = frappe.QueryDeadlockError("Deadlock found when trying to get lock")
+		with patch.object(payu, "cancel_open_checkouts", side_effect=clash):
+			status, res = self._delete_account()
+		self.assertEqual(status, 409)
+		self._not_deleted(body, res, "payment_in_progress")
+		self.assertIsNone(self._support_line())
 
 	def test_status_follows_the_payment_and_is_private(self):
 		_, body = self._checkout()

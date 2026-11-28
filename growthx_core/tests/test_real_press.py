@@ -60,6 +60,16 @@ class FakePress:
 			return _response(message={"name": params["name"], "status": self.status})
 		if method == "press.api.site.installed_apps":
 			return _response(message=[{"app": app, "name": f"{app}-src"} for app in self.installed])
+		if method in ("press.api.site.activate", "press.api.site.deactivate"):
+			# Press's site_action guards: activate only Inactive or Broken, deactivate only Active or Broken
+			activate = method.endswith(".activate")
+			allowed = ("Inactive", "Broken") if activate else ("Active", "Broken")
+			if self.status not in allowed:
+				return _response(
+					417, body={"exc_type": "ValidationError", "exception": f"can't from {self.status}"}
+				)
+			self.status = "Active" if activate else "Inactive"
+			return _response(message=None)
 		if method == "press.api.site.login":
 			return _response(message={"sid": "sid-1", "site": params["name"]})
 		return _response(message=None)
@@ -155,6 +165,26 @@ class TestRealPress(IntegrationTestCase):
 			self.press.status = press_status
 			self.assertEqual(self.client.get_site("test-acme-solar.tbogrowthx.com").status, ours)
 		self.assertIn("solar", self.client.get_site("test-acme-solar.tbogrowthx.com").apps)
+
+	def test_suspending_or_resuming_twice_is_done_not_an_error(self):
+		"""Called again after the database undid the first call's records (a payment frappe_payu completes
+		again after a deadlock, a renewal step undone): Press refuses a site already in that state, and
+		that counts as done. Any other refusal is still an error."""
+		site = "test-acme-solar.tbogrowthx.com"
+		self._tenant(press_site_id=site)
+		self.press.taken.add("test-acme-solar")
+		self.press.status = "Inactive"
+		self.client.resume_site(site)
+		self.client.resume_site(site)  # already Active
+		self.assertEqual(self.press.status, "Active")
+		self.client.suspend_site(site)
+		self.client.suspend_site(site)  # already Inactive
+		self.assertEqual(self.press.status, "Inactive")
+		self.press.status = "Pending"  # still being built: neither can happen
+		with self.assertRaises(PressError):
+			self.client.resume_site(site)
+		with self.assertRaises(PressError):
+			self.client.suspend_site(site)
 
 	def test_a_name_taken_by_someone_else_is_an_error(self):
 		# Press says the name is taken (another team's site, or a blocked name) but won't show it to us

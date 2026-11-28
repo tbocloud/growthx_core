@@ -1488,10 +1488,16 @@ paths:
         Cancels the account's open checkouts (their unpaid invoices too) and subscriptions, archives its sites
         (Press backs each one up before deleting it) and blocks signing in; every session is revoked. Paid tax
         invoices are kept — GST keeps them, and they carry the customer's name. `422 validation_failed` with
-        `fields.confirm` when the typed confirmation isn't the account's email address. `409
-        payment_in_progress`, and nothing changes, while an online payment may still go through (a PayU
-        attempt Authorized, or Queued under 30 minutes old), or when the database cancels this request in a
-        clash with a payment being applied: try again in a few minutes.
+        `fields.confirm` when the typed confirmation isn't the account's email address. Nothing changes on a
+        409:
+        - `payment_in_progress`: an online payment may still go through in minutes (a PayU attempt Queued
+          under 30 minutes old), or the request clashed with a payment being applied. Try again in a few
+          minutes.
+        - `needs_support`: someone at GrowthX must look first: an open invoice is part-paid, PayU has
+          authorized a payment that isn't applied yet, or ERPNext refused to cancel an open invoice (a
+          closed accounting period, frozen accounts). The account's history in Admin shows it
+          (`delete_needs_support`), with an Error Log. Tell the customer the team will contact them.
+        - `idempotency_conflict`: the Idempotency-Key was used with a different body.
       operationId: deleteCustomerAccount
       x-phase: 2
       x-roles: [customer]
@@ -1511,7 +1517,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409":
-          description: "`payment_in_progress`: an online payment may still go through, or the request clashed with one being applied; nothing changed, try again in a few minutes"
+          description: "`payment_in_progress` (try again in a few minutes), `needs_support` (the team must look first; see above) or `idempotency_conflict`; nothing changed"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -6231,7 +6237,7 @@ components:
                 properties:
                   at: { type: string, format: date-time }
                   actor: { type: string }
-                  action: { type: string, enum: [extend_trial, suspend, reactivate, record_payment, online_payment, online_payment_cancelled, billing_details_updated] }
+                  action: { type: string, enum: [extend_trial, suspend, reactivate, record_payment, online_payment, online_payment_cancelled, billing_details_updated, delete_needs_support] }
                   details: { type: string, example: "trial → suspended: Chargeback" }
 
     AuditLogEntry:
