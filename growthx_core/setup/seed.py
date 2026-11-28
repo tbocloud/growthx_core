@@ -342,7 +342,7 @@ def _plans():
 					plan_name=label,
 					billing_interval=interval,
 					price=price,
-					gst_included=0,
+					gst_included=1,
 					gst_rate=18,
 					trial_days=7,
 					description=description,

@@ -5,4 +5,6 @@ from frappe.model.document import Document
 
 
 class GXPlan(Document):
-	pass
+	def validate(self):
+		# Every plan price is the final price, GST included.
+		self.gst_included = 1

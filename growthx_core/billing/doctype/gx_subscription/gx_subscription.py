@@ -14,6 +14,10 @@ ACCOUNT_STATUS = [
 
 
 class GXSubscription(Document):
+	def validate(self):
+		# Every price is the final price, GST included.
+		self.gst_included = 1
+
 	def on_update(self):
 		sync_account_status(self.account)
 

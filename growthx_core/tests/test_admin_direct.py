@@ -89,6 +89,8 @@ class DirectCase(IntegrationTestCase):
 		_plan(CHEAP, PRODUCT, "Direct Cheap", price=1)
 		_plan(LIFETIME, PRODUCT, "Direct Lifetime", interval="one_time", price=150000, gst_included=1)
 		_plan(OTHER_PLAN, OTHER_PRODUCT, "Other Monthly")
+		# an old row still priced "+ GST" (no save can make one now)
+		frappe.db.set_value("GX Plan", PLAN, "gst_included", 0)
 		self.mail = patch.object(frappe, "sendmail")
 		self.sendmail = self.mail.start()
 		self.press = press.FakePressClient()

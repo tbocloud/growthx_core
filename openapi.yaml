@@ -27,7 +27,7 @@ info:
       Only the Next.js server and the Flutter app hold tokens; the browser never does. Frappe cookie
       sessions (`sid`) are **not** accepted on v1 endpoints, and browser origins get no CORS headers.
     - **Money:** integer minor units (paise) plus an ISO 4217 code: `{"amount": 149900, "currency": "INR"}`.
-      Never floats. Prices state `gstIncluded`.
+      Never floats. Prices state `gstIncluded` (always true for plans and subscriptions: every price includes GST).
     - **Dates:** ISO 8601 in UTC with a `Z` suffix, e.g. `2026-11-01T00:00:00Z`. Clients display them in IST.
       Months are `YYYY-MM`.
     - **Lists:** `page` (from 1) and `pageSize` (default 20, max 100). The response is `{items, page, pageSize, total}`.
@@ -3709,7 +3709,7 @@ paths:
                 interval: { $ref: "#/components/schemas/BillingInterval" }
                 price: { type: integer, description: "In paise, e.g. 149900 for ₹1,499" }
                 trialDays: { type: integer, default: 0 }
-                gstIncluded: { type: boolean, default: false }
+                gstIncluded: { type: boolean, description: "Ignored: every price includes GST" }
                 gstRate: { type: number, default: 18 }
                 description: { type: string }
                 features: { type: string, description: "One feature per line" }
@@ -5258,7 +5258,7 @@ components:
         - type: object
           required: [gstIncluded]
           properties:
-            gstIncluded: { type: boolean, description: Whether `amount` already includes GST }
+            gstIncluded: { type: boolean, description: Whether `amount` already includes GST (always true for a plan or subscription price) }
 
     BillingInterval:
       type: string
