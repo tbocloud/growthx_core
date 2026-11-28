@@ -587,13 +587,18 @@ class TestCheckoutPayU(IntegrationTestCase):
 		self.assertIn("accounting period is closed", message)
 		self.assertNotIn("Traceback", message)
 
-	def _clash_while_deleting(self, error):
-		"""Cancelling clashed with a payment being applied, which clears in minutes: 409 payment_in_progress,
-		what was cancelled first is rolled back, and no support line or ticket."""
+	def _clash_while_deleting(self, error, where="cancel"):
+		"""Cancelling (or, `where="lock"`, locking the account) clashed with a payment being applied or the
+		renewal job, which clears in minutes: 409 payment_in_progress, what was cancelled first is rolled back,
+		and no support line or ticket."""
 		_, body = self._checkout()
-		with patch.object(payu, "cancel_open_checkouts", side_effect=self._cancelled_then(error)):
+		if where == "lock":
+			clash = patch.object(customer_api, "lock_account", side_effect=error)
+		else:
+			clash = patch.object(payu, "cancel_open_checkouts", side_effect=self._cancelled_then(error))
+		with clash:
 			status, res = self._delete_account()
-		self.assertEqual(status, 409)
+		self.assertEqual(status, 409, res)
 		self._not_deleted(body, res, "payment_in_progress")
 		self.assertIsNone(self._support_line())
 		self.assertEqual(self._support_tickets(), [])
@@ -612,6 +617,14 @@ class TestCheckoutPayU(IntegrationTestCase):
 		self._clash_while_deleting(
 			frappe.DocumentLockedError("This document is currently locked and queued for execution")
 		)
+
+	def test_a_lock_wait_timeout_while_deleting_is_payment_in_progress(self):
+		"""innodb_lock_wait_timeout ran out (frappe.QueryTimeoutError): the renewal job holds the account lock
+		through its Press calls, or a payment holds a row. Try again, not a 500."""
+		timeout = frappe.QueryTimeoutError("Lock wait timeout exceeded; try restarting transaction")
+		for where in ("lock", "cancel"):
+			with self.subTest(where):
+				self._clash_while_deleting(timeout, where)
 
 	def test_status_follows_the_payment_and_is_private(self):
 		_, body = self._checkout()

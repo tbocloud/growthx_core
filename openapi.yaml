@@ -1492,9 +1492,9 @@ paths:
         isn't closed: none of the deletion is kept (its checkouts, subscriptions, sites and sign-in are as
         they were).
         - `payment_in_progress`: an online payment may still go through in minutes (a PayU attempt Queued
-          under 30 minutes old), or the request clashed with a payment being applied (a deadlock, or an
-          invoice or Payment Request the payment changed or locked meanwhile). Nothing is recorded. Try again
-          in a few minutes.
+          under 30 minutes old), or the request clashed with a payment being applied or the renewal job (a
+          deadlock, a lock wait that timed out, or an invoice or Payment Request the payment changed or locked
+          meanwhile). Nothing is recorded. Try again in a few minutes.
         - `needs_support`: someone at GrowthX must look first: an open invoice is part-paid, PayU has
           authorized a payment that isn't applied yet, or ERPNext refused to cancel an open invoice (a
           closed accounting period, frozen accounts). Core records it: a high-priority `billing` support
@@ -3893,7 +3893,8 @@ paths:
       description: |
         For good: a site Core built is backed up and then deleted on Press; an imported ERPNext site is
         the customer's own, so it keeps running and only billing stops. The tenant becomes `archived`
-        and its subscription `canceled`. A site still being set up can't be terminated, and an archive
+        and its subscription `canceled`; the customer's status follows their subscriptions (`churned` when
+        this was their last live one). A site still being set up can't be terminated, and an archive
         already done is refused (`already_archived`). An imported site that is suspended is refused
         (`site_suspended`): once terminated, nothing would switch it back on, so reactivate it or give extra
         days first. It is also refused (`site_suspended`) while the Press-side sync job's last report says the

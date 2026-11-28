@@ -40,10 +40,16 @@ SITE_FIELDS = [
 	"creation",
 	"ready_at",
 ]
-# A clash with a payment being applied, which clears in minutes: a deadlock, or a document the payment
-# saved (TimestampMismatchError) or locked (DocumentLockedError) meanwhile. Those two are ValidationErrors,
-# which otherwise mean ERPNext refused to cancel (needs_support).
-CLASHES = (frappe.QueryDeadlockError, frappe.TimestampMismatchError, frappe.DocumentLockedError)
+# A clash with a payment being applied or the renewal job, which clears in minutes: a deadlock, a lock wait
+# that timed out (QueryTimeoutError: the job holds the account lock through its Press calls), or a document
+# the payment saved (TimestampMismatchError) or locked (DocumentLockedError) meanwhile. Those last two are
+# ValidationErrors, which otherwise mean ERPNext refused to cancel (needs_support).
+CLASHES = (
+	frappe.QueryDeadlockError,
+	frappe.QueryTimeoutError,
+	frappe.TimestampMismatchError,
+	frappe.DocumentLockedError,
+)
 # The subject of the support ticket a refused deletion opens (one open per account).
 DELETION_TICKET_SUBJECT = "Close my account"
 
@@ -138,7 +144,8 @@ def delete_account():
 	carry the name. An open checkout's unpaid invoice is cancelled with it, so no payment can land on a
 	closed account.
 	- A PayU attempt that may still go through in minutes (Queued), or a clash with a payment being
-	  applied (a deadlock, a document it changed or locked meanwhile): 409 payment_in_progress, try again.
+	  applied or the renewal job (a deadlock, a lock wait timeout, a document changed or locked meanwhile):
+	  409 payment_in_progress, try again.
 	- A checkout someone must look at (part-paid invoice, a payment PayU authorized) or one ERPNext refuses
 	  to cancel (closed period, frozen accounts): 409 needs_support. The team gets a support ticket (one
 	  open per account; support@ is emailed), with an Error Log and an audit line on the account; nothing
@@ -173,7 +180,8 @@ def delete_account():
 				) from e
 	except CLASHES:
 		# Cancelled in a clash with a payment being applied (it locks the invoice and Payment Request before
-		# the account, and saves them): that payment goes on; the customer tries again.
+		# the account, and saves them), or the lock waited too long (the renewal job holds it through its Press
+		# calls): that work goes on; the customer tries again.
 		frappe.db.rollback()
 		raise payu._payment_in_progress()
 

@@ -334,6 +334,101 @@ class TestAdminTenantControl(IntegrationTestCase):
 		self.assertEqual(status, 409)
 		self.assertEqual(body["error"]["code"], "invalid_transition")
 
+	def _terminate(self, tenant_id):
+		"""terminate_tenant with Press archiving; runner.archive's commit is kept out of the test."""
+		with (
+			patch.object(runner, "get_client", return_value=self._archiving_client()),
+			patch.object(frappe.db, "commit"),
+		):
+			return _call(admin.terminate_tenant, {"id": tenant_id})
+
+	def _account_status(self, tenant_id):
+		return frappe.db.get_value(
+			"GX Account", frappe.db.get_value("GX Tenant", tenant_id, "account"), "status"
+		)
+
+	def test_terminating_a_customers_only_site_churns_the_account(self):
+		"""The cancel is a set_value, which skips the subscription's on_update: the account must still follow
+		its subscriptions, as after the renewal job's archive (F6)."""
+		for origin in ("provisioned", "imported"):
+			with self.subTest(origin):
+				tenant_id = self._tenant(origin=origin)
+				self.assertEqual(self._account_status(tenant_id), "active")
+				status, body = self._terminate(tenant_id)
+				self.assertEqual(status, 200, body)
+				self.assertEqual(self._account_status(tenant_id), "churned")
+
+	def test_terminating_one_site_leaves_an_account_with_another_live_plan_as_it_is(self):
+		tenant_id = self._tenant()
+		account = frappe.db.get_value("GX Tenant", tenant_id, "account")
+		plan = frappe.get_doc("GX Plan", OTHER_PLAN)
+		frappe.get_doc(
+			{
+				"doctype": "GX Subscription",
+				"account": account,
+				"plan": plan.name,
+				"product": plan.product,
+				"status": "active",
+				"billing_interval": plan.billing_interval,
+				"price": plan.price,
+				"current_period_end": add_months(nowdate(), 1),
+			}
+		).insert()
+		status, body = self._terminate(tenant_id)
+		self.assertEqual(status, 200, body)
+		self.assertEqual(
+			frappe.db.get_value(
+				"GX Subscription", frappe.db.get_value("GX Tenant", tenant_id, "subscription"), "status"
+			),
+			"canceled",
+		)
+		self.assertEqual(self._account_status(tenant_id), "active")
+
+	def test_terminate_locks_the_account_first_and_again_after_the_archive(self):
+		"""Account first, the order payments and the renewal job lock in: before any write, in a fresh
+		transaction, and again after runner.archive's commit (which releases it) before the subscription and
+		the account are written."""
+		tenant_id = self._tenant()
+		account = frappe.db.get_value("GX Tenant", tenant_id, "account")
+		events = []
+		real_get_value, real_set_value = frappe.db.get_value, frappe.db.set_value
+
+		def get_value(*args, **kwargs):
+			if kwargs.get("for_update"):
+				events.append(("lock", args[0]))
+			return real_get_value(*args, **kwargs)
+
+		def set_value(*args, **kwargs):
+			events.append(("write", args[0]))
+			return real_set_value(*args, **kwargs)
+
+		writes = frappe.db.transaction_writes
+		with (
+			test_locks.lock_spy(admin) as calls,
+			patch.object(runner, "get_client", return_value=self._archiving_client()),
+			patch.object(frappe.db, "commit", side_effect=lambda *a, **k: events.append(("commit", None))),
+			patch.object(frappe.db, "get_value", side_effect=get_value),
+			patch.object(frappe.db, "set_value", side_effect=set_value),
+		):
+			status, body = _call(admin.terminate_tenant, {"id": tenant_id})
+		self.assertEqual(status, 200, body)
+		self.assertEqual(calls, [(account, writes)])  # before any write
+		after_commit = events[events.index(("commit", None)) + 1 :]
+		self.assertEqual(after_commit[:2], [("lock", "GX Account"), ("write", "GX Subscription")], events)
+
+	def test_terminate_checks_the_site_again_after_the_lock(self):
+		"""The renewal job may archive the site while this request waits for the account lock."""
+		tenant_id = self._tenant()
+		real = admin.lock_account
+
+		def archived_meanwhile(name):
+			frappe.db.set_value("GX Tenant", tenant_id, "status", "archived")
+			return real(name)
+
+		with patch.object(admin, "lock_account", side_effect=archived_meanwhile):
+			status, body = self._terminate(tenant_id)
+		self.assertEqual((status, body["error"]["code"]), (409, "already_archived"), body)
+
 	# ------------------------------------------------------------ the list
 
 	def test_the_list_says_which_kind_of_site_it_is_and_its_plan(self):
