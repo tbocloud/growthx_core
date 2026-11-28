@@ -347,9 +347,9 @@ class TestCheckoutPayU(IntegrationTestCase):
 		self.assertEqual(frappe.db.get_value("GX Checkout", body["reference"], "status"), "pending")
 
 	def test_a_checkout_replaced_while_its_payment_request_was_made_starts_no_attempt(self):
-		"""frappe_payu commits when the Payment Request gets its PayU link, which ends the account lock, so
-		another checkout request may replace this checkout meanwhile. Locked again, this one stops (409),
-		and PayU is never asked for an attempt on a cancelled Payment Request."""
+		"""frappe_payu commits while the Payment Request is made (its PayU link, in before_submit), which ends
+		the account lock, so another checkout request may replace this checkout meanwhile. Locked again,
+		this one stops (409), and PayU is never asked for an attempt."""
 		real = payu._payment_request
 
 		def made_then_replaced(invoice, account, gateway):
@@ -364,9 +364,27 @@ class TestCheckoutPayU(IntegrationTestCase):
 		self.assertEqual((status, body["error"]["code"]), (409, "payment_in_progress"), body)
 		self.assertEqual(payu.start_attempt.call_count, attempts)
 
-	def test_replacing_a_checkout_cancels_a_payment_request_it_had_not_recorded(self):
-		"""Between frappe_payu's commit and the checkout recording it, the Payment Request is known only
-		from the invoice: a replacement finds it there and cancels it."""
+	def test_a_double_click_starts_one_attempt(self):
+		"""Two checkout requests for the same plan at once: each makes a Payment Request while the other
+		waits, and the second to lock again finds the first's recorded on the checkout. It stops (409), so
+		the customer is never offered two Payment Requests for one invoice."""
+		real = payu._payment_request
+
+		def other_request_recorded_its_own(invoice, account, gateway):
+			name = real(invoice, account, gateway)
+			checkout = frappe.db.get_value("GX Checkout", {"sales_invoice": invoice})
+			frappe.db.set_value("GX Checkout", checkout, "payment_request", "ACC-PRQ-THE-OTHER-REQUEST")
+			return name
+
+		attempts = payu.start_attempt.call_count  # the mock from setUp
+		with patch.object(payu, "_payment_request", side_effect=other_request_recorded_its_own):
+			status, body = self._checkout()
+		self.assertEqual((status, body["error"]["code"]), (409, "payment_in_progress"), body)
+		self.assertEqual(payu.start_attempt.call_count, attempts)
+
+	def test_replacing_a_checkout_cancels_a_payment_request_made_in_the_desk(self):
+		"""A Payment Request the checkout doesn't know about (made for its invoice in the desk) is found
+		from the invoice and cancelled with it: ERPNext won't cancel an invoice one points to."""
 		_, first = self._checkout()
 		row = self._checkout_docs(first["reference"])
 		frappe.db.set_value("GX Checkout", first["reference"], "payment_request", None)
@@ -376,6 +394,44 @@ class TestCheckoutPayU(IntegrationTestCase):
 		self.assertEqual(frappe.db.get_value("GX Checkout", first["reference"], "status"), "cancelled")
 		self.assertEqual(frappe.db.get_value("Payment Request", row.payment_request, "docstatus"), 2)
 		self.assertEqual(frappe.db.get_value("Sales Invoice", row.sales_invoice, "docstatus"), 2)
+
+	def test_a_deadlock_while_flagging_a_cancelled_payment_is_raised(self):
+		"""As in _activate: the database has undone the whole transaction, so there is nothing to log and
+		flag; the Payment Entry's cancellation fails and is tried again."""
+		_, body = self._checkout()
+		pe = self._pay(self._checkout_docs(body["reference"]).sales_invoice)
+		clash = frappe.QueryDeadlockError("Deadlock found when trying to get lock")
+		with patch.object(payu, "_void_commission", side_effect=clash):
+			self.assertRaises(frappe.QueryDeadlockError, payu.on_payment_entry_cancel, pe)
+		self.assertEqual(frappe.db.get_value("GX Checkout", body["reference"], "status"), "paid")
+
+	def _delete_account(self):
+		frappe.set_user(self.user)
+		try:
+			return _call(customer_api.delete_account, {"confirm": "gx-checkout@example.com"})
+		finally:
+			frappe.set_user("Administrator")
+
+	def test_deleting_the_account_cancels_its_open_checkout_first(self):
+		"""No payment can land on a closed account: its unpaid checkout and invoice are cancelled."""
+		_, body = self._checkout()
+		row = self._checkout_docs(body["reference"])
+		writes = frappe.db.transaction_writes
+		with test_locks.lock_spy(customer_api) as calls:
+			status, res = self._delete_account()
+		self.assertEqual(status, 200, res)
+		self.assertEqual(calls, [(self.account, writes)])  # locked before any write
+		self.assertEqual(frappe.db.get_value("GX Checkout", body["reference"], "status"), "cancelled")
+		self.assertEqual(frappe.db.get_value("Sales Invoice", row.sales_invoice, "docstatus"), 2)
+		self.assertEqual(frappe.db.get_value("GX Account", self.account, "status"), "churned")
+
+	def test_an_account_is_not_deleted_while_a_payment_may_go_through(self):
+		_, body = self._checkout()
+		self._payu_records(self._with_payment_request(body), "PAYUdelete1", "Authorized")
+		status, res = self._delete_account()
+		self.assertEqual((status, res["error"]["code"]), (409, "payment_in_progress"), res)
+		self.assertEqual(frappe.db.get_value("GX Checkout", body["reference"], "status"), "pending")
+		self.assertTrue(frappe.db.get_value("User", self.user, "enabled"))
 
 	def test_status_follows_the_payment_and_is_private(self):
 		_, body = self._checkout()

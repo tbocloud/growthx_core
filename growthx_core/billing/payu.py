@@ -87,7 +87,7 @@ def create_checkout(account, plan):
 			checkout.db_set({"sales_invoice": invoice.name, "amount": invoice.grand_total})
 		if not checkout.payment_request:
 			payment_request = _payment_request(checkout.sales_invoice, account, gateway)
-			_lock_again(account_name, checkout.name)
+			_lock_again(account_name, checkout.name, payment_request)
 			checkout.db_set("payment_request", payment_request)
 		elif authorized_attempt(checkout.payment_request):
 			# PayU already has the money for this checkout; a new attempt would let them pay twice.
@@ -155,20 +155,25 @@ def _still_payable(row, plan, buyer: tuple) -> bool:
 	return True
 
 
-def _lock_again(account_name: str, checkout_name: str):
-	"""frappe_payu commits when the Payment Request gets its PayU link (frappe's create_request_log), which
-	also ends this request's account lock. Lock again before going on, and stop if another checkout
-	request replaced this checkout in between: its Payment Request is cancelled, so no attempt may start."""
+def _lock_again(account_name: str, checkout_name: str, payment_request: str):
+	"""frappe_payu commits while the Payment Request is made: ERPNext asks for its PayU link in
+	before_submit (set_payment_request_url), so the request is still a draft then, and frappe's
+	create_request_log commits. That also ends this request's account lock. Lock again, and stop (409)
+	if another checkout request got in meanwhile: it replaced this checkout, or recorded its own Payment
+	Request on it (a double click on the same plan). Either way, no PayU attempt starts on this one."""
 	frappe.db.get_value("GX Account", account_name, "name", for_update=True)
-	if frappe.db.get_value("GX Checkout", checkout_name, "status", for_update=True) != "pending":
+	row = frappe.db.get_value(
+		"GX Checkout", checkout_name, ["status", "payment_request"], as_dict=True, for_update=True
+	)
+	if row.status != "pending" or (row.payment_request and row.payment_request != payment_request):
 		raise _payment_in_progress()
 
 
 def _cancel(row):
 	"""Cancel an unpaid checkout's Payment Requests and invoice. A checkout whose invoice already has a
 	payment against it is never replaced (that could charge the customer twice): 409 instead.
-	The Payment Requests are found by the invoice too: a request that made one (and committed it, see
-	_lock_again) may not have recorded it on the checkout yet."""
+	The Payment Requests are found by the invoice too, so one made for the invoice in the desk is
+	cancelled with it (ERPNext won't cancel an invoice that a submitted Payment Request points to)."""
 	si = None
 	requests = {row.payment_request} if row.payment_request else set()
 	if row.sales_invoice:
@@ -449,6 +454,8 @@ def on_payment_entry_cancel(doc, method=None):
 				f"Payment Entry {doc.name} cancelled for checkout {checkout.name}, invoice"
 				f" {checkout.sales_invoice}. {plan_state}; needs a decision",
 			)
+		except frappe.QueryDeadlockError:
+			raise  # the whole transaction is undone (the cancellation too), savepoints included: retry it
 		except Exception:
 			frappe.log_error(title=f"GrowthX: could not flag checkout {name} after Payment Entry cancel")
 

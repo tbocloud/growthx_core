@@ -1485,10 +1485,13 @@ paths:
       tags: [customer]
       summary: Close the account (delete it)
       description: |
-        Cancels the account's subscriptions, archives its sites (Press backs each one up before deleting it)
-        and blocks signing in; every session is revoked. Tax invoices are kept — GST keeps them, and they
-        carry the customer's name. `422 validation_failed` with `fields.confirm` when the typed confirmation
-        isn't the account's email address.
+        Cancels the account's open checkouts (their unpaid invoices too) and subscriptions, archives its sites
+        (Press backs each one up before deleting it) and blocks signing in; every session is revoked. Paid tax
+        invoices are kept — GST keeps them, and they carry the customer's name. `422 validation_failed` with
+        `fields.confirm` when the typed confirmation isn't the account's email address. `409
+        payment_in_progress`, and nothing changes, while an online payment may still go through (a PayU
+        attempt Authorized, or Queued under 30 minutes old), or when the database cancels this request in a
+        clash with a payment being applied: try again in a few minutes.
       operationId: deleteCustomerAccount
       x-phase: 2
       x-roles: [customer]
@@ -1507,6 +1510,11 @@ paths:
         "200": { $ref: "#/components/responses/Ok" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: "`payment_in_progress`: an online payment may still go through, or the request clashed with one being applied; nothing changed, try again in a few minutes"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
 
   /growthx_core.api.v1.customer.site:
@@ -1925,7 +1933,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409":
-          description: "`invalid_transition` (already paid for lifetime access, or the account can't take a payment), `payment_in_progress` (PayU has already authorized a payment for this checkout, so a new attempt would charge the customer twice; or an earlier checkout for this product is part-paid, or has a PayU attempt that may still succeed: any attempt Authorized, or the newest Queued and under 30 minutes old; try again later; also when the database cancels this request in a clash with a payment being applied: try again), or `idempotency_conflict`"
+          description: "`invalid_transition` (already paid for lifetime access, or the account can't take a payment), `payment_in_progress` (PayU has already authorized a payment for this checkout, so a new attempt would charge the customer twice; or an earlier checkout for this product is part-paid, or has a PayU attempt that may still succeed: any attempt Authorized, or the newest Queued and under 30 minutes old; try again later; also when the database cancels this request in a clash with a payment being applied, or another checkout request for the same account got in while this one was being made (e.g. a double click): try again), or `idempotency_conflict`"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
