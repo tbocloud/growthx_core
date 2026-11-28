@@ -175,7 +175,7 @@ class TestPartnerApp(IntegrationTestCase):
 		self.assertEqual(ids, {self.trial_soon.name, self.trial_later.name, self.paying.name})
 		self.assertEqual(body["total"], 3)
 		first = body["items"][0]
-		self.assertEqual(first["plan"]["price"], {"amount": 149900, "currency": "INR", "gstIncluded": False})
+		self.assertEqual(first["plan"]["price"], {"amount": 149900, "currency": "INR", "gstIncluded": True})
 		self.assertNotIn("_sub", first)
 		self._assert_no_contact_details(body["items"])
 

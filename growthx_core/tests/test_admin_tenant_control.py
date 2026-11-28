@@ -185,6 +185,11 @@ class TestAdminTenantControl(IntegrationTestCase):
 			frappe.db.exists("GX Audit Log", {"action": "plan.create", "reference_name": plan.name})
 		)
 
+	@staticmethod
+	def _drop_plan(plan_id):
+		frappe.delete_doc("GX Plan", plan_id, force=1, ignore_missing=True)
+		frappe.db.commit()
+
 	def test_every_plan_price_includes_gst_whatever_gstIncluded_says(self):
 		for flag in (False, None, True):
 			data = {
@@ -196,6 +201,8 @@ class TestAdminTenantControl(IntegrationTestCase):
 			}
 			if flag is not None:
 				data["gstIncluded"] = flag
+			# create_plan commits, so the plan outlives this test's rollback
+			self.addCleanup(self._drop_plan, data["id"])
 			status, body = _call(admin.create_plan, data)
 			self.assertEqual(status, 201, body)
 			self.assertEqual(frappe.db.get_value("GX Plan", body["id"], ["gst_included", "price"]), (1, 10))

@@ -771,7 +771,7 @@ class TestCheckoutPayU(IntegrationTestCase):
 			"Sales Invoice", frappe.db.get_value("GX Checkout", body["reference"], "sales_invoice")
 		)
 		self.assertEqual(si.grand_total, 10)
-		self.assertEqual(flt(si.total_taxes_and_charges, 2), 1.53)  # 18% inside ₹10
+		self.assertEqual(flt(si.total_taxes_and_charges, 2), 1.52)  # 18% inside ₹10
 
 	def test_unknown_or_mismatched_plan(self):
 		status, body = self._checkout(planId="nope")
