@@ -130,7 +130,12 @@ def delete_account():
 	"""Close the customer's account: cancel its open checkouts, its subscriptions, archive its sites (Press
 	backs each one up first) and block signing in. Paid tax invoices are kept: GST needs them, and they
 	carry the name. An open checkout's unpaid invoice is cancelled with it, so no payment can land on a
-	closed account; while one may still go through (a PayU attempt), 409 payment_in_progress."""
+	closed account.
+	- A PayU attempt that may still go through in minutes (Queued), or a clash with a payment being
+	  applied: 409 payment_in_progress, try again.
+	- A checkout someone must look at (part-paid invoice, a payment PayU authorized) or one ERPNext refuses
+	  to cancel (closed period, frozen accounts): 409 needs_support, an Error Log and an audit line on the
+	  account, so an admin sees it; nothing else changes."""
 	account = current_account(["name", "contact_email", "user"])
 	confirm = get_str(body(), "confirm", required=True, max_length=140)
 	if confirm.strip().lower() != (account.contact_email or "").lower():
@@ -141,14 +146,22 @@ def delete_account():
 		# Before any write: a payment being applied, or the renewal job, finishes first, and what is read
 		# after the lock is current.
 		lock_account(account.name)
-		products = {
-			row.product
-			for row in frappe.get_all(
-				"GX Checkout", {"account": account.name, "status": "pending"}, ["product"]
-			)
-		}
-		for product in sorted(products):
-			payu.cancel_open_checkouts(account.name, product)
+		open_checkouts = frappe.get_all(
+			"GX Checkout",
+			{"account": account.name, "status": "pending"},
+			["name", "product", "sales_invoice", "payment_request"],
+		)
+		for row in open_checkouts:
+			if why := payu.needs_support(row):
+				raise _deletion_needs_support(account, why)
+		for product in sorted({row.product for row in open_checkouts}):
+			try:
+				payu.cancel_open_checkouts(account.name, product)
+			except frappe.ValidationError as e:
+				raise _deletion_needs_support(
+					account,
+					f"ERPNext refused to cancel the open checkout for {product}: {e}\n\n{frappe.get_traceback()}",
+				) from e
 	except frappe.QueryDeadlockError:
 		# Cancelled in a clash with a payment being applied (it locks the invoice and Payment Request before
 		# the account): that payment goes on; the customer tries again.
@@ -171,6 +184,21 @@ def delete_account():
 	frappe.db.set_value("User", account.user, "enabled", 0)
 	audit("delete_account", "GX Account", account.name)
 	return {"ok": True}
+
+
+def _deletion_needs_support(account, why: str) -> ApiError:
+	"""The account can't be closed without someone: nothing of the deletion is kept, and the reason goes to
+	the Error Log and the account's audit history (committed, so the error response's rollback keeps it)."""
+	frappe.db.rollback()
+	frappe.log_error(title=f"GrowthX: account {account.name} can't be closed without support", message=why)
+	audit("customer.delete_needs_support", "GX Account", account.name, why.split("\n", 1)[0][:500])
+	if not frappe.flags.in_test:  # a commit would keep the test's records
+		frappe.db.commit()
+	return ApiError(
+		409,
+		"needs_support",
+		"Your account can't be closed automatically right now. Our team has been told and will contact you.",
+	)
 
 
 @endpoint(methods=("GET",), roles=("customer",))

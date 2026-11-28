@@ -362,11 +362,31 @@ class RealPressClient(PressClient):
 
 	def suspend_site(self, site_id):
 		self._own(site_id)
-		self._call("press.api.site.deactivate", name=site_id)
+		try:
+			self._call("press.api.site.deactivate", name=site_id)
+		except PressError:
+			# Press only deactivates an Active or Broken site. One already off counts as done: a call made
+			# again after the database undid the first one's records (a deadlock retry, a job's undo).
+			if self._press_status(site_id) not in ("Inactive", "Suspended"):
+				raise
 
 	def resume_site(self, site_id):
 		self._own(site_id)
-		self._call("press.api.site.activate", name=site_id)
+		try:
+			self._call("press.api.site.activate", name=site_id)
+		except PressError:
+			# Press only activates an Inactive or Broken site. One already Active counts as done, e.g. a
+			# payment completed again after a deadlock (frappe_payu retries it): the first try resumed the
+			# site on Press, and only its records in Core were undone.
+			if self._press_status(site_id) != "Active":
+				raise
+
+	def _press_status(self, site_id) -> str | None:
+		"""Press's own status word for the site, or None if Press can't say."""
+		try:
+			return (self._call("press.api.site.get", name=site_id) or {}).get("status")
+		except PressError:
+			return None
 
 	def list_sites(self):
 		# press.api.site.all is the team's sites (archive excluded), with the bench and release group
