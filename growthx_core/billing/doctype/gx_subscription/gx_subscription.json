@@ -128,7 +128,7 @@
   },
   {
    "default": "0",
-   "description": "The renewal job leaves this subscription alone: no reminders, no suspension, no deletion. For test and internal subscriptions. Ticking it doesn't bring back a site the job already paused: use Reactivate.",
+   "description": "The renewal job leaves this subscription alone: no reminders, no suspension, no deletion. For test and internal subscriptions. Ticking it doesn't bring back a site the job already paused: use Reactivate (a resume Press refuses is retried hourly).",
    "fieldname": "not_billed",
    "fieldtype": "Check",
    "label": "Not billed (test or internal)"

@@ -270,7 +270,8 @@ def run() -> dict:
 		frappe.get_meta(doctype)
 	for name in frappe.get_all(
 		"GX Subscription",
-		filters={"status": ("in", LIVE), "not_billed": 0},
+		filters={"status": ("in", LIVE)},
+		or_filters={"not_billed": 0, "resume_pending": 1},  # a ticked one only for a refused resume
 		order_by="creation asc",
 		pluck="name",
 	):
@@ -391,7 +392,14 @@ class _Run:
 		self.seen = {field: row[field] for field in WATCHED}
 		sub = frappe.get_doc("GX Subscription", name)
 		if cint(sub.not_billed):
-			return  # a test or internal subscription: no reminder, suspension or archive (ticked since the query)
+			# A test or internal subscription: no reminder, suspension or archive. Bringing a site back is
+			# always safe, so a resume Press refused (after Reactivate) is still retried, and nothing else.
+			tenant = sub.tenant and frappe.db.get_value(
+				"GX Tenant", sub.tenant, ["name", "status"], as_dict=True
+			)
+			if resume_pending(sub, tenant):
+				self._resume(sub, tenant)
+			return
 		if sub.status not in LIVE or (sub.billing_interval == "one_time" and sub.status == "active"):
 			return  # a paid lifetime plan has nothing to renew
 		tenant = sub.tenant and frappe.db.get_value(
