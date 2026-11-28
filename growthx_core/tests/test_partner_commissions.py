@@ -222,6 +222,12 @@ class TestPartnerCommissions(IntegrationTestCase):
 		self.assertNotEqual(second, name)
 		self.assertEqual(frappe.db.get_value("GX Commission", second, "commission_type"), "recurring")
 
+	def test_a_deadlock_is_raised_not_swallowed(self):
+		"""The savepoint went with the deadlock, so it can't be rolled back to: the payment's caller retries."""
+		clash = frappe.QueryDeadlockError("Deadlock found when trying to get lock")
+		with patch.object(ops, "_record", side_effect=clash):
+			self.assertRaises(frappe.QueryDeadlockError, self._pay, "PAY-DEADLOCK")
+
 	def test_the_amount_paid_is_what_counts(self):
 		# A discounted payment of Rs 590 incl. GST -> Rs 500 net -> Rs 100
 		c = frappe.get_doc("GX Commission", self._pay("PAY-HALF", gross=590))

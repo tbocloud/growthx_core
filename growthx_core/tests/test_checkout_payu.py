@@ -329,6 +329,54 @@ class TestCheckoutPayU(IntegrationTestCase):
 			status, body = self._checkout()
 		self.assertEqual((status, body["error"]["code"]), (409, "payment_in_progress"), body)
 
+	def test_a_deadlock_while_activating_is_raised_not_marked(self):
+		"""A deadlock has already undone the whole transaction, the Payment Entry and the savepoint with it:
+		the payment's caller must fail and be retried (frappe_payu's reconcile), not roll back to the
+		savepoint and mark the checkout needs_attention."""
+		_, body = self._checkout()
+		row = self._checkout_docs(body["reference"])
+		frappe.db.set_value("Sales Invoice", row.sales_invoice, "outstanding_amount", 0)  # as once paid
+		clash = frappe.QueryDeadlockError("Deadlock found when trying to get lock")
+		with (
+			patch.object(payments, "apply_payment", side_effect=clash),
+			patch.object(frappe.db, "rollback") as rollback,
+		):
+			with self.assertRaises(frappe.QueryDeadlockError):
+				payu._activate(body["reference"], "PE-DEADLOCK", getdate(nowdate()))
+		rollback.assert_not_called()
+		self.assertEqual(frappe.db.get_value("GX Checkout", body["reference"], "status"), "pending")
+
+	def test_a_checkout_replaced_while_its_payment_request_was_made_starts_no_attempt(self):
+		"""frappe_payu commits when the Payment Request gets its PayU link, which ends the account lock, so
+		another checkout request may replace this checkout meanwhile. Locked again, this one stops (409),
+		and PayU is never asked for an attempt on a cancelled Payment Request."""
+		real = payu._payment_request
+
+		def made_then_replaced(invoice, account, gateway):
+			name = real(invoice, account, gateway)
+			checkout = frappe.db.get_value("GX Checkout", {"sales_invoice": invoice})
+			frappe.db.set_value("GX Checkout", checkout, "status", "cancelled")  # the other request
+			return name
+
+		attempts = payu.start_attempt.call_count  # the mock from setUp
+		with patch.object(payu, "_payment_request", side_effect=made_then_replaced):
+			status, body = self._checkout()
+		self.assertEqual((status, body["error"]["code"]), (409, "payment_in_progress"), body)
+		self.assertEqual(payu.start_attempt.call_count, attempts)
+
+	def test_replacing_a_checkout_cancels_a_payment_request_it_had_not_recorded(self):
+		"""Between frappe_payu's commit and the checkout recording it, the Payment Request is known only
+		from the invoice: a replacement finds it there and cancels it."""
+		_, first = self._checkout()
+		row = self._checkout_docs(first["reference"])
+		frappe.db.set_value("GX Checkout", first["reference"], "payment_request", None)
+		frappe.db.set_value("GX Plan", PLAN, "price", 120000)
+		status, second = self._checkout()
+		self.assertEqual(status, 201, second)
+		self.assertEqual(frappe.db.get_value("GX Checkout", first["reference"], "status"), "cancelled")
+		self.assertEqual(frappe.db.get_value("Payment Request", row.payment_request, "docstatus"), 2)
+		self.assertEqual(frappe.db.get_value("Sales Invoice", row.sales_invoice, "docstatus"), 2)
+
 	def test_status_follows_the_payment_and_is_private(self):
 		_, body = self._checkout()
 		status, result = self._status(reference=body["reference"])
@@ -528,6 +576,17 @@ class TestCheckoutPayU(IntegrationTestCase):
 			frappe.db.get_value("GX Subscription", {"account": self.account}, ["status", "gateway"]),
 			("active", "manual"),
 		)
+
+	def test_a_deadlock_making_the_payments_invoice_is_payment_in_progress(self):
+		"""The savepoint went with the deadlock: manual_invoice raises it rather than rolling back to it
+		(which would fail with a 500), and record_payment answers 409 so the admin tries again."""
+		clash = frappe.QueryDeadlockError("Deadlock found when trying to get lock")
+		with (
+			patch.dict(frappe.local.conf, {"growthx_bank_account": self._bank()}),
+			patch.object(payu, "_make_invoice", side_effect=clash),
+		):
+			status, res = self._record_payment(reference="NEFT-DEADLOCK")
+		self.assertEqual((status, res["error"]["code"]), (409, "payment_in_progress"), res)
 
 	def test_record_payment_without_a_bank_account_still_records_it(self):
 		with patch.dict(frappe.local.conf, {"growthx_bank_account": None}):

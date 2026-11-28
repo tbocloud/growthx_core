@@ -356,6 +356,15 @@ class TestAddDirectSite(DirectCase):
 		self.assertEqual(status, 201, body)
 		self.assertIs(spy.call_args.kwargs.get("fresh", True), True)
 
+	def test_an_offline_payment_cancelled_in_a_clash_is_payment_in_progress(self):
+		"""As record_payment: a deadlock with an online payment being applied answers 409, not a 500."""
+		clash = frappe.QueryDeadlockError("Deadlock found when trying to get lock")
+		with patch.object(payu, "cancel_open_checkouts", side_effect=clash):
+			status, body = self._add(
+				paidOffline={"reference": "UTR-1", "amount": 118000, "paidOn": nowdate()}
+			)
+		self.assertEqual((status, body["error"]["code"]), (409, "payment_in_progress"), body)
+
 	def test_an_email_of_another_kind_of_user_is_never_attached(self):
 		frappe.get_doc(
 			{"doctype": "User", "email": "boss@example.com", "first_name": "Boss", "send_welcome_email": 0}
