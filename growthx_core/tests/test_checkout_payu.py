@@ -12,10 +12,10 @@ from unittest.mock import patch
 
 import frappe
 from frappe.tests import IntegrationTestCase
-from frappe.utils import fmt_money, getdate, nowdate
+from frappe.utils import fmt_money, getdate, now_datetime, nowdate
 from werkzeug.test import EnvironBuilder
 
-from growthx_core import accounts
+from growthx_core import accounts, support
 from growthx_core.api.v1 import _core, billing
 from growthx_core.api.v1 import customer as customer_api
 from growthx_core.billing import billing_details, payments, payu, tax_invoice
@@ -113,7 +113,33 @@ def _last_error() -> str:
 	return f"{row[0].method}\n{row[0].error}" if row else "no Error Log"
 
 
-def _call(fn, data=None, request=None):
+REQUEST = "gx_test_request"
+
+
+@contextmanager
+def request_transaction():
+	"""frappe.db.rollback and commit as they act on a request, on a savepoint taken here: a rollback undoes
+	what the request wrote since it began or last committed, and a commit keeps it. The test's own records,
+	made before the request, stay (tearDown rolls them back)."""
+	real_rollback = frappe.db.rollback
+	frappe.db.savepoint(REQUEST)
+
+	def rollback(*, save_point=None, chain=False):
+		real_rollback(save_point=save_point or REQUEST)
+
+	def commit(*, chain=False):
+		frappe.db.savepoint(REQUEST)  # a savepoint of the same name replaces the old one
+
+	with (
+		patch.object(frappe.db, "rollback", side_effect=rollback),
+		patch.object(frappe.db, "commit", side_effect=commit),
+	):
+		yield
+
+
+def _call(fn, data=None, request=None, real_rollback=False):
+	"""`real_rollback`: the request's rollbacks and commits act on its own writes (request_transaction).
+	Otherwise rollback is mocked out: an error response would roll back this test's data."""
 	frappe.local.form_dict = frappe._dict(data or {})
 	frappe.local.request = request
 	frappe.local.request_ip = "127.0.0.1"
@@ -121,7 +147,7 @@ def _call(fn, data=None, request=None):
 		patch.object(_core, "_idempotency_key", return_value=None),
 		patch.object(_core, "_check_rate_limit"),
 		patch.object(_core, "_require_auth"),  # the caller is frappe.session.user
-		patch.object(frappe.db, "rollback"),  # an error response would roll back this test's data
+		request_transaction() if real_rollback else patch.object(frappe.db, "rollback"),
 	):
 		response = fn()
 	if response.mimetype != "application/json":
@@ -139,6 +165,7 @@ class TestCheckoutPayU(IntegrationTestCase):
 		ensure_gst_company()
 
 	def setUp(self):
+		self.started = now_datetime()
 		frappe.set_user("Administrator")
 		frappe.get_doc(
 			{
@@ -406,9 +433,13 @@ class TestCheckoutPayU(IntegrationTestCase):
 		self.assertEqual(frappe.db.get_value("GX Checkout", body["reference"], "status"), "paid")
 
 	def _delete_account(self):
+		"""With the request's own rollback and commit (request_transaction), and its emails caught."""
 		frappe.set_user(self.user)
 		try:
-			return _call(customer_api.delete_account, {"confirm": "gx-checkout@example.com"})
+			with patch.object(frappe, "sendmail") as self.sendmail:
+				return _call(
+					customer_api.delete_account, {"confirm": "gx-checkout@example.com"}, real_rollback=True
+				)
 		finally:
 			frappe.set_user("Administrator")
 
@@ -438,6 +469,55 @@ class TestCheckoutPayU(IntegrationTestCase):
 			"details",
 		)
 
+	def _support_errors(self) -> int:
+		"""This test's Error Logs for the account's refused closure. Error Log is MyISAM (a rollback keeps
+		its rows) and account names come round again after a rollback: older rows are left out."""
+		return frappe.db.count(
+			"Error Log",
+			{
+				"method": f"GrowthX: account {self.account} can't be closed without support",
+				"reference_name": self.account,
+				"creation": (">=", self.started),
+			},
+		)
+
+	def _support_tickets(self) -> list:
+		return frappe.get_all(
+			"GX Support Ticket",
+			{"account": self.account, "subject": customer_api.DELETION_TICKET_SUBJECT},
+			["name", "category", "priority", "status", "customer_user"],
+			order_by="creation asc",
+		)
+
+	def _ticket_messages(self, ticket: str, internal: int) -> list[str]:
+		"""The ticket's messages the customer sees (internal=0), or the team's internal notes (1)."""
+		return frappe.get_all(
+			"GX Ticket Message",
+			{"ticket": ticket, "is_internal": internal},
+			pluck="body",
+			order_by="creation asc, name asc",
+		)
+
+	def _assert_nothing_internal(self, message: str, *names: str):
+		"""The customer's message names no checkout, invoice or Payment Request, and no gateway or ERPNext
+		detail: those are for the team (the internal note, the Error Log, the audit line)."""
+		for text in (*names, "PayU", "ERPNext", "Traceback", "checkout", "Payment Request", "ACC-"):
+			self.assertNotIn(text, message)
+
+	def _cancelled_then(self, error):
+		"""A cancel_open_checkouts that cancels the account's open checkouts, as the real one does, then
+		raises `error` (as for a later product, or ERPNext at the end): the request's rollback must undo the
+		cancel."""
+
+		def cancel(account, product):
+			for name in frappe.get_all(
+				"GX Checkout", {"account": account, "status": "pending"}, pluck="name"
+			):
+				frappe.db.set_value("GX Checkout", name, "status", "cancelled")
+			raise error
+
+		return cancel
+
 	def test_an_account_waits_for_a_payment_still_on_payus_page(self):
 		"""A Queued attempt under 30 minutes old is a matter of minutes: try again (no support line)."""
 		_, body = self._checkout()
@@ -446,6 +526,7 @@ class TestCheckoutPayU(IntegrationTestCase):
 		self.assertEqual(status, 409)
 		self._not_deleted(body, res, "payment_in_progress")
 		self.assertIsNone(self._support_line())
+		self.assertEqual(self._support_tickets(), [])
 
 	def test_an_authorized_payment_needs_support_before_deleting(self):
 		"""PayU has the money and frappe_payu keeps trying to apply it: "try again" could go on for ever."""
@@ -456,11 +537,50 @@ class TestCheckoutPayU(IntegrationTestCase):
 		self.assertEqual(status, 409)
 		self._not_deleted(body, res, "needs_support")
 		self.assertIn(f"PayU has authorized a payment on Payment Request {pr}", self._support_line())
-		self.assertTrue(
-			frappe.db.exists(
-				"Error Log", {"method": f"GrowthX: account {self.account} can't be closed without support"}
-			)
+		self.assertEqual(self._support_errors(), 1)
+
+	def test_a_deletion_that_needs_support_opens_one_ticket(self):
+		"""The customer is told "Our team has been told": a high-priority billing ticket, emailed to support@
+		and kept through the error response's rollback. Trying again while it is open opens no other."""
+		_, body = self._checkout()
+		pr = self._with_payment_request(body)
+		self._payu_records(pr, "PAYUdelete2", "Authorized")
+		status, res = self._delete_account()
+		self.assertEqual(status, 409)
+		self._not_deleted(body, res, "needs_support")
+		tickets = self._support_tickets()
+		self.assertEqual(len(tickets), 1, tickets)
+		ticket = tickets[0]
+		self.assertEqual(
+			(ticket.category, ticket.priority, ticket.status, ticket.customer_user),
+			("billing", "high", "open", self.user),
 		)
+		row = self._checkout_docs(body["reference"])
+		[message] = self._ticket_messages(ticket.name, internal=0)
+		self._assert_nothing_internal(message, pr, row.sales_invoice, body["reference"])
+		self.assertIn("Our team will contact you", message)
+		[note] = self._ticket_messages(ticket.name, internal=1)
+		self.assertIn(f"PayU has authorized a payment on Payment Request {pr}", note)
+		mail = self.sendmail.call_args.kwargs
+		self.assertEqual(
+			(mail["recipients"], mail["reference_name"]), ([support.support_inbox()], ticket.name)
+		)
+		self.assertIn(ticket.name, self._support_line())
+
+		status, res = self._delete_account()
+		self.assertEqual(status, 409)
+		self._not_deleted(body, res, "needs_support")
+		self.assertEqual([t.name for t in self._support_tickets()], [ticket.name])
+		self.sendmail.assert_not_called()
+		self.assertEqual(self._support_errors(), 2)  # each attempt is logged
+		notes = self._ticket_messages(ticket.name, internal=1)
+		self.assertEqual(len(notes), 2, notes)  # the team sees the second attempt on the same ticket
+		self.assertIn(f"Payment Request {pr}", notes[1])
+		self.assertEqual(len(self._ticket_messages(ticket.name, internal=0)), 1)
+
+		frappe.db.set_value("GX Support Ticket", ticket.name, "status", "closed")
+		self._delete_account()
+		self.assertEqual(len(self._support_tickets()), 2)  # a closed one isn't reused
 
 	def test_a_part_paid_invoice_needs_support_before_deleting(self):
 		_, body = self._checkout()
@@ -470,26 +590,73 @@ class TestCheckoutPayU(IntegrationTestCase):
 		self.assertEqual(status, 409)
 		self._not_deleted(body, res, "needs_support")
 		self.assertIn(f"invoice {invoice} is part-paid", self._support_line())
+		self.assertEqual(len(self._support_tickets()), 1)
 
 	def test_an_invoice_erpnext_wont_cancel_needs_support(self):
-		"""e.g. a closed accounting period or frozen accounts: not ERPNext's raw 422 to the customer."""
+		"""e.g. a closed accounting period or frozen accounts: not ERPNext's raw 422 to the customer. What was
+		cancelled before the refusal is rolled back; the traceback goes to the Error Log, not the ticket."""
 		_, body = self._checkout()
 		refused = frappe.ValidationError("Cannot cancel: the accounting period is closed")
-		with patch.object(payu, "cancel_open_checkouts", side_effect=refused):
+		with patch.object(payu, "cancel_open_checkouts", side_effect=self._cancelled_then(refused)):
 			status, res = self._delete_account()
 		self.assertEqual(status, 409)
 		self._not_deleted(body, res, "needs_support")
 		self.assertIn("ERPNext refused to cancel the open checkout", self._support_line())
 		self.assertIn("accounting period is closed", self._support_line())
+		self.assertEqual(self._support_errors(), 1)
+		ticket = self._support_tickets()[0].name
+		[message] = self._ticket_messages(ticket, internal=0)
+		self._assert_nothing_internal(message, "accounting period", body["reference"])
+		[note] = self._ticket_messages(ticket, internal=1)
+		self.assertIn("accounting period is closed", note)
+		self.assertNotIn("Traceback", note)  # the traceback is in the Error Log
 
-	def test_deleting_the_account_in_a_clash_with_a_payment_is_payment_in_progress(self):
+	def _clash_while_deleting(self, error, where="cancel"):
+		"""Cancelling (or, `where="lock"`, locking the account) clashed with a payment being applied or the
+		renewal job, which clears in minutes: 409 payment_in_progress, what was cancelled first is rolled back,
+		and no support line or ticket. A deferred Error Log (it survives the rollback) shows a clash that keeps
+		coming back."""
 		_, body = self._checkout()
-		clash = frappe.QueryDeadlockError("Deadlock found when trying to get lock")
-		with patch.object(payu, "cancel_open_checkouts", side_effect=clash):
+		if where == "lock":
+			clash = patch.object(customer_api, "lock_account", side_effect=error)
+		else:
+			clash = patch.object(payu, "cancel_open_checkouts", side_effect=self._cancelled_then(error))
+		with clash, patch.object(frappe, "log_error") as log_error:
 			status, res = self._delete_account()
-		self.assertEqual(status, 409)
+		self.assertEqual(status, 409, res)
 		self._not_deleted(body, res, "payment_in_progress")
 		self.assertIsNone(self._support_line())
+		self.assertEqual(self._support_tickets(), [])
+		log_error.assert_called_once()
+		logged = log_error.call_args.kwargs
+		self.assertEqual(
+			(logged["title"], logged["reference_name"], logged["defer_insert"]),
+			(f"GrowthX: account {self.account} not closed: {type(error).__name__}", self.account, True),
+		)
+		self.assertIn(type(error).__name__, logged["message"])  # the traceback
+
+	def test_deleting_the_account_in_a_clash_with_a_payment_is_payment_in_progress(self):
+		self._clash_while_deleting(frappe.QueryDeadlockError("Deadlock found when trying to get lock"))
+
+	def test_a_document_changed_while_deleting_is_payment_in_progress(self):
+		"""The invoice or Payment Request was saved by a payment meanwhile (TimestampMismatchError, a
+		ValidationError): not something the team must look at."""
+		self._clash_while_deleting(
+			frappe.TimestampMismatchError("Document has been modified after you have opened it")
+		)
+
+	def test_a_document_locked_while_deleting_is_payment_in_progress(self):
+		self._clash_while_deleting(
+			frappe.DocumentLockedError("This document is currently locked and queued for execution")
+		)
+
+	def test_a_lock_wait_timeout_while_deleting_is_payment_in_progress(self):
+		"""innodb_lock_wait_timeout ran out (frappe.QueryTimeoutError): the renewal job holds the account lock
+		through its Press calls, or a payment holds a row. Try again, not a 500."""
+		timeout = frappe.QueryTimeoutError("Lock wait timeout exceeded; try restarting transaction")
+		for where in ("lock", "cancel"):
+			with self.subTest(where):
+				self._clash_while_deleting(timeout, where)
 
 	def test_status_follows_the_payment_and_is_private(self):
 		_, body = self._checkout()

@@ -33,7 +33,10 @@ from frappe.utils import add_days, cint, getdate, now_datetime
 from growthx_core.api.v1._core import audit, iso
 from growthx_core.billing import locks, renewal_emails
 from growthx_core.billing.doctype.gx_billing_settings.gx_billing_settings import get_int, int_setting
-from growthx_core.billing.doctype.gx_subscription.gx_subscription import sync_account_status
+from growthx_core.billing.doctype.gx_subscription.gx_subscription import (
+	sync_account_status,
+	sync_account_status_after_cancel,
+)
 from growthx_core.billing.renewal_schedule import (
 	final_stage,
 	format_sent,
@@ -203,7 +206,8 @@ def archive_trial(sub_name: str) -> bool:
 	"""Back up and archive a never-paid GrowthX trial's site and cancel the subscription. Refuses
 	(False) for an ERPNext Direct tenant and for any account that has ever paid. runner.archive commits
 	the tenant before the subscription is canceled: called again after a failure in between, this
-	cancels the subscription without asking Press again."""
+	cancels the subscription without asking Press again. The account's status follows (churned once
+	nothing else is live; an account an admin suspended stays suspended while another one is)."""
 	sub = frappe.db.get_value("GX Subscription", sub_name, ["name", "account", "tenant"], as_dict=True)
 	if not sub or not sub.tenant:
 		return False
@@ -212,7 +216,12 @@ def archive_trial(sub_name: str) -> bool:
 		return False
 	if tenant.status != "archived":
 		runner.archive(sub.tenant)
+	# The account again first (runner.archive's commit released it): the payments' order, account then
+	# subscription, for the writes below.
+	frappe.db.get_value("GX Account", sub.account, "name", for_update=True)
 	frappe.db.set_value("GX Subscription", sub_name, "status", "canceled")
+	# set_value skips the subscription's on_update; an admin's suspension of the account stands
+	sync_account_status_after_cancel(sub.account)
 	audit("renewal.archive", "GX Subscription", sub_name, f"site {sub.tenant} archived")
 	return True
 

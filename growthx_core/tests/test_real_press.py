@@ -5,6 +5,7 @@ from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 import frappe
+import requests
 from frappe.tests import IntegrationTestCase
 from frappe.utils import now_datetime
 from frappe.utils.password import get_decrypted_password
@@ -185,6 +186,82 @@ class TestRealPress(IntegrationTestCase):
 			self.client.resume_site(site)
 		with self.assertRaises(PressError):
 			self.client.suspend_site(site)
+
+	def _press_site(self, status):
+		site = "test-acme-solar.tbogrowthx.com"
+		self._tenant(press_site_id=site)
+		self.press.taken.add("test-acme-solar")
+		self.press.status = status
+		return site
+
+	def test_a_site_press_suspended_itself_is_not_already_suspended(self):
+		"""Press's own "Suspended" (disk limits, an auto-archive candidate) isn't a suspension of ours: Press
+		refuses to deactivate it, and only "Inactive" counts as already done."""
+		site = self._press_site("Suspended")
+		with self.assertRaises(PressError):
+			self.client.suspend_site(site)
+		self.assertEqual(self.press.status, "Suspended")
+
+	def test_press_unreachable_or_failing_is_raised_without_asking_again(self):
+		"""Press never got the request (unreachable, a connect timeout) or failed it (a server error): raised at
+		once. Asking for the status would hold the account lock through another timeout for nothing."""
+		site = self._press_site("Active")
+		failures = {
+			"connect timeout": requests.ConnectTimeout("connect timed out"),
+			"unreachable": requests.ConnectionError("connection refused"),
+			"server error": _response(502, body={"exc_type": None}),
+		}
+		for label, failure in failures.items():
+
+			def press(url, failure=failure, **kwargs):
+				if url.endswith((".activate", ".deactivate")):
+					self.press.calls.append((url.rsplit("/", 1)[-1], {}))
+					if isinstance(failure, Exception):
+						raise failure
+					return failure
+				return self.press(url, **kwargs)
+
+			self.client.session = MagicMock(get=press, post=press, headers={})
+			for action in (self.client.suspend_site, self.client.resume_site):
+				with self.subTest(label, action=action.__name__), self.assertRaises(PressError):
+					action(site)
+		self.assertNotIn("press.api.site.get", self.press.methods())
+
+	def test_a_read_timeout_asks_press_again_briefly(self):
+		"""The request reached Press but the answer timed out: Press may have done it. Its status is asked with
+		a short timeout, and a site already in that state counts as done. Otherwise a suspend Press did would
+		leave the tenant ready in Core and Inactive on Press, which nothing repairs (Reactivate moves only
+		suspended tenants, and the job's retry is off while renewals are)."""
+		site = self._press_site("Active")
+		status_timeouts = []
+
+		def press(url, done=True, **kwargs):
+			method = url.rsplit("/", 1)[-1]
+			if method in ("press.api.site.activate", "press.api.site.deactivate"):
+				if done:
+					self.press(url, **kwargs)  # Press does it...
+				else:
+					self.press.calls.append((method, {}))
+				raise requests.ReadTimeout("read timed out")  # ...but the answer never arrives
+			if method == "press.api.site.get":
+				status_timeouts.append(kwargs.get("timeout"))
+			return self.press(url, **kwargs)
+
+		self.client.session = MagicMock(get=press, post=press, headers={})
+		self.client.suspend_site(site)
+		self.assertEqual(self.press.status, "Inactive")
+		self.client.resume_site(site)
+		self.assertEqual(self.press.status, "Active")
+		self.assertEqual(len(status_timeouts), 2)
+		self.assertTrue(all(0 < t <= 10 for t in status_timeouts), status_timeouts)
+
+		def not_done(url, **kwargs):
+			return press(url, done=False, **kwargs)
+
+		self.client.session = MagicMock(get=not_done, post=not_done, headers={})
+		with self.assertRaisesRegex(PressError, "unreachable|timed out|ReadTimeout"):
+			self.client.suspend_site(site)  # still Active: not done
+		self.assertEqual(self.press.status, "Active")
 
 	def test_a_name_taken_by_someone_else_is_an_error(self):
 		# Press says the name is taken (another team's site, or a blocked name) but won't show it to us

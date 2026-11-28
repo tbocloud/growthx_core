@@ -25,6 +25,15 @@ class PressError(Exception):
 	"""Press refused or failed. The message is admin-only detail."""
 
 	exc_type: str | None = None  # Press's exception class, e.g. "DNSValidationError"
+	http_status: int | None = None  # Press's answer; None if it never answered (timeout, unreachable)
+	# The request reached Press but its answer timed out (requests.ReadTimeout): Press may have done it.
+	no_answer: bool = False
+
+	@property
+	def refused(self) -> bool:
+		"""Press answered and refused the action (HTTP 417: a frappe.throw, such as a site action's
+		guard), rather than failing or not answering at all."""
+		return self.http_status == 417
 
 
 class PressNotFound(PressError):
@@ -231,6 +240,11 @@ PRESS_STATUS = {
 }
 
 
+# Seconds to wait for Press's status of a site after a suspend or resume failed: short, as the account lock
+# is held meanwhile.
+STATUS_TIMEOUT = 8
+
+
 class RealPressClient(PressClient):
 	"""TBO's self-hosted Press, tbocloud.in (DevOps guide: docs/press-api-for-core.md, Arun).
 
@@ -265,15 +279,22 @@ class RealPressClient(PressClient):
 				r = self.session.get(url, params=params, timeout=timeout, allow_redirects=False)
 			else:
 				r = self.session.post(url, json=params, timeout=timeout, allow_redirects=False)
+		except requests.ReadTimeout:
+			# Sent, but no answer in time: unlike a connection error, Press may have done it.
+			error = PressError(f"{method}: no answer from Press in {timeout}s (ReadTimeout)")
+			error.no_answer = True
+			raise error from None
 		except requests.RequestException as e:
 			raise PressError(f"{method}: Press unreachable ({type(e).__name__})") from None
 		if r.status_code == 200:
 			return r.json().get("message")
 		detail = _error_text(r)
 		if r.status_code == 403 or "DoesNotExistError" in detail:
-			raise PressNotFound(f"{method}: {detail}")
-		error = PressError(f"{method}: HTTP {r.status_code} {detail}")
-		error.exc_type = _exc_type(r)
+			error = PressNotFound(f"{method}: {detail}")
+		else:
+			error = PressError(f"{method}: HTTP {r.status_code} {detail}")
+			error.exc_type = _exc_type(r)
+		error.http_status = r.status_code
 		raise error
 
 	def site_name(self, subdomain: str) -> str:
@@ -364,27 +385,41 @@ class RealPressClient(PressClient):
 		self._own(site_id)
 		try:
 			self._call("press.api.site.deactivate", name=site_id)
-		except PressError:
-			# Press only deactivates an Active or Broken site. One already off counts as done: a call made
-			# again after the database undid the first one's records (a deadlock retry, a job's undo).
-			if self._press_status(site_id) not in ("Inactive", "Suspended"):
+		except PressError as e:
+			# Press only deactivates an Active or Broken site and refuses any other. One already Inactive
+			# counts as done: a call made again after the database undid the first one's records (a
+			# deadlock retry, a job's undo). Press's own "Suspended" (disk limits, an auto-archive
+			# candidate) isn't a suspension of ours: still an error.
+			if not self._already(e, site_id, "Inactive"):
 				raise
 
 	def resume_site(self, site_id):
 		self._own(site_id)
 		try:
 			self._call("press.api.site.activate", name=site_id)
-		except PressError:
-			# Press only activates an Inactive or Broken site. One already Active counts as done, e.g. a
-			# payment completed again after a deadlock (frappe_payu retries it): the first try resumed the
-			# site on Press, and only its records in Core were undone.
-			if self._press_status(site_id) != "Active":
+		except PressError as e:
+			# Press only activates an Inactive or Broken site and refuses any other. One already Active
+			# counts as done, e.g. a payment completed again after a deadlock (frappe_payu retries it): the
+			# first try resumed the site on Press, and only its records in Core were undone.
+			if not self._already(e, site_id, "Active"):
 				raise
 
-	def _press_status(self, site_id) -> str | None:
+	def _already(self, error: PressError, site_id, done: str) -> bool:
+		"""True if the site is `done` on Press after the action failed with `error`. Press is asked (briefly,
+		STATUS_TIMEOUT) only when it may have done it or refused because it was already done: a refusal (HTTP
+		417), or no answer in time (Press got the request). Otherwise the action didn't happen: an unreachable
+		Press or a server error is raised at once, since asking again would only hold the account lock longer.
+		Without this, a suspend Press did but didn't answer would leave the tenant ready in Core and Inactive
+		on Press, which nothing repairs (Reactivate moves only suspended tenants; the job is off while
+		renewals are)."""
+		if not (error.refused or error.no_answer):
+			return False
+		return self._press_status(site_id, timeout=STATUS_TIMEOUT) == done
+
+	def _press_status(self, site_id, timeout: int = 30) -> str | None:
 		"""Press's own status word for the site, or None if Press can't say."""
 		try:
-			return (self._call("press.api.site.get", name=site_id) or {}).get("status")
+			return (self._call("press.api.site.get", timeout=timeout, name=site_id) or {}).get("status")
 		except PressError:
 			return None
 

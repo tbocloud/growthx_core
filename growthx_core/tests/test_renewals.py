@@ -518,6 +518,57 @@ class TestSuspendAndArchive(RenewalsCase):
 		log = frappe.get_last_doc("GX Audit Log", {"action": "renewal.archive"})
 		self.assertEqual(log.reference_name, sub.name)
 
+	def test_archiving_the_only_trial_churns_the_account(self):
+		"""archive_trial cancels the subscription with set_value, which skips on_update: the account must
+		still follow its subscriptions (core-test: GXA-00068 stayed suspended, its only one canceled)."""
+		account, sub, tenant = self._gx_customer("suspended")
+		frappe.db.set_value("GX Tenant", tenant.name, "status", "suspended")
+		self.assertEqual(frappe.db.get_value("GX Account", account.name, "status"), "suspended")
+		self.assertTrue(renewals.archive_trial(sub.name))
+		self.assertEqual(frappe.db.get_value("GX Account", account.name, "status"), "churned")
+
+	def test_archiving_a_trial_keeps_an_admin_suspension(self):
+		"""An admin suspended the customer (account and sites suspended, the other subscription left trialing):
+		archiving the paused trial must not turn the account back to trial, or Reactivate (only from
+		suspended) could no longer bring the other site back."""
+		account, sub, tenant = self._gx_customer("suspended")
+		frappe.db.set_value("GX Tenant", tenant.name, "status", "suspended")
+		_, _other, other_site = self._customer(
+			"provisioned", "trialing", trial_ends_at=add_days(now_datetime(), 5), account=account
+		)
+		frappe.db.set_value("GX Tenant", other_site.name, "status", "suspended")
+		frappe.db.set_value("GX Account", account.name, "status", "suspended")  # the admin's Suspend
+		self.assertTrue(renewals.archive_trial(sub.name))
+		self.assertEqual(frappe.db.get_value("GX Subscription", sub.name, "status"), "canceled")
+		self.assertEqual(frappe.db.get_value("GX Account", account.name, "status"), "suspended")
+
+	def test_archiving_locks_the_account_again_before_cancelling(self):
+		"""runner.archive commits, which releases the job's locks: the account is locked again before the
+		subscription and the account are written, in the payments' order (account first), so a payment
+		arriving then waits instead of deadlocking."""
+		_, sub, tenant = self._gx_customer("suspended")
+		frappe.db.set_value("GX Tenant", tenant.name, "status", "suspended")
+		events = []
+		real_get_value, real_set_value = frappe.db.get_value, frappe.db.set_value
+
+		def get_value(*args, **kwargs):
+			if kwargs.get("for_update"):
+				events.append(("lock", args[0]))
+			return real_get_value(*args, **kwargs)
+
+		def set_value(*args, **kwargs):
+			events.append(("write", args[0]))
+			return real_set_value(*args, **kwargs)
+
+		frappe.db.commit.side_effect = lambda *args, **kwargs: events.append(("commit", None))
+		with (
+			patch.object(frappe.db, "get_value", side_effect=get_value),
+			patch.object(frappe.db, "set_value", side_effect=set_value),
+		):
+			self.assertTrue(renewals.archive_trial(sub.name))
+		after_commit = events[events.index(("commit", None)) + 1 :]
+		self.assertEqual(after_commit[:2], [("lock", "GX Account"), ("write", "GX Subscription")], events)
+
 
 NOTHING = {"emails": 0, "past_due": 0, "suspended": 0, "archived": 0, "held": 0}
 
@@ -772,7 +823,7 @@ class TestRenewalJob(RenewalsCase):
 		self.assertEqual(self.press.calls, [])
 
 	def test_never_paid_trial_archived_after_30_days_with_warning(self):
-		_, sub, tenant = self._gx_customer("trialing", trial_ends_at="2026-12-01 15:00:00")
+		account, sub, tenant = self._gx_customer("trialing", trial_ends_at="2026-12-01 15:00:00")
 		self._run("2026-11-30 10:00:00")
 		self._run("2026-12-02 10:00:00")
 		self.assertEqual(self._status(sub), "suspended")
@@ -791,6 +842,7 @@ class TestRenewalJob(RenewalsCase):
 		self.assertEqual((self._status(sub), self._status(tenant)), ("suspended", "suspended"))
 		self._run("2027-01-01 10:00:00")
 		self.assertEqual((self._status(sub), self._status(tenant)), ("canceled", "archived"))
+		self.assertEqual(self._status(account), "churned")
 		self.assertEqual(
 			self.press.calls, [("suspend_site", tenant.press_site_id), ("archive_site", tenant.press_site_id)]
 		)
@@ -946,6 +998,17 @@ class TestRenewalJob(RenewalsCase):
 		self._run("2026-12-26 10:00:00")
 		self.assertEqual(self._status(sub), "canceled")
 		self.assertEqual(self.press.calls, [])
+
+	def test_finishing_an_archive_churns_the_account(self):
+		"""_finish_archive (the tenant already archived) cancels through archive_trial: the account follows."""
+		account, sub, tenant = self._gx_customer("suspended", trial_ends_at="2026-11-20 12:00:00")
+		frappe.db.set_value(
+			"GX Subscription", sub.name, {"suspended_by": "billing", "archive_due_on": "2026-12-21"}
+		)
+		frappe.db.set_value("GX Tenant", tenant.name, "status", "archived")
+		self.assertEqual(self._status(account), "suspended")
+		self._run("2026-12-26 10:00:00")
+		self.assertEqual((self._status(sub), self._status(account)), ("canceled", "churned"))
 
 	def test_emails_name_the_site_plan_price_and_billing_page(self):
 		_, sub, tenant = self._gx_customer("active", current_period_end="2026-12-26")
